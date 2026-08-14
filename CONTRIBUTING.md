@@ -25,8 +25,8 @@ npm run build       # tsc declarations + tsdown bundles (lib/index.js + lib/clie
    `src/*.test.ts` and mirror the real route/store/filesystem/provider behavior.
 3. **Build** — `npm run build` must produce `lib/index.js` and `lib/client.js`.
 4. **Keep the diff focused** — one logical change per PR, with a clear title and description.
-5. **Documentation** — update `README.md` (and `README.zh.md` for user-facing changes) when behavior
-   or the API surface changes.
+5. **Documentation** — update `README.md` (including the embedded Chinese collapsible section) when
+   behavior or the API surface changes.
 
 ## Code style
 
