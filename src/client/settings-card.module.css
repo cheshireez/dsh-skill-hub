@@ -1,0 +1,28 @@
+/* Plugin settings card chrome (family-bucket look, theme-agnostic). */
+
+.card { border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25)); background: var(--dsw-alias-bg-layer-2, transparent); border-radius: 6px; margin-bottom: 6px; overflow: hidden; }
+.header { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 12px; border: none; background: transparent; color: inherit; cursor: pointer; font-size: 13px; text-align: left; }
+.header:hover { background: rgba(128,128,128,.08); }
+.headText { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.name { font-weight: 600; }
+.description { font-size: 11.5px; opacity: .65; }
+.pending { font-size: 10.5px; color: #d29922; flex: none; }
+.chevron, .chevronOpen { flex: none; opacity: .6; transition: transform .12s ease; }
+.chevronOpen { transform: rotate(180deg); }
+.body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.15)); }
+.notExposed, .readOnly, .failed { font-size: 12px; opacity: .75; margin: 0; }
+.failed { color: #d1242f; }
+.footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.discard, .save { padding: 5px 12px; border-radius: 5px; font-size: 12px; cursor: pointer; border: 1px solid rgba(128,128,128,.35); background: transparent; color: inherit; }
+.discard:disabled, .save:disabled { opacity: .5; cursor: default; }
+.save { border-color: #2f81f7; color: #2f81f7; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.head { display: flex; align-items: center; gap: 8px; }
+.label { font-size: 12.5px; font-weight: 600; }
+.badges { display: inline-flex; align-items: center; gap: 6px; }
+.badge { font-size: 10.5px; padding: 1px 6px; border-radius: 999px; border: 1px solid rgba(128,128,128,.35); opacity: .85; }
+.reset { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid rgba(128,128,128,.35); background: transparent; color: inherit; cursor: pointer; }
+.reset:disabled { opacity: .5; cursor: default; }
+.select { max-width: 220px; padding: 6px 8px; border: 1px solid rgba(128,128,128,.35); border-radius: 6px; background: transparent; color: inherit; font-size: 12.5px; }
+.hint { font-size: 11.5px; opacity: .6; margin: 0; }
+
