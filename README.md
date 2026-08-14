@@ -11,11 +11,13 @@ npm 关键词 `dsh-plugin` · GitHub 仓库挂 `dsh-plugin` topic · 与 [dsh-we
 | 能力 | dsh-skill-manager（只读版） | **dsh-skill-hub（本插件）** |
 | --- | --- | --- |
 | 目录来源 | 自扫盘，仅用户根 | 官方 `ctx.skills` 注册表：项目/自定义/用户/内置全六级 + 第三方 provider |
-| 浏览 / 搜索 | ✅ | ✅（按来源分组） |
+| 浏览 / 搜索 | ✅ | ✅（按来源或按 Sets 分组） |
 | 启用 / 禁用 | ❌ | ✅（重命名 SKILL.md，文件不删，可随时恢复） |
 | 技能正文查看 | ❌ | ✅ |
 | 发现诊断（为什么某个技能没出现） | ❌ | ✅（缺 frontmatter / 缺 name/description / 非法名称，逐个列明原因） |
 | 新建技能向导 | ❌ | ✅（写入 ~/.dsh/skills 或 ~/.agents/skills） |
+| 触发统计 | ❌ | ✅（从会话日志读 skill 实际调用次数） |
+| Sets 分组 | ❌ | ✅（frontmatter `sets` 归类，无 sets 归入「未归类」） |
 | 实时更新 | — | 文件系统 provider 的 watcher 驱动，面板 5s 轮询兜底 |
 
 ## 架构
@@ -23,9 +25,10 @@ npm 关键词 `dsh-plugin` · GitHub 仓库挂 `dsh-plugin` topic · 与 [dsh-we
 ```text
 src/
 ├── index.ts            host 入口：inject [webServer, skills, systemPrompt]，系统提示公告
-├── routes.ts           /api/skill-hub/{catalog,skill,toggle,create}（loopback 围栏）
+├── routes.ts           /api/skill-hub/{catalog,skill,toggle,create,stats}（loopback 围栏）
 ├── store.ts            sidecar 状态 ~/.dsh/dsh-skill-hub.json（禁用清单，原子写）
-├── skillfs.ts          根目录解析 / 开关重命名 / 脚手架 / 诊断扫描
+├── skillfs.ts          根目录解析 / 开关重命名 / 脚手架 / 诊断扫描 / frontmatter 解析
+├── stats.ts            触发统计：会话日志 → 每技能调用次数（可选 sessionQuery）
 ├── protocol.ts         host ↔ browser 共享 API 契约
 └── client/             browser 半边：侧边栏入口 + 中列面板（React，CSS Modules）
 ```
@@ -43,14 +46,14 @@ dsh plugin --profile web add dsh-skill-hub
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest（37 用例）
+npm test            # vitest（47 用例）
 npm run build       # tsc 声明 + tsdown 双半边产物（lib/index.js + lib/client.js）
 ```
 
 ## 路线图
 
-- v0.1.0（当前）：全量目录 + 开关 + 诊断 + 新建 + settings 配置面（installSettingsSection）
-- v0.2.0：触发统计（从会话日志读 skill 实际调用次数）、Sets 分组、删除进回收站
+- v0.1.0（已发布）：全量目录 + 开关 + 诊断 + 新建 + settings 配置面（installSettingsSection）
+- v0.2.0（进行中）：触发统计（从会话日志读 skill 实际调用次数）✅、Sets 分组（frontmatter `sets`）✅、删除进回收站（待做）
 - v0.3.0：SSE 实时推送替代轮询
 
 ## License
