@@ -7,6 +7,8 @@
 export const zh = {
   'entry.label': '技能',
   'entry.tooltip': '技能中枢：浏览与管理本地技能',
+  'view.source': '按来源',
+  'view.sets': '按 Sets',
   'panel.title': '技能中枢',
   'panel.refresh': '刷新',
   'panel.new': '新建技能',
@@ -26,6 +28,7 @@ export const zh = {
   'group.user-agents': '用户 ~/.agents/skills',
   'group.bundled': '内置',
   'group.other': '其他来源',
+  'group.uncategorized': '未归类',
   'badge.model': '模型可调',
   'badge.user': '用户可调',
   'badge.uses': '{count} 次调用',
@@ -72,6 +75,8 @@ export const zh = {
 export const en: Record<HubKey, string> = {
   'entry.label': 'Skills',
   'entry.tooltip': 'Skill hub: browse and manage local skills',
+  'view.source': 'By source',
+  'view.sets': 'By sets',
   'panel.title': 'Skill Hub',
   'panel.refresh': 'Refresh',
   'panel.new': 'New Skill',
@@ -91,6 +96,7 @@ export const en: Record<HubKey, string> = {
   'group.user-agents': 'User ~/.agents/skills',
   'group.bundled': 'Bundled',
   'group.other': 'Other sources',
+  'group.uncategorized': 'Uncategorized',
   'badge.model': 'model',
   'badge.user': 'user',
   'badge.uses': '{count} uses',

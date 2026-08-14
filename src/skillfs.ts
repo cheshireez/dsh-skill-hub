@@ -107,9 +107,27 @@ export interface FrontmatterValue {
   name: string
   description: string
   whenToUse?: string
+  /** Optional group names the skill declares (frontmatter `sets`). */
+  sets?: string[]
   invocation: { modelInvocable: boolean; userInvocable: boolean }
   /** Instruction body after the frontmatter block, trimmed. */
   content: string
+}
+
+/**
+ * Normalize an optional frontmatter `sets` value into a clean string list.
+ * Accepts a single string or a string array; trims, drops empties, and
+ * ignores non-string entries. Returns undefined when absent or empty, so a
+ * skill without sets stays uncategorized.
+ */
+export function normalizeSets(raw: unknown): string[] | undefined {
+  const items = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : undefined
+  if (items === undefined) return undefined
+  const sets = items
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter((item) => item !== '')
+  return sets.length === 0 ? undefined : sets
 }
 
 /** Parse a SKILL.md the way the official filesystem provider does. */
@@ -132,6 +150,7 @@ export function parseFrontmatter(text: string): { value: FrontmatterValue } | { 
   const description = typeof record.description === 'string' ? record.description.trim() : ''
   if (description === '') return { error: 'frontmatter requires a description field' }
   const whenToUse = typeof record.whenToUse === 'string' && record.whenToUse.trim() !== '' ? record.whenToUse.trim() : undefined
+  const sets = normalizeSets(record.sets)
   if (Object.hasOwn(record, 'disableModelInvocation')) return { error: 'frontmatter field "disableModelInvocation" is unsupported; use "disable-model-invocation"' }
   if (Object.hasOwn(record, 'modelInvocable')) return { error: 'frontmatter field "modelInvocable" is unsupported; use "disable-model-invocation"' }
   if (Object.hasOwn(record, 'userInvocable')) return { error: 'frontmatter field "userInvocable" is unsupported; use "user-invocable"' }
@@ -143,7 +162,7 @@ export function parseFrontmatter(text: string): { value: FrontmatterValue } | { 
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) }
   }
-  return { value: { name, description, ...(whenToUse !== undefined ? { whenToUse } : {}), invocation, content: (match[2] ?? '').trim() } }
+  return { value: { name, description, ...(whenToUse !== undefined ? { whenToUse } : {}), ...(sets !== undefined ? { sets } : {}), invocation, content: (match[2] ?? '').trim() } }
 }
 
 /** Official boolean grammar: true/false, 1/0, and the common string spellings. */

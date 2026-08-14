@@ -23,7 +23,7 @@ import {
   type ToggleResponse,
   type WritableRoot,
 } from './protocol.ts'
-import { createSkill, disableSkill, enableSkill, rootOfPath, scanDiagnostics } from './skillfs.ts'
+import { createSkill, disableSkill, enableSkill, normalizeSets, rootOfPath, scanDiagnostics } from './skillfs.ts'
 import { dshHome, type SkillHubStore } from './store.ts'
 import type { SkillStatsReader } from './stats.ts'
 
@@ -122,18 +122,27 @@ function homeOf(deps: SkillHubRouteDeps): string {
 
 /** Build the full catalog response (shared by catalog/toggle/create handlers). */
 async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promise<CatalogResponse> {
-  const snapshot = await deps.skills.snapshot(cwd !== undefined ? { cwd } : undefined)
-  const skills: CatalogSkill[] = snapshot.skills.map((skill) => ({
-    name: skill.name,
-    description: skill.description,
-    ...(skill.whenToUse !== undefined ? { whenToUse: skill.whenToUse } : {}),
-    invocation: {
-      modelInvocable: skill.invocation.modelInvocable,
-      userInvocable: skill.invocation.userInvocable,
-    },
-    source: skill.source,
-    provider: skill.provider,
-    writable: isWritableSource(skill.source),
+  const lookup = cwd !== undefined ? { cwd } : undefined
+  const snapshot = await deps.skills.snapshot(lookup)
+  // The registry's snapshot() yields metadata-less SkillSummary rows; a skill's
+  // `sets` live on its SkillDefinition.metadata, so enrich each row through a
+  // per-name get(). Local catalogs are small and the registry caches completed
+  // collections, so the per-skill file read is cheap.
+  const skills: CatalogSkill[] = await Promise.all(snapshot.skills.map(async (skill) => {
+    const sets = await readSets(deps, skill.name, lookup)
+    return {
+      name: skill.name,
+      description: skill.description,
+      ...(skill.whenToUse !== undefined ? { whenToUse: skill.whenToUse } : {}),
+      ...(sets !== undefined ? { sets } : {}),
+      invocation: {
+        modelInvocable: skill.invocation.modelInvocable,
+        userInvocable: skill.invocation.userInvocable,
+      },
+      source: skill.source,
+      provider: skill.provider,
+      writable: isWritableSource(skill.source),
+    }
   }))
   const disabled = await deps.store.listDisabled()
   const home = homeOf(deps)
@@ -144,12 +153,24 @@ async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promise<Cata
   return { ok: true, complete: snapshot.complete, skills, disabled, diagnostics }
 }
 
+/** Read one skill's normalized `sets` (undefined when absent, unreadable, or empty). */
+async function readSets(deps: SkillHubRouteDeps, name: string, lookup: SkillLookupLike | undefined): Promise<string[] | undefined> {
+  try {
+    const definition = await deps.skills.get(name, lookup)
+    return normalizeSets(definition?.metadata?.sets)
+  } catch {
+    return undefined // a provider that cannot resolve keeps the row uncategorized
+  }
+}
+
 /** Map a loaded definition onto the wire shape. */
 function toDetail(skill: SkillDefinition): SkillDetail {
+  const sets = normalizeSets(skill.metadata?.sets)
   return {
     name: skill.name,
     description: skill.description,
     ...(skill.whenToUse !== undefined ? { whenToUse: skill.whenToUse } : {}),
+    ...(sets !== undefined ? { sets } : {}),
     invocation: {
       modelInvocable: skill.invocation.modelInvocable,
       userInvocable: skill.invocation.userInvocable,

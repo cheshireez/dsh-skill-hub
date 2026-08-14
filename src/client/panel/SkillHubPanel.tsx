@@ -42,6 +42,7 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
   const [formBusy, setFormBusy] = useState(false)
   const [formMessage, setFormMessage] = useState<{ kind: 'error' | 'success'; text: string } | null>(null)
   const [uses, setUses] = useState<ReadonlyMap<string, number>>(new Map())
+  const [grouping, setGrouping] = useState<'source' | 'sets'>('source')
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -149,6 +150,19 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
     return map
   }, [filtered])
 
+  // Sets grouping uses the skill's primary set (frontmatter `sets[0]`); skills
+  // without a set land under the empty key, rendered as the uncategorized bucket.
+  const bySet = useMemo(() => {
+    const map = new Map<string, CatalogSkill[]>()
+    for (const skill of filtered) {
+      const key = skill.sets?.[0] ?? ''
+      const bucket = map.get(key) ?? []
+      bucket.push(skill)
+      map.set(key, bucket)
+    }
+    return map
+  }, [filtered])
+
   const renderRow = (skill: CatalogSkill): React.JSX.Element => {
     const count = uses.get(skill.name)
     return (
@@ -201,6 +215,10 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
       <div className={css.header}>
         <h2 className={css.title}>{tt('panel.title')}</h2>
         {catalog !== null && !catalog.complete ? <span className={css.hint}>{tt('panel.incomplete')}</span> : null}
+        <span className={css.segmented}>
+          <button type='button' className={css.segBtn + (grouping === 'source' ? ' ' + css.segBtnActive : '')} onClick={() => { setGrouping('source') }}>{tt('view.source')}</button>
+          <button type='button' className={css.segBtn + (grouping === 'sets' ? ' ' + css.segBtnActive : '')} onClick={() => { setGrouping('sets') }}>{tt('view.sets')}</button>
+        </span>
         <span className={css.actions}>
           <button type='button' className={css.button} onClick={() => { void load() }}>{tt('panel.refresh')}</button>
           <button type='button' className={css.button + ' ' + css.primary} onClick={() => { setShowForm((value) => !value) }}>{tt('panel.new')}</button>
@@ -250,27 +268,51 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
             ? <div className={css.empty}>{tt('panel.emptyAll')}</div>
             : null}
 
-          {SOURCE_GROUPS.map((source) => {
-            const skills = bySource.get(source)
-            if (skills === undefined || skills.length === 0) return null
-            return (
-              <section key={source} className={css.section}>
-                <div className={css.groupTitle}>{tt(groupKey(source))}</div>
-                {skills.map(renderRow)}
-              </section>
-            )
-          })}
+          {grouping === 'source' ? (
+            <>
+              {SOURCE_GROUPS.map((source) => {
+                const skills = bySource.get(source)
+                if (skills === undefined || skills.length === 0) return null
+                return (
+                  <section key={source} className={css.section}>
+                    <div className={css.groupTitle}>{tt(groupKey(source))}</div>
+                    {skills.map(renderRow)}
+                  </section>
+                )
+              })}
 
-          {(() => {
-            const rest = filtered.filter((skill) => !(SOURCE_GROUPS as readonly string[]).includes(skill.source))
-            if (rest.length === 0) return null
-            return (
-              <section className={css.section}>
-                <div className={css.groupTitle}>{tt('group.other')}</div>
-                {rest.map(renderRow)}
-              </section>
-            )
-          })()}
+              {(() => {
+                const rest = filtered.filter((skill) => !(SOURCE_GROUPS as readonly string[]).includes(skill.source))
+                if (rest.length === 0) return null
+                return (
+                  <section className={css.section}>
+                    <div className={css.groupTitle}>{tt('group.other')}</div>
+                    {rest.map(renderRow)}
+                  </section>
+                )
+              })()}
+            </>
+          ) : (
+            <>
+              {[...bySet.keys()].filter((set) => set !== '').sort().map((set) => {
+                const skills = bySet.get(set)
+                if (skills === undefined || skills.length === 0) return null
+                return (
+                  <section key={set} className={css.section}>
+                    <div className={css.groupTitle}>{set}</div>
+                    {skills.map(renderRow)}
+                  </section>
+                )
+              })}
+
+              {bySet.has('') ? (
+                <section className={css.section}>
+                  <div className={css.groupTitle}>{tt('group.uncategorized')}</div>
+                  {bySet.get('')!.map(renderRow)}
+                </section>
+              ) : null}
+            </>
+          )}
 
           {catalog.disabled.length > 0 ? (
             <section className={css.section}>

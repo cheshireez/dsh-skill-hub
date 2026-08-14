@@ -30,6 +30,8 @@ export interface CatalogSkill {
   name: string
   description: string
   whenToUse?: string
+  /** Optional group names declared in the skill's frontmatter (`sets`). */
+  sets?: string[]
   invocation: HubInvocation
   source: string
   provider: string
@@ -72,6 +74,8 @@ export interface SkillDetail {
   name: string
   description: string
   whenToUse?: string
+  /** Optional group names declared in the skill's frontmatter (`sets`). */
+  sets?: string[]
   invocation: HubInvocation
   source: string
   provider: string

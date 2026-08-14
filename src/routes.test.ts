@@ -111,6 +111,17 @@ describe('skill-hub routes', () => {
     expect(body.diagnostics[0].reason).toBe('missing YAML frontmatter (--- block)')
   })
 
+  it('enriches the catalog with sets from skill metadata', async () => {
+    skills.snapshot = async () => ({ skills: [summary({ name: 'grouped-skill' })], complete: true })
+    skills.get = async () => definition({ metadata: { sets: ['engineering'] } })
+    const [catalog] = makeRoutes(deps)
+    const res = new FakeResponse()
+    await catalog.handler(fakeReq('GET', SKILL_HUB_API.catalog), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as CatalogResponse
+    expect(body.skills[0].sets).toEqual(['engineering'])
+  })
+
   it('forwards the cwd query to the registry snapshot', async () => {
     let captured: string | undefined
     skills.snapshot = async (options?: { cwd?: string }) => {
