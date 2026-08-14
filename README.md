@@ -4,6 +4,7 @@
   <a href="https://www.npmjs.com/package/dsh-skill-hub"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-skill-hub?color=2f81f7&label=npm"></a>
   <img alt="license" src="https://img.shields.io/npm/l/dsh-skill-hub">
   <img alt="node" src="https://img.shields.io/badge/node-%3E%3D22.19-339933">
+  <a href="https://github.com/cheshireez/dsh-skill-hub/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/cheshireez/dsh-skill-hub/ci.yml?branch=main"></a>
 </p>
 
 <details>
