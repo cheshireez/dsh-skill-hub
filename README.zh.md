@@ -1,5 +1,7 @@
 # dsh-skill-hub
 
+**[中文](README.zh.md) · [English](README.md)**
+
 **面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的图形化技能中枢。**
 在 dsh Web GUI 里浏览官方 `ctx.skills` 注册表提供的完整本地技能目录，启用/禁用技能、查看正文、
 排查技能为什么没出现、并新建技能。

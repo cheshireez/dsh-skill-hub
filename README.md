@@ -1,5 +1,7 @@
 # dsh-skill-hub
 
+**[English](README.md) · [中文](README.zh.md)**
+
 **In-GUI skill hub for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh).**
 Browse the full local skill catalog from the official `ctx.skills` registry, toggle skills on/off, inspect
 their bodies, understand why a skill is missing, and scaffold new ones — all from the dsh web GUI.
