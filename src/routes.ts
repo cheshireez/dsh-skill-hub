@@ -25,6 +25,7 @@ import {
 } from './protocol.ts'
 import { createSkill, disableSkill, enableSkill, rootOfPath, scanDiagnostics } from './skillfs.ts'
 import { dshHome, type SkillHubStore } from './store.ts'
+import type { SkillStatsReader } from './stats.ts'
 
 /** Cap on JSON request bodies (toggle/create payloads are tiny). */
 const MAX_JSON_BODY_BYTES = 64 * 1024
@@ -110,6 +111,8 @@ export interface SkillHubRouteDeps {
   home?: string
   /** Invalidate the registry catalog cache after hub-driven mutations. */
   invalidate?: () => void
+  /** Optional invocation-count reader; absent means the stats route reports unavailable. */
+  stats?: SkillStatsReader
 }
 
 /** Resolve the home used for writable-root operations. */
@@ -274,6 +277,25 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
           const path = await createSkill(root, name, typeof request.description === 'string' ? request.description : '', homeOf(deps))
           deps.invalidate?.()
           writeJson(res, 201, { ok: true, path, root } satisfies import('./protocol.ts').CreateResponse)
+        } catch (error) {
+          writeError(res, 500, error)
+        }
+      },
+    },
+    // ---------------------------------------------------------------- stats
+    {
+      kind: 'exact',
+      path: SKILL_HUB_API.stats,
+      handler: async (req, res) => {
+        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
+        if (req.method !== 'GET') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
+        if (deps.stats === undefined) {
+          writeJson(res, 200, { ok: true, available: false, stats: [] } satisfies import('./protocol.ts').StatsResponse)
+          return
+        }
+        try {
+          const stats = await deps.stats()
+          writeJson(res, 200, { ok: true, available: true, stats } satisfies import('./protocol.ts').StatsResponse)
         } catch (error) {
           writeError(res, 500, error)
         }

@@ -18,6 +18,7 @@
 .badge { font-size: 10.5px; padding: 1px 6px; border-radius: 999px; border: 1px solid rgba(128,128,128,.3); opacity: .85; white-space: nowrap; }
 .badgeModel { color: #2f81f7; border-color: currentColor; }
 .badgeUser { color: #3fb950; border-color: currentColor; }
+.badgeUses { color: #d29922; border-color: currentColor; }
 .badgeReadonly { opacity: .55; }
 .switchBtn { flex: none; font-size: 11.5px; padding: 3px 10px; border-radius: 999px; border: 1px solid rgba(128,128,128,.35); background: transparent; color: inherit; cursor: pointer; }
 .switchBtn:disabled { opacity: .5; cursor: default; }

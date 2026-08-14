@@ -9,6 +9,7 @@ import {
   type CreateResponse,
   type SkillDetail,
   type SkillDetailResponse,
+  type StatsResponse,
 } from '../protocol.ts'
 
 /** Error carrying the route's JSON error message. */
@@ -68,6 +69,11 @@ export class SkillHubApi {
       body: JSON.stringify(payload),
     })
     return readJson<CreateResponse>(response)
+  }
+
+  async stats(): Promise<StatsResponse> {
+    const response = await fetch(SKILL_HUB_API.stats)
+    return readJson<StatsResponse>(response)
   }
 }
 

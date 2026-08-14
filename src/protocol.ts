@@ -11,6 +11,7 @@ export const SKILL_HUB_API = {
   skill: '/api/skill-hub/skill',
   toggle: '/api/skill-hub/toggle',
   create: '/api/skill-hub/create',
+  stats: '/api/skill-hub/stats',
 } as const
 
 /** User-level roots the hub may write to (matches dsh-skill-filesystem ranks 400/500). */
@@ -113,6 +114,23 @@ export interface CreateResponse {
   ok: true
   path: string
   root: WritableRoot
+}
+
+/** One skill's invocation count across the local session logs. */
+export interface SkillStat {
+  /** Kebab-case skill name. */
+  name: string
+  /** How many sessions recorded a user-explicit invocation of this skill. */
+  count: number
+}
+
+/** GET /api/skill-hub/stats */
+export interface StatsResponse {
+  ok: true
+  /** Whether a session-log source was available (false means counts are empty). */
+  available: boolean
+  /** Sorted per-skill invocation counts. */
+  stats: SkillStat[]
 }
 
 /** JSON error body shared by every route. */

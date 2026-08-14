@@ -14,8 +14,10 @@ import z from 'schemastery'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-system-prompt'
+import type {} from '@deepseek-ai/dsh-session-query'
 import { SkillHubProvider } from './provider.ts'
 import { makeRoutes } from './routes.ts'
+import { createSkillStatsReader, type SkillStatsReader } from './stats.ts'
 import { SkillHubStore } from './store.ts'
 
 /** Stable cordis plugin name (matches cordis.patch.yml insert id). */
@@ -71,6 +73,10 @@ export function apply(ctx: Context, config?: Config): void {
   // own per-scope discovery), and the GUI needs a session-independent view.
   let disposeProvider: (() => void) | undefined
   let providerControl: SkillProviderControl | undefined
+  // Optional invocation-count source; only set once a session-query service
+  // is present (see the soft inject below). Absent deployments just omit the
+  // stats route's data rather than failing to load.
+  let stats: SkillStatsReader | undefined
 
   // Register (or drop) every surface to match the current config. Each
   // group is kept under one disposer: re-registering first tears the old
@@ -113,6 +119,7 @@ export function apply(ctx: Context, config?: Config): void {
           skills: ctx.skills,
           store,
           invalidate: () => { providerControl?.invalidate() },
+          stats,
         }).map((route) => ctx.webServer.register(route))
         return () => {
           for (const dispose of disposers) dispose()
@@ -136,4 +143,14 @@ export function apply(ctx: Context, config?: Config): void {
   // Initial registration from the composition entry (covers deployments with
   // no settings service, whose installSettingsSection never fires its hooks).
   sync()
+
+  // Optional trigger statistics: while a session-query service exists, wire a
+  // cached invocation-count reader into the stats route. Re-running sync()
+  // re-registers the routes with the reader attached (mirrors the optional
+  // settings wiring — no sessionQuery service ever mounted means none of this
+  // runs).
+  ctx.inject(['sessionQuery'], () => {
+    stats = createSkillStatsReader(ctx.sessionQuery)
+    sync()
+  })
 }

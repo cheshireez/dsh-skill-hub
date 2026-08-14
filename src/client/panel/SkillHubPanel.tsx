@@ -41,6 +41,7 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
   const [formRoot, setFormRoot] = useState<WritableRoot>('user-dsh')
   const [formBusy, setFormBusy] = useState(false)
   const [formMessage, setFormMessage] = useState<{ kind: 'error' | 'success'; text: string } | null>(null)
+  const [uses, setUses] = useState<ReadonlyMap<string, number>>(new Map())
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -54,11 +55,21 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
     }
   }, [api])
 
+  const loadUses = useCallback(async (): Promise<void> => {
+    try {
+      const result = await api.stats()
+      if (result.available) setUses(new Map(result.stats.map((stat) => [stat.name, stat.count])))
+    } catch {
+      // Invocation counts are best-effort; a stats failure must not disturb the catalog.
+    }
+  }, [api])
+
   useEffect(() => {
     void load()
-    const timer = window.setInterval(() => { void load() }, POLL_MS)
+    void loadUses()
+    const timer = window.setInterval(() => { void load(); void loadUses() }, POLL_MS)
     return () => { window.clearInterval(timer) }
-  }, [load])
+  }, [load, loadUses])
 
   const openDetail = useCallback(async (name: string): Promise<void> => {
     setDetailLoading(true)
@@ -138,26 +149,30 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
     return map
   }, [filtered])
 
-  const renderRow = (skill: CatalogSkill): React.JSX.Element => (
-    <div key={skill.name} className={css.row} onClick={() => { void openDetail(skill.name) }}>
-      <div className={css.rowMain}>
-        <div className={css.rowName}>{skill.name}</div>
-        <div className={css.rowDesc}>{skill.description}</div>
+  const renderRow = (skill: CatalogSkill): React.JSX.Element => {
+    const count = uses.get(skill.name)
+    return (
+      <div key={skill.name} className={css.row} onClick={() => { void openDetail(skill.name) }}>
+        <div className={css.rowMain}>
+          <div className={css.rowName}>{skill.name}</div>
+          <div className={css.rowDesc}>{skill.description}</div>
+        </div>
+        <span className={css.badges}>
+          {count !== undefined && count > 0 ? <span className={css.badge + ' ' + css.badgeUses}>{tt('badge.uses', { count })}</span> : null}
+          {skill.invocation.modelInvocable ? <span className={css.badge + ' ' + css.badgeModel}>{tt('badge.model')}</span> : null}
+          {skill.invocation.userInvocable ? <span className={css.badge + ' ' + css.badgeUser}>{tt('badge.user')}</span> : null}
+        </span>
+        {skill.writable
+          ? <button
+              type='button'
+              className={css.switchBtn + ' ' + css.switchOn}
+              disabled={busyNames.has(skill.name)}
+              onClick={(event) => { event.stopPropagation(); void toggle(skill, false) }}
+            >{tt('row.disable')}</button>
+          : <span className={css.badge + ' ' + css.badgeReadonly}>{tt('row.readonly')}</span>}
       </div>
-      <span className={css.badges}>
-        {skill.invocation.modelInvocable ? <span className={css.badge + ' ' + css.badgeModel}>{tt('badge.model')}</span> : null}
-        {skill.invocation.userInvocable ? <span className={css.badge + ' ' + css.badgeUser}>{tt('badge.user')}</span> : null}
-      </span>
-      {skill.writable
-        ? <button
-            type='button'
-            className={css.switchBtn + ' ' + css.switchOn}
-            disabled={busyNames.has(skill.name)}
-            onClick={(event) => { event.stopPropagation(); void toggle(skill, false) }}
-          >{tt('row.disable')}</button>
-        : <span className={css.badge + ' ' + css.badgeReadonly}>{tt('row.readonly')}</span>}
-    </div>
-  )
+    )
+  }
 
   if (detail !== null) {
     return (
