@@ -91,7 +91,9 @@
     "src",
     "cordis.patch.yml",
     "README.md",
-    "LICENSE"
+    "README.zh.md",
+    "LICENSE",
+    "CONTRIBUTING.md"
   ],
   "keywords": [
     "dsh-plugin",
@@ -112,5 +114,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "prebuild": "node -e \"require('fs').rmSync('lib',{recursive:true,force:true})\""
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cheshireez/dsh-skill-hub.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cheshireez/dsh-skill-hub/issues"
+  },
+  "homepage": "https://github.com/cheshireez/dsh-skill-hub"
 }
