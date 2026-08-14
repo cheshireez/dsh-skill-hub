@@ -149,8 +149,8 @@ export function apply(ctx: Context, config?: Config): void {
   // re-registers the routes with the reader attached (mirrors the optional
   // settings wiring — no sessionQuery service ever mounted means none of this
   // runs).
-  ctx.inject(['sessionQuery'], () => {
-    stats = createSkillStatsReader(ctx.sessionQuery)
+  ctx.inject(['sessionQuery'], (sctx) => {
+    stats = createSkillStatsReader(sctx.sessionQuery)
     sync()
   })
 }

@@ -1,14 +1,17 @@
 /**
  * Trigger statistics: how often each skill was actually invoked. The count
- * comes from the local session logs — a user-explicit skill invocation rides a
- * `user/message` event whose `source.kind === 'skill-invocation'` (the
- * MessageSourceMap augmentation from @deepseek-ai/dsh-skill). Sessions are
- * read through the host's `sessionQuery` service, which transparently
- * decompresses the on-disk JSONL.zstd artifacts.
+ * comes from the local session logs, read through the host's `sessionQuery`
+ * service (which transparently decompresses the on-disk JSONL.zstd artifacts).
  *
- * Counting is deliberately per-skill-name, not per-source: a name may resolve
- * to different files across projects, but the model-facing identity (and the
- * `skill-invocation` source it records) is the kebab-case name alone.
+ * A skill is invoked two ways, both recorded in the log:
+ *  - model-invoked: a `tool/call` event for the `skill` tool, whose raw
+ *    `arguments` JSON names the requested skill (see @deepseek-ai/dsh-tool-skill);
+ *  - user-explicit: a `user/message` event whose `source.kind ===
+ *    'skill-invocation'` (the MessageSourceMap augmentation from
+ *    @deepseek-ai/dsh-skill).
+ *
+ * Counting is per-skill-name, not per-source: a name may resolve to different
+ * files across projects, but the model-facing identity is the kebab-case name.
  */
 
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
@@ -25,11 +28,25 @@ export interface SessionQueryLike {
 /** Count skill invocations in one session's event log, keyed by skill name. */
 export function countSkillInvocations(events: readonly SessionEvent[]): Map<string, number> {
   const counts = new Map<string, number>()
+  const bump = (name: string): void => {
+    if (name !== '') counts.set(name, (counts.get(name) ?? 0) + 1)
+  }
   for (const event of events) {
-    if (event.type !== 'user/message') continue
-    const source = event.data.source
-    if (source.kind === 'skill-invocation') {
-      counts.set(source.name, (counts.get(source.name) ?? 0) + 1)
+    if (event.type === 'user/message') {
+      const source = event.data.source
+      if (source.kind === 'skill-invocation') bump(source.name)
+    } else if (event.type === 'tool/call') {
+      const call = event.data
+      if (call.name === 'skill') {
+        // arguments is the raw JSON string; extract the requested skill name.
+        try {
+          const parsed: unknown = JSON.parse(call.arguments)
+          if (typeof parsed === 'object' && parsed !== null) {
+            const name = (parsed as { name?: unknown }).name
+            if (typeof name === 'string') bump(name)
+          }
+        } catch { /* unparseable arguments skip */ }
+      }
     }
   }
   return counts

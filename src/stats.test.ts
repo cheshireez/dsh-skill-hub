@@ -27,19 +27,52 @@ function plainUserEvent(seq = 1): SessionEvent {
   } as unknown as SessionEvent
 }
 
+/** Minimal `skill` tool call (model-invoked skill). */
+function skillToolCall(name: string, seq = 1): SessionEvent {
+  return {
+    type: 'tool/call',
+    seq,
+    time: 0,
+    data: { turn: 1, step: 1, callId: 'c' + seq as never, name: 'skill', arguments: JSON.stringify({ name }) },
+  } as unknown as SessionEvent
+}
+
 describe('countSkillInvocations', () => {
-  it('counts only user/message events with a skill-invocation source', () => {
+  it('counts user-explicit skill-invocation sources', () => {
     const events = [
       invocationEvent('code-review', 1),
       invocationEvent('code-review', 2),
       invocationEvent('tdd', 3),
       plainUserEvent(4),
-      { type: 'assistant/message', seq: 5, time: 0, data: {} } as unknown as SessionEvent,
     ]
     const counts = countSkillInvocations(events)
     expect(counts.get('code-review')).toBe(2)
     expect(counts.get('tdd')).toBe(1)
     expect(counts.size).toBe(2)
+  })
+
+  it('counts model-invoked skill tool calls', () => {
+    const events = [
+      skillToolCall('godot-master', 1),
+      skillToolCall('godot-master', 2),
+      skillToolCall('tdd', 3),
+      { type: 'tool/call', seq: 4, time: 0, data: { turn: 1, step: 1, callId: 'c4', name: 'bash', arguments: '{}' } } as unknown as SessionEvent,
+    ]
+    const counts = countSkillInvocations(events)
+    expect(counts.get('godot-master')).toBe(2)
+    expect(counts.get('tdd')).toBe(1)
+    expect(counts.size).toBe(2)
+  })
+
+  it('merges both invocation paths and ignores malformed skill calls', () => {
+    const events = [
+      invocationEvent('tdd', 1),
+      skillToolCall('tdd', 2),
+      { type: 'tool/call', seq: 3, time: 0, data: { turn: 1, step: 1, callId: 'c3', name: 'skill', arguments: 'not json' } } as unknown as SessionEvent,
+    ]
+    const counts = countSkillInvocations(events)
+    expect(counts.get('tdd')).toBe(2)
+    expect(counts.size).toBe(1)
   })
 
   it('returns an empty map for a log with no invocations', () => {
