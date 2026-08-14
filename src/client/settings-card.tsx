@@ -127,3 +127,55 @@ export function BooleanField(props: BooleanFieldProps): ReactElement {
   )
 }
 
+
+/**
+ * A compact sliding switch for the card's master enable/disable control.
+ * An empty text value means the field inherits its default; the switch still
+ * reflects the effective default and becomes an explicit override on click.
+ */
+export interface SwitchFieldProps {
+  label: string
+  hint: string
+  disabled: boolean
+  text: string
+  overridden: boolean
+  overriddenLabel: string
+  resetLabel: string
+  onEdit: (text: string) => void
+  onReset: () => void
+}
+
+export function SwitchField(props: SwitchFieldProps): ReactElement {
+  const checked = props.text !== 'false'
+  return (
+    <div className={css.field}>
+      <div className={css.switchRow}>
+        <div className={css.switchText}>
+          <div className={css.head}>
+            <span className={css.label}>{props.label}</span>
+            {props.overridden ? (
+              <span className={css.badges}>
+                <span className={css.badge}>{props.overriddenLabel}</span>
+                <button type='button' className={css.reset} disabled={props.disabled} onClick={props.onReset}>
+                  {props.resetLabel}
+                </button>
+              </span>
+            ) : null}
+          </div>
+          <p className={css.hint}>{props.hint}</p>
+        </div>
+        <button
+          type='button'
+          className={checked ? css.switchOn : css.switch}
+          role='switch'
+          aria-checked={checked}
+          aria-label={props.label}
+          disabled={props.disabled}
+          onClick={() => { props.onEdit(String(!checked)) }}
+        >
+          <span className={css.switchThumb} />
+        </button>
+      </div>
+    </div>
+  )
+}

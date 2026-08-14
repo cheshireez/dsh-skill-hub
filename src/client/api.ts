@@ -5,6 +5,8 @@
 import {
   SKILL_HUB_API,
   type CatalogResponse,
+  type ConfigRequest,
+  type ConfigResponse,
   type CreateRequest,
   type CreateResponse,
   type SkillDetail,
@@ -74,6 +76,22 @@ export class SkillHubApi {
   async stats(): Promise<StatsResponse> {
     const response = await fetch(SKILL_HUB_API.stats)
     return readJson<StatsResponse>(response)
+  }
+
+  /** Read the hub's runtime config (effective values + saved overrides). */
+  async config(): Promise<ConfigResponse> {
+    const response = await fetch(SKILL_HUB_API.config)
+    return readJson<ConfigResponse>(response)
+  }
+
+  /** Patch the hub's runtime config (null clears a saved override). */
+  async saveConfig(patch: ConfigRequest): Promise<ConfigResponse> {
+    const response = await fetch(SKILL_HUB_API.config, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    })
+    return readJson<ConfigResponse>(response)
   }
 }
 

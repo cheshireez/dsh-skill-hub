@@ -15,8 +15,10 @@ import {
   SKILL_HUB_API,
   type CatalogResponse,
   type CatalogSkill,
+  type ConfigResponse,
   type CreateRequest,
   type ErrorResponse,
+  type HubConfig,
   type SkillDetail,
   type SkillDetailResponse,
   type ToggleRequest,
@@ -113,6 +115,29 @@ export interface SkillHubRouteDeps {
   invalidate?: () => void
   /** Optional invocation-count reader; absent means the stats route reports unavailable. */
   stats?: SkillStatsReader
+  /** Resolves the current plugin config; business routes honour the master switch. */
+  config?: () => HubConfig
+  /** Resolves the raw saved config layer (fields the user explicitly overrode). */
+  saved?: () => Partial<HubConfig>
+  /** Persist a config patch and re-sync plugin surfaces; resolves with the fresh config. */
+  updateConfig?: (patch: Partial<HubConfig>) => Promise<HubConfig>
+}
+
+/** The resolved hub config a route sees (defaults when the owner omits it). */
+function configOf(deps: SkillHubRouteDeps): HubConfig {
+  return deps.config?.() ?? { enabled: true, announceToAgent: true }
+}
+
+/** The raw saved config layer a route reports (empty when the owner omits it). */
+function savedOf(deps: SkillHubRouteDeps): Partial<HubConfig> {
+  return deps.saved?.() ?? {}
+}
+
+/** Refuse business routes while the master switch is off (the config route stays up). */
+function disabledGate(deps: SkillHubRouteDeps, res: ServerResponse): boolean {
+  if (configOf(deps).enabled) return false
+  writeError(res, 503, 'plugin disabled: enable it from the settings card')
+  return true
 }
 
 /** Resolve the home used for writable-root operations. */
@@ -196,6 +221,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
       handler: async (req, res) => {
         if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
         if (req.method !== 'GET') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
+        if (disabledGate(deps, res)) return
         try {
           const url = new URL(req.url ?? '/', 'http://localhost')
           const cwd = queryParam(url, 'cwd')
@@ -212,6 +238,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
       handler: async (req, res) => {
         if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
         if (req.method !== 'GET') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
+        if (disabledGate(deps, res)) return
         const url = new URL(req.url ?? '/', 'http://localhost')
         const name = queryParam(url, 'name')
         if (name === undefined || name === '') { writeError(res, 400, 'name query parameter is required'); return }
@@ -233,6 +260,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
       handler: async (req, res) => {
         if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
         if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
+        if (disabledGate(deps, res)) return
         const raw = await readJsonBody(req)
         if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
         const request = raw as unknown as ToggleRequest & { cwd?: string }
@@ -285,6 +313,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
       handler: async (req, res) => {
         if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
         if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
+        if (disabledGate(deps, res)) return
         const raw = await readJsonBody(req)
         if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
         const request = raw as unknown as CreateRequest
@@ -310,6 +339,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
       handler: async (req, res) => {
         if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
         if (req.method !== 'GET') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
+        if (disabledGate(deps, res)) return
         if (deps.stats === undefined) {
           writeJson(res, 200, { ok: true, available: false, stats: [] } satisfies import('./protocol.ts').StatsResponse)
           return
@@ -320,6 +350,55 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
         } catch (error) {
           writeError(res, 500, error)
         }
+      },
+    },
+    // --------------------------------------------------------------- config
+    // The config route stays mounted even with the master switch off, so the
+    // settings card can always read and re-enable the hub (a card that only
+    // lives while the plugin is on could never turn it back on).
+    {
+      kind: 'exact',
+      path: SKILL_HUB_API.config,
+      handler: async (req, res) => {
+        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
+        if (req.method === 'GET') {
+          writeJson(res, 200, { ok: true, config: configOf(deps), saved: savedOf(deps) } satisfies ConfigResponse)
+          return
+        }
+        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
+        const raw = await readJsonBody(req)
+        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
+        // Build the store patch: `null` encodes "clear the saved override"
+        // (the web card's reset), which the store represents as `undefined`.
+        const patch: Partial<HubConfig> = {}
+        if (raw.enabled !== undefined) {
+          if (raw.enabled === null) patch.enabled = undefined
+          else if (typeof raw.enabled !== 'boolean') { writeError(res, 400, 'enabled must be a boolean or null'); return }
+          else patch.enabled = raw.enabled
+        }
+        if (raw.announceToAgent !== undefined) {
+          if (raw.announceToAgent === null) patch.announceToAgent = undefined
+          else if (typeof raw.announceToAgent !== 'boolean') { writeError(res, 400, 'announceToAgent must be a boolean or null'); return }
+          else patch.announceToAgent = raw.announceToAgent
+        }
+        let config: HubConfig
+        if (deps.updateConfig === undefined) {
+          // No owner: merge in-memory, treating undefined values as clears.
+          const merged: HubConfig = { ...configOf(deps) }
+          for (const [key, value] of Object.entries(patch) as Array<[keyof HubConfig, boolean | undefined]>) {
+            if (value === undefined) delete merged[key]
+            else merged[key] = value
+          }
+          config = merged
+        } else {
+          try {
+            config = await deps.updateConfig(patch)
+          } catch (error) {
+            writeError(res, 500, error)
+            return
+          }
+        }
+        writeJson(res, 200, { ok: true, config, saved: savedOf(deps) } satisfies ConfigResponse)
       },
     },
   ]

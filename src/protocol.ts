@@ -12,6 +12,7 @@ export const SKILL_HUB_API = {
   toggle: '/api/skill-hub/toggle',
   create: '/api/skill-hub/create',
   stats: '/api/skill-hub/stats',
+  config: '/api/skill-hub/config',
 } as const
 
 /** User-level roots the hub may write to (matches dsh-skill-filesystem ranks 400/500). */
@@ -140,4 +141,29 @@ export interface StatsResponse {
 /** JSON error body shared by every route. */
 export interface ErrorResponse {
   error: string
+}
+
+/** The skill hub's own runtime configuration, edited from the settings card. */
+export interface HubConfig {
+  /** Master switch: routes, provider, and announcement all go live with this. */
+  enabled: boolean
+  /** When true, a system-prompt section announces the hub to every agent. */
+  announceToAgent: boolean
+}
+
+/** GET /api/skill-hub/config */
+export interface ConfigResponse {
+  ok: true
+  /** Effective configuration (saved overrides merged over the defaults). */
+  config: HubConfig
+  /** Raw user overrides persisted in the sidecar (absent fields inherit defaults). */
+  saved: Partial<HubConfig>
+}
+
+/** POST /api/skill-hub/config — a partial patch; omitted fields keep their values. */
+export interface ConfigRequest {
+  /** Set the field; null clears the saved override so it re-inherits the default. */
+  enabled?: boolean | null
+  /** Set the field; null clears the saved override so it re-inherits the default. */
+  announceToAgent?: boolean | null
 }

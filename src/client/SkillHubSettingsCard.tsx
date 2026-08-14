@@ -1,13 +1,15 @@
 /**
- * The dsh-skill-hub plugin settings card: bridges the `dsh-skill-hub`
- * settings namespace onto the family-style staged card form (enabled master
- * switch + agent announcement). Registered into the official
- * `settings.plugin.item` slot so the plugin shows up in Settings → 插件.
+ * The dsh-skill-hub plugin settings card: bridges the hub's own config route
+ * (ApiConfigScope → /api/skill-hub/config) onto the family-style staged card
+ * form (enabled master switch + agent announcement). Registered into the
+ * official `settings.plugin.item` slot so the plugin shows up in Settings →
+ * 插件. The scope is a FormScope, so the card never touches the settings
+ * service (the host refuses third-party namespaces).
  */
 
 import type { ReactElement } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
-import { BooleanField, PluginSettingsCard } from './settings-card.tsx'
+import { BooleanField, PluginSettingsCard, SwitchField } from './settings-card.tsx'
 import { booleanField, CardForm, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
 
 /** The card's projected state. */
@@ -26,12 +28,12 @@ export interface SkillHubSettingsCardProps {
   resetField: (field: string) => void
 }
 
-/** Bridges the `dsh-skill-hub` scope onto the card's staged form. */
+/** Bridges the hub's config scope onto the card's staged form. */
 export class SkillHubSettingsCardController {
   private readonly form: CardForm
   private readonly store: SnapshotStore<SkillHubSettingsState>
 
-  /** @param scope - the bound settings scope for the `dsh-skill-hub` namespace. */
+  /** @param scope - the hub config scope the card edits (ApiConfigScope). */
   constructor(scope: FormScope) {
     this.form = new CardForm(scope, [booleanField('enabled'), booleanField('announceToAgent')])
     this.store = this.form.bind(() => this.projection())
@@ -80,13 +82,9 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
       onSave={props.save}
       onDiscard={props.discard}
     >
-      <BooleanField
-        id='settings-skill-hub-enabled'
+      <SwitchField
         label={t('settings.enabled')}
         hint={t('settings.enabledHint')}
-        inheritLabel={t('settings.inherit')}
-        onLabel={t('settings.on')}
-        offLabel={t('settings.off')}
         {...fieldProps}
         {...state.enabled}
         onEdit={(text) => { props.edit('enabled', text) }}

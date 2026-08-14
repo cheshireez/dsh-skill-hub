@@ -11,12 +11,14 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { DisabledSkill, WritableRoot } from './protocol.ts'
+import type { DisabledSkill, HubConfig, WritableRoot } from './protocol.ts'
 
 /** Wire shape persisted on disk. */
 interface StoreFile {
   version: 1
   disabled: DisabledSkill[]
+  /** Runtime configuration edited from the web settings card (hub-owned, not settings-service). */
+  config?: Partial<HubConfig>
 }
 
 /** Resolve the DSH home directory (the filesystem provider's user-dsh root base). */
@@ -32,6 +34,7 @@ export function statePath(home = dshHome()): string {
 /** Sidecar state owner. */
 export class SkillHubStore {
   private entries = new Map<string, DisabledSkill>()
+  private config: Partial<HubConfig> = {}
   private loaded = false
 
   constructor(private readonly file: string = statePath()) {}
@@ -47,6 +50,11 @@ export class SkillHubStore {
           if (typeof entry?.name === 'string' && typeof entry?.path === 'string') {
             this.entries.set(entry.name, entry)
           }
+        }
+        const saved = (parsed as StoreFile).config
+        if (typeof saved === 'object' && saved !== null) {
+          if (typeof saved.enabled === 'boolean') this.config.enabled = saved.enabled
+          if (typeof saved.announceToAgent === 'boolean') this.config.announceToAgent = saved.announceToAgent
         }
       }
     } catch (error) {
@@ -80,10 +88,33 @@ export class SkillHubStore {
     await this.persist()
   }
 
+  /** The hub's saved runtime configuration (fields absent here mean "not overridden"). */
+  async getConfig(): Promise<Partial<HubConfig>> {
+    await this.ensureLoaded()
+    return { ...this.config }
+  }
+
+  /**
+   * Persist a runtime-config patch, merged over the saved values. A field
+   * whose patch value is `undefined` is removed from the saved layer, so the
+   * setting re-inherits its default (the web card's "reset" path).
+   */
+  async setConfig(config: Partial<HubConfig>): Promise<void> {
+    await this.ensureLoaded()
+    const next: Partial<HubConfig> = { ...this.config }
+    for (const [key, value] of Object.entries(config) as Array<[keyof HubConfig, boolean | undefined]>) {
+      if (value === undefined) delete next[key]
+      else next[key] = value
+    }
+    this.config = next
+    await this.persist()
+  }
+
   private async persist(): Promise<void> {
     const payload: StoreFile = {
       version: 1,
       disabled: [...this.entries.values()],
+      config: this.config,
     }
     const tmp = this.file + '.tmp'
     await mkdir(dirname(this.file), { recursive: true })

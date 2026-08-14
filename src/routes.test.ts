@@ -6,7 +6,7 @@ import type { SkillDefinition, SkillSummary } from '@deepseek-ai/dsh-skill'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { makeRoutes, type SkillHubRouteDeps } from './routes.ts'
 import { SkillHubStore, statePath } from './store.ts'
-import { SKILL_HUB_API, type CatalogResponse, type ErrorResponse } from './protocol.ts'
+import { SKILL_HUB_API, type CatalogResponse, type ConfigResponse, type ErrorResponse, type HubConfig } from './protocol.ts'
 
 /** Minimal response double recording status/headers/body. */
 class FakeResponse {
@@ -191,6 +191,84 @@ describe('skill-hub routes', () => {
     const res = new FakeResponse()
     await create.handler(fakeReq('POST', SKILL_HUB_API.create, { name: 'demo-skill' }), res as never)
     expect(res.status).toBe(409)
+  })
+
+  it('serves the hub config with saved overrides', async () => {
+    const [, , , , , config] = makeRoutes({
+      ...deps,
+      config: () => ({ enabled: false, announceToAgent: true }),
+      saved: () => ({ enabled: false }),
+    })
+    const res = new FakeResponse()
+    await config.handler(fakeReq('GET', SKILL_HUB_API.config), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as ConfigResponse
+    expect(body.ok).toBe(true)
+    expect(body.config).toEqual({ enabled: false, announceToAgent: true })
+    expect(body.saved).toEqual({ enabled: false })
+  })
+
+  it('patches the hub config through the owner updateConfig', async () => {
+    const patches: Array<Partial<HubConfig>> = []
+    const updateConfig = async (patch: Partial<HubConfig>): Promise<HubConfig> => {
+      patches.push(patch)
+      return { enabled: false, announceToAgent: false }
+    }
+    const [, , , , , config] = makeRoutes({
+      ...deps,
+      config: () => ({ enabled: true, announceToAgent: true }),
+      saved: () => ({ enabled: false, announceToAgent: false }),
+      updateConfig,
+    })
+    const res = new FakeResponse()
+    await config.handler(fakeReq('POST', SKILL_HUB_API.config, { announceToAgent: false }), res as never)
+    expect(res.status).toBe(200)
+    expect(patches).toEqual([{ announceToAgent: false }])
+    const body = res.json() as ConfigResponse
+    expect(body.config).toEqual({ enabled: false, announceToAgent: false })
+  })
+
+  it('clears a saved override with null on the config route', async () => {
+    const patches: Array<Partial<HubConfig>> = []
+    const updateConfig = async (patch: Partial<HubConfig>): Promise<HubConfig> => {
+      patches.push(patch)
+      return { enabled: true, announceToAgent: true }
+    }
+    const [, , , , , config] = makeRoutes({
+      ...deps,
+      config: () => ({ enabled: false, announceToAgent: true }),
+      saved: () => ({ enabled: false }),
+      updateConfig,
+    })
+    const res = new FakeResponse()
+    await config.handler(fakeReq('POST', SKILL_HUB_API.config, { enabled: null }), res as never)
+    expect(res.status).toBe(200)
+    // null on the wire means "delete the saved override" -> store receives undefined.
+    expect(patches).toEqual([{ enabled: undefined }])
+  })
+
+  it('rejects non-boolean config patches', async () => {
+    const [, , , , , config] = makeRoutes(deps)
+    const res = new FakeResponse()
+    await config.handler(fakeReq('POST', SKILL_HUB_API.config, { enabled: 'yes' }), res as never)
+    expect(res.status).toBe(400)
+    const body = res.json() as ErrorResponse
+    expect(body.error).toContain('enabled must be a boolean or null')
+  })
+
+  it('keeps the config route up while the hub is disabled (business routes 503)', async () => {
+    const routes = makeRoutes({
+      ...deps,
+      config: () => ({ enabled: false, announceToAgent: true }),
+      saved: () => ({ enabled: false }),
+    })
+    const [catalog, , , , , config] = routes
+    const business = new FakeResponse()
+    await catalog.handler(fakeReq('GET', SKILL_HUB_API.catalog), business as never)
+    expect(business.status).toBe(503)
+    const cfg = new FakeResponse()
+    await config.handler(fakeReq('GET', SKILL_HUB_API.config), cfg as never)
+    expect(cfg.status).toBe(200)
   })
 })
 
