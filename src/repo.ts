@@ -187,17 +187,34 @@ export async function mapConcurrent<T, R>(items: readonly T[], limit: number, wo
   return results
 }
 
-/** Download one GitHub raw file as a buffer. */
+/**
+ * Download one GitHub file as a buffer. Tries raw.githubusercontent.com
+ * first (no API quota); on any failure falls back to the api.github.com
+ * contents endpoint with the raw media type (rate-limited, but reachable
+ * from networks that block the raw host).
+ */
 export async function downloadGitHubFile(repo: string, ref: string, path: string, fetchImpl: typeof fetch = fetch): Promise<Buffer> {
   const encodedPath = path.split('/').map((segment) => encodeURIComponent(segment)).join('/')
-  const url = `https://raw.githubusercontent.com/${repo}/${encodeURIComponent(ref)}/${encodedPath}`
-  let response: Response
+  const rawUrl = `https://raw.githubusercontent.com/${repo}/${encodeURIComponent(ref)}/${encodedPath}`
+  let firstError: string | null = null
+  let response: Response | null = null
   try {
-    response = await fetchImpl(url)
+    response = await fetchImpl(rawUrl)
   } catch (error) {
-    throw new RepoFetchError('download failed: ' + (error instanceof Error ? error.message : String(error)))
+    firstError = error instanceof Error ? error.message : String(error)
   }
-  if (!response.ok) throw new RepoFetchError('download failed (HTTP ' + response.status + ') for ' + path)
+  if (response === null || !response.ok) {
+    // Fallback: api.github.com/contents with the raw media type.
+    const apiUrl = `https://api.github.com/repos/${repo}/contents/${encodedPath}`
+    try {
+      response = await fetchImpl(apiUrl, { headers: { accept: 'application/vnd.github.raw' } })
+    } catch (error) {
+      throw new RepoFetchError('download failed: ' + (firstError ?? (error instanceof Error ? error.message : String(error))))
+    }
+  }
+  if (response === null || !response.ok) {
+    throw new RepoFetchError('download failed (HTTP ' + response.status + ') for ' + path)
+  }
   try {
     return Buffer.from(await response.arrayBuffer())
   } catch (error) {
@@ -207,8 +224,8 @@ export async function downloadGitHubFile(repo: string, ref: string, path: string
 
 /**
  * Download a full skill directory into a temporary dir, validate SKILL.md,
- * then atomically rename it into place. Callers pass an existing target root
- * and a skill entry plus its collected files.
+ * then atomically rename it into place. The target root is created when missing.
+ * Callers pass a target root and a skill entry plus its collected files.
  */
 export async function downloadRepoSkill(
   repo: string,
@@ -219,7 +236,10 @@ export async function downloadRepoSkill(
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ targetDir: string; skillPath: string }> {
   const targetDir = join(targetRoot, entry.name)
-  const tempDir = await mkdtemp(join(targetRoot, entry.name + '.import-'))
+  await mkdir(targetRoot, { recursive: true })
+  // Dot-prefixed so a leftover temp dir can never surface as a skill in the
+  // provider's discovery scan (scanRoot skips dot entries).
+  const tempDir = await mkdtemp(join(targetRoot, '.' + entry.name + '.import-'))
   try {
     await mapConcurrent(files, 6, async (file) => {
       const relative = file.path.slice(entry.dir.length + 1)
@@ -245,7 +265,140 @@ export async function downloadRepoSkill(
     await rename(tempDir, targetDir)
     return { targetDir, skillPath: join(targetDir, 'SKILL.md') }
   } catch (error) {
-    await rm(tempDir, { recursive: true, force: true }).catch(() => {})
+    // Concurrent workers may still be writing when the batch fails; retry
+    // the cleanup once after a beat before giving up.
+    await rm(tempDir, { recursive: true, force: true }).catch(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      await rm(tempDir, { recursive: true, force: true }).catch(() => {})
+    })
     throw error
   }
 }
+
+// ------------------------------------------------------- source tracking
+
+/**
+ * Fetch the latest commit of a repo (explicit ref or default branch) with
+ * its tree SHA. One GitHub API request; the tree SHA is used to diff the
+ * upstream tree on change (one extra request).
+ */
+export async function getLatestCommit(repo: string, ref?: string, fetchImpl: typeof fetch = fetch): Promise<{ commitSha: string; treeSha: string }> {
+  const url = ref !== undefined && ref !== ''
+    ? `https://api.github.com/repos/${repo}/commits/${encodeURIComponent(ref)}`
+    : `https://api.github.com/repos/${repo}/commits?per_page=1`
+  let response: Response
+  try {
+    response = await fetchImpl(url, { headers: { accept: 'application/vnd.github+json' } })
+  } catch (error) {
+    throw new RepoFetchError('github request failed: ' + (error instanceof Error ? error.message : String(error)))
+  }
+  if (!response.ok) throw new RepoFetchError('github commit lookup failed (HTTP ' + response.status + ')', response.status === 404 ? 404 : 502)
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch {
+    throw new RepoFetchError('invalid github commit response')
+  }
+  const record = Array.isArray(payload)
+    ? (payload[0] ?? {}) as Record<string, unknown>
+    : typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : {}
+  const commitSha = typeof record.sha === 'string' && record.sha !== '' ? record.sha : null
+  const tree = typeof record.commit === 'object' && record.commit !== null ? (record.commit as Record<string, unknown>).tree as Record<string, unknown> | undefined : undefined
+  const treeSha = typeof tree?.sha === 'string' && tree.sha !== '' ? tree.sha : null
+  if (commitSha === null || treeSha === null) throw new RepoFetchError('github commit response has no sha/tree')
+  return { commitSha, treeSha }
+}
+
+/** Load the recursive git tree at an explicit tree SHA (one API request). */
+export async function loadRepoTreeAt(repo: string, treeSha: string, fetchImpl: typeof fetch = fetch): Promise<RepoTreeItem[]> {
+  let response: Response
+  try {
+    response = await fetchImpl(`https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(treeSha)}?recursive=1`, {
+      headers: { accept: 'application/vnd.github+json' },
+    })
+  } catch (error) {
+    throw new RepoFetchError('github tree request failed: ' + (error instanceof Error ? error.message : String(error)))
+  }
+  if (!response.ok) throw new RepoFetchError('github tree lookup failed (HTTP ' + response.status + ')', response.status === 404 ? 404 : 502)
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch {
+    throw new RepoFetchError('invalid github tree response')
+  }
+  const record = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : {}
+  if (record.truncated === true) throw new RepoFetchError('repo tree is too large to scan')
+  return Array.isArray(record.tree) ? record.tree as RepoTreeItem[] : []
+}
+
+/** Build a path→size manifest for one skill directory from a repo tree. */
+export function skillManifest(tree: readonly RepoTreeItem[], dir: string): Record<string, number> {
+  const prefix = dir + '/'
+  const manifest: Record<string, number> = {}
+  for (const item of tree) {
+    if (item.type === 'blob' && item.path.startsWith(prefix)) {
+      manifest[item.path] = typeof item.size === 'number' ? item.size : 0
+    }
+  }
+  return manifest
+}
+
+/**
+ * Diff one source record against an upstream tree at treeSha: which tracked
+ * skills disappeared (no SKILL.md blob) and which changed (manifest baseline
+ * differs, or no baseline exists — treated as changed). Pure over the tree.
+ */
+export function diffRemoteSkills(
+  tree: readonly RepoTreeItem[],
+  source: { root: RepoRoot; skills: readonly string[]; manifest?: Record<string, number> },
+): { updated: string[]; deleted: string[] } {
+  const blobs = new Map<string, number>()
+  for (const item of tree) {
+    if (item.type === 'blob') blobs.set(item.path, typeof item.size === 'number' ? item.size : 0)
+  }
+  const updated: string[] = []
+  const deleted: string[] = []
+  for (const name of source.skills) {
+    const prefix = source.root + '/' + name + '/'
+    const remote = new Map<string, number>()
+    for (const [path, size] of blobs) {
+      if (path.startsWith(prefix)) remote.set(path, size)
+    }
+    if (!remote.has(prefix + 'SKILL.md')) {
+      deleted.push(name)
+      continue
+    }
+    const baseline = source.manifest ?? {}
+    const baselineEntries = Object.entries(baseline).filter(([path]) => path.startsWith(prefix))
+    if (baselineEntries.length === 0) {
+      updated.push(name) // no baseline (migrated/legacy import): treat as changed
+      continue
+    }
+    let differs = baselineEntries.length !== remote.size
+    if (!differs) {
+      for (const [path, size] of baselineEntries) {
+        if (remote.get(path) !== size) {
+          differs = true
+          break
+        }
+      }
+    }
+    if (differs) updated.push(name)
+  }
+  return { updated, deleted }
+}
+
+/** Minimal RepoSkillEntry for a tracked skill name (sync re-downloads by name). */
+export function repoSkillEntry(name: string, root: RepoRoot, repo: string): RepoSkillEntry {
+  return {
+    name,
+    dir: root + '/' + name,
+    path: root + '/' + name + '/SKILL.md',
+    root,
+    origin: repo,
+    fileCount: 0,
+    totalBytes: 0,
+    existing: false,
+  }
+}
+

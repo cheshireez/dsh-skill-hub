@@ -89,7 +89,7 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(
     () => ctx.slots.inject('settings.section', () => ctx.slots.register({
       name: 'settings.section',
-      id: 'skills',
+      id: 'skill-hub',
       order: 12,
       label: () => t('entry.label'),
       locale: NS,
@@ -98,4 +98,3 @@ export function apply(ctx: ClientContext): void {
     'dsh-skill-hub: settings section',
   )
 }
-

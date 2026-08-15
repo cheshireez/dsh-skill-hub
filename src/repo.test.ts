@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { collectRepoSkillFiles, discoverRepoEntries, normalizeRepoInput, originForRoot, repoSlug } from './repo.ts'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { collectRepoSkillFiles, discoverRepoEntries, downloadGitHubFile, downloadRepoSkill, normalizeRepoInput, originForRoot, repoSlug } from './repo.ts'
 import type { RepoTreeItem } from './repo.ts'
+import type { RepoSkillEntry } from './protocol.ts'
 
 function blob(path: string, size = 1): RepoTreeItem {
   return { path, type: 'blob', size }
@@ -78,5 +82,52 @@ describe('discoverRepoEntries', () => {
 
   it('returns empty when no supported SKILL.md exists', () => {
     expect(discoverRepoEntries([blob('README.md'), blob('skills/foo/README.md')], 'a/b')).toEqual([])
+  })
+})
+
+describe('downloadRepoSkill', () => {
+  it('creates the target root when missing and imports a skill directory', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'dsh-repo-download-'))
+    try {
+      const targetRoot = join(parent, 'missing', 'skills')
+      const entry: RepoSkillEntry = {
+        name: 'demo',
+        dir: 'skills/demo',
+        path: 'skills/demo/SKILL.md',
+        root: 'skills',
+        origin: 'example/repo',
+        fileCount: 1,
+        totalBytes: 1,
+        existing: false,
+      }
+      const files = [{ path: 'skills/demo/SKILL.md', size: 1 }]
+      const fetchImpl = async () => new Response('---\nname: demo\ndescription: A demo skill\n---\n\nbody', { status: 200 })
+      const result = await downloadRepoSkill('example/repo', 'main', entry, files, targetRoot, fetchImpl as typeof fetch)
+      expect(result.skillPath).toBe(join(targetRoot, 'demo', 'SKILL.md'))
+      await expect(readFile(result.skillPath, 'utf8')).resolves.toContain('name: demo')
+    } finally {
+      await rm(parent, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('downloadGitHubFile', () => {
+  it('falls back to the api contents endpoint when raw is unreachable', async () => {
+    const calls: string[] = []
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      calls.push(url)
+      if (url.startsWith('https://raw.githubusercontent.com/')) throw new Error('raw blocked')
+      if (url.includes('/contents/')) return new Response('---\nname: demo\ndescription: x\n---\n\nbody', { status: 200 })
+      return new Response('nope', { status: 599 })
+    }
+    const buffer = await downloadGitHubFile('example/repo', 'main', 'skills/demo/SKILL.md', fetchImpl as typeof fetch)
+    expect(buffer.toString('utf8')).toContain('name: demo')
+    expect(calls.length).toBe(2)
+    expect(calls[1]).toContain('api.github.com/repos/example/repo/contents/skills/demo/SKILL.md')
+  })
+
+  it('reports the original error when both hosts fail', async () => {
+    const fetchImpl = async () => { throw new Error('network down') }
+    await expect(downloadGitHubFile('a/b', 'main', 'x/SKILL.md', fetchImpl as typeof fetch)).rejects.toThrow(/network down/)
   })
 })

@@ -15,7 +15,8 @@ export const SKILL_HUB_API = {
   stats: '/api/skill-hub/stats',
   config: '/api/skill-hub/config',
   market: '/api/skill-hub/market',
-  importSkill: '/api/skill-hub/import',
+  marketSource: '/api/skill-hub/market/source',
+  marketSourceDelete: '/api/skill-hub/market/source/delete',
   repo: '/api/skill-hub/repo',
   repoImport: '/api/skill-hub/repo/import',
   update: '/api/skill-hub/update',
@@ -23,10 +24,11 @@ export const SKILL_HUB_API = {
   tag: '/api/skill-hub/tag',
   tagDelete: '/api/skill-hub/tag/delete',
   tagMembers: '/api/skill-hub/tag/members',
-  origin: '/api/skill-hub/origin',
-  scene: '/api/skill-hub/scene',
-  sceneDelete: '/api/skill-hub/scene/delete',
-  sceneMembers: '/api/skill-hub/scene/members',
+  sources: '/api/skill-hub/sources',
+  sourceCheck: '/api/skill-hub/sources/check',
+  sourceSync: '/api/skill-hub/sources/sync',
+  sourceDelete: '/api/skill-hub/sources/delete',
+  sourceRestore: '/api/skill-hub/sources/restore',
 } as const
 
 /** User-level roots the hub may write to (matches dsh-skill-filesystem ranks 400/500). */
@@ -45,8 +47,6 @@ export interface CatalogSkill {
   name: string
   description: string
   whenToUse?: string
-  /** Optional group names declared in the skill's frontmatter (`sets`). */
-  sets?: string[]
   invocation: HubInvocation
   source: string
   provider: string
@@ -89,8 +89,6 @@ export interface SkillDetail {
   name: string
   description: string
   whenToUse?: string
-  /** Optional group names declared in the skill's frontmatter (`sets`). */
-  sets?: string[]
   invocation: HubInvocation
   source: string
   provider: string
@@ -221,31 +219,23 @@ export interface ConfigRequest {
   showGroupSummary?: boolean | null
 }
 
-/** One market row as the GUI renders it (installed flag from the local root). */
-export interface MarketRow {
-  name: string
-  description: string
+/** GET /api/skill-hub/market — the user's added market sources. */
+export interface MarketSourcesResponse {
+  ok: true
+  /** Added repo slugs (owner/repo), in addition order. */
+  repos: string[]
+}
+
+/** POST /api/skill-hub/market/source — add one repo as a market source. */
+export interface MarketSourceRequest {
+  /** owner/repo or a github.com URL. */
   repo: string
-  /** Whether a skill with this name is already installed in the user root. */
-  installed: boolean
 }
 
-/** GET /api/skill-hub/market */
-export interface MarketResponse {
+/** POST /api/skill-hub/market/source|delete */
+export interface MarketSourceResponse {
   ok: true
-  entries: MarketRow[]
-}
-
-/** POST /api/skill-hub/import — install one market skill by name. */
-export interface ImportRequest {
-  name: string
-}
-
-/** POST /api/skill-hub/import */
-export interface ImportResponse {
-  ok: true
-  name: string
-  path: string
+  repos: string[]
 }
 
 /** A skill discovered in a GitHub repo under skills/ or design-templates/. */
@@ -336,8 +326,6 @@ export interface GroupsResponse {
   collections: CollectionGroup[]
   /** skillName → 集合名 的完整映射。 */
   origins: Record<string, string>
-  /** User-defined scenes (dedicated to one-click enable/disable). */
-  scenes: Scene[]
 }
 
 /** POST /api/skill-hub/tag — 新建（缺省 id）或重命名（带 id）。 */
@@ -379,58 +367,116 @@ export interface TagMembersResponse {
   tags: SkillTag[]
 }
 
-/** POST /api/skill-hub/origin — 手动标记/清除某技能归属的集合。 */
-export interface OriginRequest {
-  /** 目标技能名。 */
-  skillName: string
-  /** 集合名；null 清除归属。 */
-  origin: string | null
+/** 来源跟踪记录：一组来自同一上游仓库根目录的技能。 */
+export interface SourceRecord {
+  /** GitHub owner/repo。 */
+  repo: string
+  /** 显式分支/tag；缺省表示默认分支。 */
+  ref?: string
+  /** 技能在仓库中的根目录。 */
+  root: RepoRoot
+  /** 上次导入/同步时的上游 commit SHA；空 = 尚未核对过。 */
+  commitSha: string
+  /** 该来源下的技能名（来源组 = 这些技能）。 */
+  skills: string[]
+  /** 仓库内路径 → 文件大小 的基线清单（差异检测用；缺失 = 无基线）。 */
+  manifest?: Record<string, number>
 }
 
-/** POST /api/skill-hub/origin */
-export interface OriginResponse {
+/** 回收站条目：上游删除后跟进删除（移入 .trash）的技能。 */
+export interface TrashEntry {
+  name: string
+  /** .trash 下的绝对路径。 */
+  path: string
+  /** 移入回收站的时间（epoch ms）。 */
+  movedAt: number
+}
+
+/** GET /api/skill-hub/sources */
+export interface SourcesResponse {
   ok: true
-  /** 变更后的完整映射。 */
+  /** 全部来源记录（按 repo 排序）。 */
+  sources: SourceRecord[]
+  /** skillName → 集合名（由 sources 派生）。 */
   origins: Record<string, string>
-  /** 变更后的系统集合组。 */
+  /** 来源集合组（按 origin 聚合）。 */
   collections: CollectionGroup[]
+  /** 回收站内容。 */
+  trash: TrashEntry[]
 }
 
-/** A scene: a user-defined group dedicated to one-click enable/disable. */
-export interface Scene extends SkillTag {
+/** POST /api/skill-hub/sources/check — 检查指定（或全部）来源的上游更新。 */
+export interface SourceCheckRequest {
+  /** 仅检查该 repo；缺省检查全部。 */
+  repo?: string
 }
 
-/** POST /api/skill-hub/scene — create (no id) or rename (with id) a scene. */
-export interface SceneSaveRequest {
-  id?: string
+/** 单个来源的检查结果。 */
+export interface SourceCheckResult {
+  repo: string
+  ref?: string
+  /** 检查失败时的原因（如仓库不可达/限流）。 */
+  error?: string
+  /** 上游 commit 是否变化。 */
+  changed: boolean
+  /** 上游最新 commit SHA（检查成功时）。 */
+  commitSha?: string
+  /** 上游有更新的技能名（changed 时经 tree 差异得出）。 */
+  updated: string[]
+  /** 上游已删除的技能名（changed 时经 tree 差异得出）。 */
+  deleted: string[]
+  /** 节流跳过（距上次检查不足 5 分钟，未访问网络）。 */
+  throttled?: boolean
+}
+
+/** POST /api/skill-hub/sources/check */
+export interface SourceCheckResponse {
+  ok: true
+  results: SourceCheckResult[]
+}
+
+/** POST /api/skill-hub/sources/sync — 按上游重新下载所选技能并更新快照。 */
+export interface SourceSyncRequest {
+  repo: string
+  /** 要同步的技能名；缺省同步该来源全部技能。 */
+  skills?: string[]
+}
+
+/** POST /api/skill-hub/sources/sync */
+export interface SourceSyncResponse {
+  ok: true
+  repo: string
+  /** 同步后的上游 commit SHA。 */
+  commitSha: string
+  /** 成功同步的技能。 */
+  synced: string[]
+  /** 失败的技能。 */
+  failed: Array<{ name: string; error: string }>
+}
+
+/** POST /api/skill-hub/sources/delete — 跟进上游删除，本地移入回收站。 */
+export interface SourceDeleteRequest {
+  repo: string
+  /** 要删除的技能名（移入 .trash）。 */
+  skills: string[]
+}
+
+/** POST /api/skill-hub/sources/delete */
+export interface SourceDeleteResponse {
+  ok: true
+  /** 已移入回收站的技能。 */
+  trashed: string[]
+  failed: Array<{ name: string; error: string }>
+}
+
+/** POST /api/skill-hub/sources/restore — 从回收站恢复一个技能。 */
+export interface SourceRestoreRequest {
   name: string
 }
 
-/** POST /api/skill-hub/scene */
-export interface SceneSaveResponse {
+/** POST /api/skill-hub/sources/restore */
+export interface SourceRestoreResponse {
   ok: true
-  scenes: Scene[]
-}
-
-/** POST /api/skill-hub/scene/delete */
-export interface SceneDeleteRequest {
-  id: string
-}
-
-/** POST /api/skill-hub/scene/delete */
-export interface SceneDeleteResponse {
-  ok: true
-  scenes: Scene[]
-}
-
-/** POST /api/skill-hub/scene/members — set a scene's full member list (idempotent). */
-export interface SceneMembersRequest {
-  id: string
-  skillNames: string[]
-}
-
-/** POST /api/skill-hub/scene/members */
-export interface SceneMembersResponse {
-  ok: true
-  scenes: Scene[]
+  name: string
+  path: string
 }

@@ -9,13 +9,23 @@ import {
   type ConfigResponse,
   type CreateRequest,
   type CreateResponse,
-  type ImportResponse,
-  type MarketResponse,
+  type MarketSourceRequest,
+  type MarketSourceResponse,
+  type MarketSourcesResponse,
   type RepoDiscoverResponse,
   type RepoImportRequest,
   type RepoImportResponse,
   type SkillDetail,
   type SkillDetailResponse,
+  type SourceCheckRequest,
+  type SourceCheckResponse,
+  type SourceDeleteRequest,
+  type SourceDeleteResponse,
+  type SourceRestoreRequest,
+  type SourceRestoreResponse,
+  type SourcesResponse,
+  type SourceSyncRequest,
+  type SourceSyncResponse,
   type StatsResponse,
   type ToggleBatchRequest,
   type ToggleBatchResponse,
@@ -97,10 +107,30 @@ export class SkillHubApi {
     return readJson<ToggleBatchResponse>(response)
   }
 
-  /** List installable market skills (with local installed flags). */
-  async market(): Promise<MarketResponse> {
+  /** The user's added market sources (codex-style repo slugs). */
+  async market(): Promise<MarketSourcesResponse> {
     const response = await fetch(SKILL_HUB_API.market)
-    return readJson<MarketResponse>(response)
+    return readJson<MarketSourcesResponse>(response)
+  }
+
+  /** Add a market source repo; resolves with the fresh list. */
+  async addMarketSource(repo: string): Promise<MarketSourcesResponse> {
+    const response = await fetch(SKILL_HUB_API.marketSource, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repo } satisfies MarketSourceRequest),
+    })
+    return readJson<MarketSourceResponse>(response)
+  }
+
+  /** Remove a market source repo; resolves with the fresh list. */
+  async removeMarketSource(repo: string): Promise<MarketSourcesResponse> {
+    const response = await fetch(SKILL_HUB_API.marketSourceDelete, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repo } satisfies MarketSourceRequest),
+    })
+    return readJson<MarketSourceResponse>(response)
   }
 
   /** Check the hub's own latest GitHub release. */
@@ -116,7 +146,7 @@ export class SkillHubApi {
     return readJson<RepoDiscoverResponse>(response)
   }
 
-  /** Install selected repo skills into the user-dsh root. */
+  /** Install selected repo skills into the user-dsh root (records the source). */
   async repoImport(repo: string, paths: string[]): Promise<RepoImportResponse> {
     const payload: RepoImportRequest = { repo, paths }
     const response = await fetch(SKILL_HUB_API.repoImport, {
@@ -125,16 +155,6 @@ export class SkillHubApi {
       body: JSON.stringify(payload),
     })
     return readJson<RepoImportResponse>(response)
-  }
-
-  /** Install one market skill by name; resolves with its new path. */
-  async importMarket(name: string): Promise<ImportResponse> {
-    const response = await fetch(SKILL_HUB_API.importSkill, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name }),
-    })
-    return readJson<ImportResponse>(response)
   }
 
   /** Read the hub's runtime config (effective values + saved overrides). */
@@ -192,46 +212,53 @@ export class SkillHubApi {
     return body.tags
   }
 
-  /** 新建（无 id）或重命名（带 id）一个场景；返回全部场景。 */
-  async saveScene(payload: import('../protocol.ts').SceneSaveRequest): Promise<import('../protocol.ts').Scene[]> {
-    const response = await fetch(SKILL_HUB_API.scene, {
+  /** 来源列表 + 派生 origin 映射 + 集合组 + 回收站。 */
+  async sources(): Promise<SourcesResponse> {
+    const response = await fetch(SKILL_HUB_API.sources)
+    return readJson<SourcesResponse>(response)
+  }
+
+  /** 检查指定（或全部）来源的上游更新。 */
+  async checkSources(repo?: string): Promise<SourceCheckResponse> {
+    const payload: SourceCheckRequest = repo !== undefined ? { repo } : {}
+    const response = await fetch(SKILL_HUB_API.sourceCheck, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
     })
-    const body = await readJson<import('../protocol.ts').SceneSaveResponse>(response)
-    return body.scenes
+    return readJson<SourceCheckResponse>(response)
   }
 
-  /** 删除一个场景；返回全部场景。 */
-  async deleteScene(id: string): Promise<import('../protocol.ts').Scene[]> {
-    const response = await fetch(SKILL_HUB_API.sceneDelete, {
+  /** 同步一个来源的所选（或全部）技能到上游最新版本。 */
+  async syncSource(repo: string, skills?: string[]): Promise<SourceSyncResponse> {
+    const payload: SourceSyncRequest = skills !== undefined ? { repo, skills } : { repo }
+    const response = await fetch(SKILL_HUB_API.sourceSync, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id } satisfies import('../protocol.ts').SceneDeleteRequest),
+      body: JSON.stringify(payload),
     })
-    const body = await readJson<import('../protocol.ts').SceneDeleteResponse>(response)
-    return body.scenes
+    return readJson<SourceSyncResponse>(response)
   }
 
-  /** 直接设置某场景的完整成员列表；返回全部场景。 */
-  async setSceneMembers(id: string, skillNames: string[]): Promise<import('../protocol.ts').Scene[]> {
-    const response = await fetch(SKILL_HUB_API.sceneMembers, {
+  /** 跟进上游删除：把所选技能移入回收站。 */
+  async confirmDeleteSource(repo: string, skills: string[]): Promise<SourceDeleteResponse> {
+    const payload: SourceDeleteRequest = { repo, skills }
+    const response = await fetch(SKILL_HUB_API.sourceDelete, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id, skillNames } satisfies import('../protocol.ts').SceneMembersRequest),
+      body: JSON.stringify(payload),
     })
-    const body = await readJson<import('../protocol.ts').SceneMembersResponse>(response)
-    return body.scenes
+    return readJson<SourceDeleteResponse>(response)
   }
 
-  /** 标记/清除某技能归属的集合；返回变更后的 origins + collections。 */
-  async setOrigin(skillName: string, origin: string | null): Promise<import('../protocol.ts').OriginResponse> {
-    const response = await fetch(SKILL_HUB_API.origin, {
+  /** 从回收站恢复一个技能。 */
+  async restoreSource(name: string): Promise<SourceRestoreResponse> {
+    const payload: SourceRestoreRequest = { name }
+    const response = await fetch(SKILL_HUB_API.sourceRestore, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ skillName, origin } satisfies import('../protocol.ts').OriginRequest),
+      body: JSON.stringify(payload),
     })
-    return readJson<import('../protocol.ts').OriginResponse>(response)
+    return readJson<SourceRestoreResponse>(response)
   }
 }

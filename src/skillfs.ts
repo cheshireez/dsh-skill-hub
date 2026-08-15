@@ -18,7 +18,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { load } from 'js-yaml'
 import { isSkillName } from '@deepseek-ai/dsh-skill'
 import { dshHome } from './store.ts'
-import type { DiagnosticEntry, WritableRoot } from './protocol.ts'
+import type { DiagnosticEntry, TrashEntry, WritableRoot } from './protocol.ts'
 
 /** Root ids this module may write to. */
 export const WRITABLE_ROOTS: readonly WritableRoot[] = ['user-dsh', 'user-agents']
@@ -95,6 +95,31 @@ export async function enableSkill(disabledPath: string): Promise<string> {
   return original
 }
 
+/**
+ * Move a skill directory into the root's trash (upstream-deletion follow-up).
+ * The skill stays recoverable: the whole directory is renamed into
+ * <root>/.trash/<name>-<timestamp>.
+ * @returns the trashed directory path.
+ */
+export async function trashSkill(name: string, root: WritableRoot, home = dshHome()): Promise<string> {
+  const source = join(rootPath(root, home), name)
+  const trashDir = join(rootPath(root, home), '.trash')
+  await mkdir(trashDir, { recursive: true })
+  const target = join(trashDir, name + '-' + Date.now())
+  await rename(source, target)
+  return target
+}
+
+/** Restore a trashed skill directory back to its original location. */
+export async function restoreSkill(entry: TrashEntry, home = dshHome()): Promise<string> {
+  if (basename(dirname(entry.path)) !== '.trash') {
+    throw new TypeError('not a trashed skill path: ' + entry.path)
+  }
+  const target = join(dirname(dirname(entry.path)), entry.name)
+  await rename(entry.path, target)
+  return target
+}
+
 /** Classify a skill file path: 'directory' (SKILL.md), 'flat' (<name>.md), or undefined. */
 function skillFileKind(path: string): 'directory' | 'flat' | undefined {
   if (basename(path) === 'SKILL.md') return 'directory'
@@ -107,27 +132,9 @@ export interface FrontmatterValue {
   name: string
   description: string
   whenToUse?: string
-  /** Optional group names the skill declares (frontmatter `sets`). */
-  sets?: string[]
   invocation: { modelInvocable: boolean; userInvocable: boolean }
   /** Instruction body after the frontmatter block, trimmed. */
   content: string
-}
-
-/**
- * Normalize an optional frontmatter `sets` value into a clean string list.
- * Accepts a single string or a string array; trims, drops empties, and
- * ignores non-string entries. Returns undefined when absent or empty, so a
- * skill without sets stays uncategorized.
- */
-export function normalizeSets(raw: unknown): string[] | undefined {
-  const items = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : undefined
-  if (items === undefined) return undefined
-  const sets = items
-    .filter((item): item is string => typeof item === 'string')
-    .map((item) => item.trim())
-    .filter((item) => item !== '')
-  return sets.length === 0 ? undefined : sets
 }
 
 /** Parse a SKILL.md the way the official filesystem provider does. */
@@ -150,7 +157,6 @@ export function parseFrontmatter(text: string): { value: FrontmatterValue } | { 
   const description = typeof record.description === 'string' ? record.description.trim() : ''
   if (description === '') return { error: 'frontmatter requires a description field' }
   const whenToUse = typeof record.whenToUse === 'string' && record.whenToUse.trim() !== '' ? record.whenToUse.trim() : undefined
-  const sets = normalizeSets(record.sets)
   if (Object.hasOwn(record, 'disableModelInvocation')) return { error: 'frontmatter field "disableModelInvocation" is unsupported; use "disable-model-invocation"' }
   if (Object.hasOwn(record, 'modelInvocable')) return { error: 'frontmatter field "modelInvocable" is unsupported; use "disable-model-invocation"' }
   if (Object.hasOwn(record, 'userInvocable')) return { error: 'frontmatter field "userInvocable" is unsupported; use "user-invocable"' }
@@ -162,7 +168,7 @@ export function parseFrontmatter(text: string): { value: FrontmatterValue } | { 
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) }
   }
-  return { value: { name, description, ...(whenToUse !== undefined ? { whenToUse } : {}), ...(sets !== undefined ? { sets } : {}), invocation, content: (match[2] ?? '').trim() } }
+  return { value: { name, description, ...(whenToUse !== undefined ? { whenToUse } : {}), invocation, content: (match[2] ?? '').trim() } }
 }
 
 /** Official boolean grammar: true/false, 1/0, and the common string spellings. */

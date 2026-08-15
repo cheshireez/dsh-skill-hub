@@ -18,13 +18,25 @@ import type { SkillHubApi } from './api.ts'
 import type { FormScope } from './settings-form.ts'
 
 /** Built-in defaults every field inherits until the user overrides it. */
-const DEFAULTS: HubConfig = { enabled: true, announceToAgent: true }
+const DEFAULTS: HubConfig = {
+  enabled: true,
+  announceToAgent: true,
+  showUseCount: true,
+  showUseTime: true,
+  showSourceColumn: true,
+  showGroupSummary: true,
+}
 
 /** Boolean config fields (color fields are strings). */
-const BOOLEAN_FIELDS = new Set<keyof HubConfig>(['enabled', 'announceToAgent'])
+const BOOLEAN_FIELDS = new Set<keyof HubConfig>([
+  'enabled', 'announceToAgent', 'showUseCount', 'showUseTime', 'showSourceColumn', 'showGroupSummary',
+])
 
 /** Config fields the card edits (used to guard set/unset field names). */
-const FIELDS = new Set<keyof HubConfig>(['enabled', 'announceToAgent', 'dotModelColor', 'dotUserColor'])
+const FIELDS = new Set<keyof HubConfig>([
+  'enabled', 'announceToAgent', 'dotModelColor', 'dotUserColor',
+  'showUseCount', 'showUseTime', 'showSourceColumn', 'showGroupSummary',
+])
 
 /** FormScope-compatible reactive config handle (see module doc). */
 export class ApiConfigScope implements FormScope {

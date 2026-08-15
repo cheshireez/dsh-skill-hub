@@ -1,8 +1,12 @@
 /**
- * Hub sidecar store: remembers which skills the hub toggled off. Disabling
- * renames the skill's SKILL.md (or flat .md) out of the filesystem provider's
- * discovery shapes, so the provider catalog alone cannot see disabled skills;
- * this store keeps name/path/root so the GUI can list them and re-enable.
+ * Hub sidecar store: remembers which skills the hub toggled off and the
+ * user's organization/tracking records. Disabling renames the skill's
+ * SKILL.md (or flat .md) out of the filesystem provider's discovery shapes,
+ * so the provider catalog alone cannot see disabled skills; this store keeps
+ * name/path/root so the GUI can list them and re-enable. It also persists
+ * user tag groups, upstream source records (repo + commit snapshot for
+ * update checks), the market source list, and the trash (skills removed
+ * after upstream deletion).
  *
  * State file: $DSH_HOME/dsh-skill-hub.json — a small JSON document written
  * atomically (tmp file + rename).
@@ -11,7 +15,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { DisabledSkill, HubConfig, SkillTag, WritableRoot } from './protocol.ts'
+import type { DisabledSkill, HubConfig, RepoRoot, SkillTag, SourceRecord, TrashEntry } from './protocol.ts'
 
 /** Wire shape persisted on disk. */
 interface StoreFile {
@@ -21,10 +25,12 @@ interface StoreFile {
   config?: Partial<HubConfig>
   /** User-defined tag groups (pure organization; skill files untouched). */
   tags?: SkillTag[]
-  /** User-defined scenes (dedicated to one-click enable/disable). */
-  scenes?: SkillTag[]
-  /** skillName → collection name (system aggregation source). */
-  origins?: Record<string, string>
+  /** Upstream source tracking records (repo + commit snapshot). */
+  sources?: SourceRecord[]
+  /** User-added market sources (owner/repo slugs). */
+  marketSources?: string[]
+  /** Trashed skills (removed after upstream deletion, restorable). */
+  trash?: TrashEntry[]
 }
 
 /** Resolve the DSH home directory (the filesystem provider's user-dsh root base). */
@@ -38,28 +44,57 @@ export function statePath(home = dshHome()): string {
 }
 
 /** Current sidecar schema version. Bump on breaking shape changes and add a migration below. */
-export const STORE_VERSION = 1
+export const STORE_VERSION = 2
 
 /**
  * Normalize an arbitrary parsed sidecar document to the current schema.
- * Only adds defaulted top-level fields and validates the version; element
- * validation stays in ensureLoaded (defensive on purpose). Returns null
- * when the file claims a newer schema than this plugin understands, so the
- * caller starts empty instead of risking data loss.
+ * v1 to v2: scenes are dropped (the one-click role merged into group
+ * switches), and origins are migrated into source records (repo = origin
+ * value, commit snapshot empty — the first update check backfills it).
+ * Returns null when the file claims a newer schema than this plugin
+ * understands, so the caller starts empty instead of risking data loss.
  */
-function migrateStore(parsed: unknown): { version: number; disabled: unknown; config: unknown; tags?: unknown; scenes?: unknown; origins?: unknown } | null {
+function migrateStore(parsed: unknown): { version: number; disabled: unknown; config?: unknown; tags?: unknown; sources?: unknown; marketSources?: unknown; trash?: unknown } | null {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
   const record = parsed as Record<string, unknown>
   const version = typeof record.version === 'number' ? record.version : 0
   if (version > STORE_VERSION) return null
-  // Future migrations go here, e.g. if (version < 2) { ...transform... } then version = 2
+  const disabled = Array.isArray(record.disabled) ? record.disabled : []
+  const config = typeof record.config === 'object' && record.config !== null && !Array.isArray(record.config) ? record.config : undefined
+  const tags = Array.isArray(record.tags) ? record.tags : undefined
+  const trash = Array.isArray(record.trash) ? record.trash : undefined
+  const marketSources = Array.isArray(record.marketSources) ? record.marketSources : undefined
+
+  // v2 stores structured source records; v1 only had a skillName to
+  // collection string map (origins). Migrate each origin into a SourceRecord
+  // whose repo is the collection string itself and whose commit snapshot is
+  // empty.
+  let sources: unknown
+  if (Array.isArray(record.sources)) {
+    sources = record.sources
+  } else if (version < 2 && typeof record.origins === 'object' && record.origins !== null && !Array.isArray(record.origins)) {
+    const byOrigin = new Map<string, string[]>()
+    for (const [name, origin] of Object.entries(record.origins as Record<string, unknown>)) {
+      if (typeof origin !== 'string' || origin === '') continue
+      const list = byOrigin.get(origin)
+      if (list === undefined) byOrigin.set(origin, [name])
+      else list.push(name)
+    }
+    sources = [...byOrigin.entries()].map(([repo, skillNames]) => ({
+      repo,
+      root: 'skills',
+      commitSha: '',
+      skills: skillNames.sort((a, b) => a.localeCompare(b)),
+    }))
+  }
   return {
     version: STORE_VERSION,
-    disabled: Array.isArray(record.disabled) ? record.disabled : [],
-    config: typeof record.config === 'object' && record.config !== null && !Array.isArray(record.config) ? record.config : undefined,
-    ...(Array.isArray(record.tags) ? { tags: record.tags } : {}),
-    ...(Array.isArray(record.scenes) ? { scenes: record.scenes } : {}),
-    ...(typeof record.origins === 'object' && record.origins !== null && !Array.isArray(record.origins) ? { origins: record.origins } : {}),
+    disabled,
+    ...(config !== undefined ? { config } : {}),
+    ...(tags !== undefined ? { tags } : {}),
+    ...(sources !== undefined ? { sources } : {}),
+    ...(marketSources !== undefined ? { marketSources } : {}),
+    ...(trash !== undefined ? { trash } : {}),
   }
 }
 
@@ -68,8 +103,9 @@ export class SkillHubStore {
   private entries = new Map<string, DisabledSkill>()
   private config: Partial<HubConfig> = {}
   private tagsById = new Map<string, SkillTag>()
-  private scenesById = new Map<string, SkillTag>()
-  private origins = new Map<string, string>()
+  private sourcesByRepo = new Map<string, SourceRecord>()
+  private marketSources: string[] = []
+  private trashByName = new Map<string, TrashEntry>()
   private loaded = false
 
   constructor(private readonly file: string = statePath()) {}
@@ -114,21 +150,39 @@ export class SkillHubStore {
             }
           }
         }
-        if (Array.isArray(migrated.scenes)) {
-          for (const entry of migrated.scenes as unknown[]) {
-            const scene = entry as { id?: unknown; name?: unknown; skillNames?: unknown } | null
-            if (scene !== null && typeof scene === 'object' && typeof scene.id === 'string' && typeof scene.name === 'string' && Array.isArray(scene.skillNames)) {
-              this.scenesById.set(scene.id, {
-                id: scene.id,
-                name: scene.name,
-                skillNames: scene.skillNames.filter((n): n is string => typeof n === 'string'),
+        if (Array.isArray(migrated.sources)) {
+          for (const entry of migrated.sources as unknown[]) {
+            const source = entry as { repo?: unknown; ref?: unknown; root?: unknown; commitSha?: unknown; skills?: unknown; manifest?: unknown } | null
+            if (source !== null && typeof source === 'object' && typeof source.repo === 'string' && source.repo !== '' && Array.isArray(source.skills)) {
+              const manifest = source.manifest as Record<string, unknown> | undefined
+              this.sourcesByRepo.set(source.repo, {
+                repo: source.repo,
+                ...(typeof source.ref === 'string' && source.ref !== '' ? { ref: source.ref } : {}),
+                root: (source.root === 'design-templates' ? 'design-templates' : 'skills') as RepoRoot,
+                commitSha: typeof source.commitSha === 'string' ? source.commitSha : '',
+                skills: source.skills.filter((n): n is string => typeof n === 'string'),
+                ...(manifest !== null && typeof manifest === 'object' && !Array.isArray(manifest)
+                  ? { manifest: Object.fromEntries(Object.entries(manifest).filter(([, size]) => typeof size === 'number')) as Record<string, number> }
+                  : {}),
               })
             }
           }
         }
-        if (typeof migrated.origins === 'object' && migrated.origins !== null && !Array.isArray(migrated.origins)) {
-          for (const [name, origin] of Object.entries(migrated.origins)) {
-            if (typeof origin === 'string' && origin !== '') this.origins.set(name, origin)
+        if (Array.isArray(migrated.marketSources)) {
+          for (const repo of migrated.marketSources) {
+            if (typeof repo === 'string' && repo !== '' && !this.marketSources.includes(repo)) this.marketSources.push(repo)
+          }
+        }
+        if (Array.isArray(migrated.trash)) {
+          for (const entry of migrated.trash as unknown[]) {
+            const item = entry as { name?: unknown; path?: unknown; movedAt?: unknown } | null
+            if (item !== null && typeof item === 'object' && typeof item.name === 'string' && typeof item.path === 'string') {
+              this.trashByName.set(item.name, {
+                name: item.name,
+                path: item.path,
+                movedAt: typeof item.movedAt === 'number' ? item.movedAt : 0,
+              })
+            }
           }
         }
       }
@@ -171,7 +225,7 @@ export class SkillHubStore {
 
   /**
    * Persist a runtime-config patch, merged over the saved values. A field
-   * whose patch value is `undefined` is removed from the saved layer, so the
+   * whose patch value is undefined is removed from the saved layer, so the
    * setting re-inherits its default (the web card's "reset" path).
    */
   async setConfig(config: Partial<HubConfig>): Promise<void> {
@@ -241,86 +295,165 @@ export class SkillHubStore {
     return tag
   }
 
-  /** skillName → collection name for every recorded origin. */
+  // ------------------------------------------------------------ sources
+
+  /** All source records, sorted by repo. */
+  async listSources(): Promise<SourceRecord[]> {
+    await this.ensureLoaded()
+    return [...this.sourcesByRepo.values()].sort((a, b) => a.repo.localeCompare(b.repo))
+  }
+
+  /** One source record by repo (undefined when absent). */
+  async getSource(repo: string): Promise<SourceRecord | undefined> {
+    await this.ensureLoaded()
+    return this.sourcesByRepo.get(repo)
+  }
+
+  /** Persist a source record as-is (null removes it). */
+  async saveSource(source: SourceRecord | null): Promise<void> {
+    await this.ensureLoaded()
+    if (source === null) {
+      return
+    }
+    this.sourcesByRepo.set(source.repo, source)
+    await this.persist()
+  }
+
+  /** Remove a source record entirely (no-op when absent). */
+  async deleteSource(repo: string): Promise<void> {
+    await this.ensureLoaded()
+    if (!this.sourcesByRepo.delete(repo)) return
+    await this.persist()
+  }
+
+  /**
+   * Upsert one skill into a source record. When the repo has no record yet a
+   * new one is created (root + commit snapshot from the caller).
+   */
+  async addSourceSkill(repo: string, root: RepoRoot, commitSha: string, ref: string | undefined, skillName: string): Promise<void> {
+    await this.ensureLoaded()
+    const existing = this.sourcesByRepo.get(repo)
+    if (existing === undefined) {
+      this.sourcesByRepo.set(repo, {
+        repo,
+        ...(ref !== undefined && ref !== '' ? { ref } : {}),
+        root,
+        commitSha,
+        skills: [skillName],
+      })
+    } else {
+      const skills = existing.skills.includes(skillName) ? existing.skills : [...existing.skills, skillName].sort((a, b) => a.localeCompare(b))
+      this.sourcesByRepo.set(repo, { ...existing, skills })
+    }
+    await this.persist()
+  }
+
+  /** Replace a source's skill list (used after sync/confirm-delete). */
+  async setSourceSkills(repo: string, skills: readonly string[]): Promise<SourceRecord | undefined> {
+    await this.ensureLoaded()
+    const existing = this.sourcesByRepo.get(repo)
+    if (existing === undefined) return undefined
+    const names = [...new Set(skills.filter((n) => n.trim() !== ''))].sort((a, b) => a.localeCompare(b))
+    if (names.length === 0) {
+      this.sourcesByRepo.delete(repo)
+    } else {
+      this.sourcesByRepo.set(repo, { ...existing, skills: names })
+    }
+    await this.persist()
+    return this.sourcesByRepo.get(repo)
+  }
+
+  /** Update a source's commit snapshot. */
+  async setSourceCommit(repo: string, commitSha: string): Promise<void> {
+    await this.ensureLoaded()
+    const existing = this.sourcesByRepo.get(repo)
+    if (existing === undefined) return
+    this.sourcesByRepo.set(repo, { ...existing, commitSha })
+    await this.persist()
+  }
+
+  /** Merge per-path manifest entries into a source (incremental imports). */
+  async mergeSourceManifest(repo: string, manifest: Record<string, number>): Promise<void> {
+    await this.ensureLoaded()
+    const existing = this.sourcesByRepo.get(repo)
+    if (existing === undefined || Object.keys(manifest).length === 0) return
+    this.sourcesByRepo.set(repo, { ...existing, manifest: { ...(existing.manifest ?? {}), ...manifest } })
+    await this.persist()
+  }
+
+  /** skillName → collection name for every recorded origin (derived from sources). */
   async listOrigins(): Promise<Record<string, string>> {
     await this.ensureLoaded()
-    return Object.fromEntries(this.origins)
-  }
-
-  /** The recorded collection for one skill (undefined = unattributed). */
-  async getOrigin(skillName: string): Promise<string | undefined> {
-    await this.ensureLoaded()
-    return this.origins.get(skillName)
-  }
-
-  /** Record or clear a skill's collection attribution (null/blank clears). */
-  async setOrigin(skillName: string, origin: string | null): Promise<void> {
-    await this.ensureLoaded()
-    if (origin === null || origin.trim() === '') {
-      if (!this.origins.delete(skillName)) return
-    } else {
-      this.origins.set(skillName, origin.trim())
+    const origins: Record<string, string> = {}
+    for (const source of this.sourcesByRepo.values()) {
+      for (const name of source.skills) origins[name] = source.repo
     }
+    return origins
+  }
+
+  // ------------------------------------------------------ market sources
+
+  /** The user's market source repos, in addition order. */
+  async listMarketSources(): Promise<string[]> {
+    await this.ensureLoaded()
+    return [...this.marketSources]
+  }
+
+  /** Add a repo slug (deduplicated). Returns the fresh list. */
+  async addMarketSource(repo: string): Promise<string[]> {
+    await this.ensureLoaded()
+    if (!this.marketSources.includes(repo)) this.marketSources.push(repo)
+    await this.persist()
+    return [...this.marketSources]
+  }
+
+  /** Remove a repo slug (no-op when absent). Returns the fresh list. */
+  async removeMarketSource(repo: string): Promise<string[]> {
+    await this.ensureLoaded()
+    const index = this.marketSources.indexOf(repo)
+    if (index === -1) return [...this.marketSources]
+    this.marketSources.splice(index, 1)
+    await this.persist()
+    return [...this.marketSources]
+  }
+
+  // ---------------------------------------------------------------- trash
+
+  /** All trashed skills, newest first. */
+  async listTrash(): Promise<TrashEntry[]> {
+    await this.ensureLoaded()
+    return [...this.trashByName.values()].sort((a, b) => b.movedAt - a.movedAt)
+  }
+
+  /** One trash entry by skill name (undefined when absent). */
+  async getTrash(name: string): Promise<TrashEntry | undefined> {
+    await this.ensureLoaded()
+    return this.trashByName.get(name)
+  }
+
+  /** Record a trashed skill. */
+  async addTrash(entry: TrashEntry): Promise<void> {
+    await this.ensureLoaded()
+    this.trashByName.set(entry.name, entry)
     await this.persist()
   }
 
-  /** All user-defined scenes, in creation order. */
-  async listScenes(): Promise<SkillTag[]> {
+  /** Remove a trash record (after restore). */
+  async removeTrash(name: string): Promise<void> {
     await this.ensureLoaded()
-    return [...this.scenesById.values()]
-  }
-
-  /** One scene by id (undefined when absent). */
-  async getScene(id: string): Promise<SkillTag | undefined> {
-    await this.ensureLoaded()
-    return this.scenesById.get(id)
-  }
-
-  /** Create (no id) or rename (with id) a scene; returns the saved scene. */
-  async saveScene(input: { id?: string; name: string }): Promise<SkillTag> {
-    await this.ensureLoaded()
-    const name = input.name.trim()
-    if (name === '') throw new TypeError('scene name must not be empty')
-    let scene: SkillTag
-    if (input.id !== undefined) {
-      const existing = this.scenesById.get(input.id)
-      if (existing === undefined) throw new TypeError('scene not found: ' + input.id)
-      scene = { ...existing, name }
-    } else {
-      scene = { id: crypto.randomUUID(), name, skillNames: [] }
-    }
-    this.scenesById.set(scene.id, scene)
-    await this.persist()
-    return scene
-  }
-
-  /** Delete a scene by id (no-op when absent). */
-  async deleteScene(id: string): Promise<void> {
-    await this.ensureLoaded()
-    if (!this.scenesById.delete(id)) return
+    if (!this.trashByName.delete(name)) return
     await this.persist()
   }
 
-  /** Replace a scene's member list wholesale (idempotent, deduplicated). */
-  async setSceneMembers(id: string, skillNames: readonly string[]): Promise<SkillTag | undefined> {
-    await this.ensureLoaded()
-    const existing = this.scenesById.get(id)
-    if (existing === undefined) return undefined
-    const names = [...new Set(skillNames.filter((n) => n.trim() !== ''))]
-    const scene: SkillTag = { ...existing, skillNames: names }
-    this.scenesById.set(id, scene)
-    await this.persist()
-    return scene
-  }
-
-    private async persist(): Promise<void> {
+  private async persist(): Promise<void> {
     const payload: StoreFile = {
       version: STORE_VERSION,
       disabled: [...this.entries.values()],
       config: this.config,
       ...(this.tagsById.size > 0 ? { tags: [...this.tagsById.values()] } : {}),
-      ...(this.scenesById.size > 0 ? { scenes: [...this.scenesById.values()] } : {}),
-      ...(this.origins.size > 0 ? { origins: Object.fromEntries(this.origins) } : {}),
+      ...(this.sourcesByRepo.size > 0 ? { sources: [...this.sourcesByRepo.values()] } : {}),
+      ...(this.marketSources.length > 0 ? { marketSources: [...this.marketSources] } : {}),
+      ...(this.trashByName.size > 0 ? { trash: [...this.trashByName.values()] } : {}),
     }
     const tmp = this.file + '.tmp'
     await mkdir(dirname(this.file), { recursive: true })
@@ -328,4 +461,3 @@ export class SkillHubStore {
     await rename(tmp, this.file)
   }
 }
-

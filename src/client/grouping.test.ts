@@ -1,42 +1,62 @@
 import { describe, expect, it } from 'vitest'
-import type { CatalogSkill, CollectionGroup, SkillTag } from '../protocol.ts'
-import { filterBySource, formatRelativeTime, mergeCollections, uncategorizedSkills } from './grouping.ts'
+import type { CatalogSkill, SkillTag } from '../protocol.ts'
+import { conflictsOnClose, filterBySource, formatRelativeTime, groupNamesOf, groupSwitchView, uncategorizedSkills } from './grouping.ts'
 
-function skill(name: string, source = 'user-dsh', sets?: string[]): CatalogSkill {
+function skill(name: string, source = 'user-dsh', writable = true): CatalogSkill {
   return {
     name,
     description: '',
     invocation: { modelInvocable: true, userInvocable: true },
     source,
     provider: 'filesystem',
-    writable: true,
-    ...(sets !== undefined ? { sets } : {}),
+    writable,
   }
 }
 
-describe('mergeCollections', () => {
-  it('merges origin collections and author sets, unioning members', () => {
-    const skills = [skill('a', 'user-dsh', ['web', 'frontend']), skill('b', 'user-dsh', ['web'])]
-    const collections: CollectionGroup[] = [
-      { name: 'web', skillNames: ['b', 'c'] },
-      { name: 'superpowers', skillNames: ['d'] },
-    ]
-    const merged = mergeCollections(skills, collections)
-    const web = merged.find((g) => g.name === 'web')
-    expect(web?.kind).toBe('both')
-    expect(web?.skillNames).toEqual(['a', 'b', 'c'])
-    expect(merged.find((g) => g.name === 'superpowers')?.kind).toBe('collection')
-    expect(merged.find((g) => g.name === 'superpowers')?.skillNames).toEqual(['d'])
-    expect(merged.find((g) => g.name === 'frontend')?.kind).toBe('sets')
-    expect(merged.find((g) => g.name === 'frontend')?.skillNames).toEqual(['a'])
-    // sorted by name
-    expect(merged.map((g) => g.name)).toEqual(['frontend', 'superpowers', 'web'])
+describe('groupSwitchView', () => {
+  it('is on when every member is enabled, off when none, mixed otherwise', () => {
+    const enabled = new Set(['a', 'b', 'c'])
+    expect(groupSwitchView(['a', 'b', 'c'], enabled).state).toBe('on')
+    expect(groupSwitchView(['a'], new Set()).state).toBe('off')
+    expect(groupSwitchView(['a', 'b'], new Set(['a'])).state).toBe('mixed')
+  })
+
+  it('lists the enabled and disabled sides', () => {
+    const view = groupSwitchView(['a', 'b', 'c'], new Set(['a', 'c']))
+    expect(view.enabled).toEqual(['a', 'c'])
+    expect(view.disabled).toEqual(['b'])
+  })
+})
+
+describe('conflictsOnClose', () => {
+  it('flags enabled members that live in another group', () => {
+    const members = ['a', 'b', 'c']
+    const enabled = new Set(['a', 'b'])
+    const others = [{ members: ['c', 'a'] }, { members: ['x'] }]
+    expect(conflictsOnClose(members, enabled, others)).toEqual(['a'])
+  })
+
+  it('ignores disabled members and groups without the member', () => {
+    const members = ['a', 'b']
+    const enabled = new Set(['b'])
+    const others = [{ members: ['a'] }]
+    expect(conflictsOnClose(members, enabled, others)).toEqual([])
+  })
+})
+
+describe('groupNamesOf', () => {
+  it('collects tag and collection names for a skill', () => {
+    const tags: SkillTag[] = [{ id: '1', name: 'web', skillNames: ['a'] }]
+    const collections = [{ name: 'repo/x', skillNames: ['a', 'b'] }, { name: 'repo/y', skillNames: ['b'] }]
+    expect(groupNamesOf('a', tags, collections)).toEqual(['web', 'repo/x'])
+    expect(groupNamesOf('b', tags, collections)).toEqual(['repo/x', 'repo/y'])
+    expect(groupNamesOf('c', tags, collections)).toEqual([])
   })
 })
 
 describe('uncategorizedSkills', () => {
-  it('excludes skills in any tag, origin, or sets', () => {
-    const skills = [skill('tagged'), skill('origin'), skill('setted', 'user-dsh', ['x']), skill('free')]
+  it('excludes skills in any tag or origin', () => {
+    const skills = [skill('tagged'), skill('origin'), skill('free')]
     const tags: SkillTag[] = [{ id: '1', name: 't', skillNames: ['tagged'] }]
     const origins = { origin: 'superpowers' }
     expect(uncategorizedSkills(skills, tags, origins).map((s) => s.name)).toEqual(['free'])

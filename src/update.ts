@@ -7,13 +7,15 @@
  * plain x.y.z tags, optionally prefixed with `v`).
  */
 
+import { createRequire } from 'node:module'
 import type { UpdateCheckResponse } from './protocol.ts'
 
 /** Repository checked for releases. Keep in sync with package.json. */
 export const UPDATE_REPO = 'cheshireez/dsh-skill-hub'
 
-/** Installed plugin version. Keep in sync with package.json on release. */
-export const CURRENT_VERSION = '0.1.0'
+/** Installed plugin version, read from the package manifest. */
+const require = createRequire(import.meta.url)
+export const CURRENT_VERSION = (require('../package.json') as { version: string }).version
 
 /** Normalize a release tag (`v1.2.3` → `1.2.3`) and parse it numerically. */
 export function parseVersion(tag: string): [number, number, number] | null {

@@ -2,64 +2,71 @@
  * Pure grouping helpers for the skill-hub panel (no React/DOM deps, so the
  * merge/classify/filter logic stays unit-testable).
  *
- * The "分类" view unifies three ways a skill can belong to a group:
+ * The "分组" view unifies two ways a skill can belong to a group:
  *  - user tags (sidecar SkillTag)
- *  - origin collections (sidecar origins → backend-aggregated CollectionGroup)
- *  - author sets (frontmatter `sets` on the skill)
+ *  - origin collections (sidecar sources → backend-aggregated CollectionGroup)
+ *
+ * Switch semantics: a skill's enabled state is global (the file is renamed
+ * once), so a group switch is derived from its members' actual states:
+ * all members enabled → 'on', all disabled → 'off', otherwise 'mixed'.
+ * Closing a group whose member is enabled in another group is a conflict the
+ * GUI resolves with a dialog; the helpers below compute both sides.
  */
 
 import type { CatalogSkill, CollectionGroup, SkillTag } from '../protocol.ts'
 
-/** One merged collection group shown in the "集合" section. */
-export interface UnifiedCollection {
-  /** Group name (deduplicated across origin collections and author sets). */
-  name: string
-  /** Member skill names (union of origin + sets membership), sorted. */
-  skillNames: string[]
-  /** Where the membership comes from. */
-  kind: 'collection' | 'sets' | 'both'
+/** Grouped switch state derived from member enablement. */
+export type GroupSwitchState = 'on' | 'off' | 'mixed'
+
+/** The derived switch view of one group. */
+export interface GroupSwitchView {
+  state: GroupSwitchState
+  /** Writable members currently enabled. */
+  enabled: string[]
+  /** Writable members currently disabled. */
+  disabled: string[]
 }
 
 /**
- * Merge origin collections (backend-aggregated from sidecar origins) with the
- * author `sets` declared on each skill, into one deduplicated list sorted by
- * name. A group present in both sources takes the union of members.
+ * Derive a group switch view from its member names and the set of currently
+ * enabled skill names (catalog.skills). Members not in the enabled set count
+ * as disabled (catalog.disabled or absent read-only rows).
  */
-export function mergeCollections(
-  skills: readonly CatalogSkill[],
-  collections: readonly CollectionGroup[],
-): UnifiedCollection[] {
-  const members = new Map<string, { names: Set<string>; hasOrigin: boolean; hasSets: boolean }>()
-  const ensure = (name: string): { names: Set<string>; hasOrigin: boolean; hasSets: boolean } => {
-    let entry = members.get(name)
-    if (entry === undefined) {
-      entry = { names: new Set(), hasOrigin: false, hasSets: false }
-      members.set(name, entry)
-    }
-    return entry
+export function groupSwitchView(members: readonly string[], enabledNames: ReadonlySet<string>): GroupSwitchView {
+  const enabled: string[] = []
+  const disabled: string[] = []
+  for (const name of members) {
+    if (enabledNames.has(name)) enabled.push(name)
+    else disabled.push(name)
   }
-  for (const collection of collections) {
-    const entry = ensure(collection.name)
-    entry.hasOrigin = true
-    for (const name of collection.skillNames) entry.names.add(name)
-  }
-  for (const skill of skills) {
-    for (const set of skill.sets ?? []) {
-      const entry = ensure(set)
-      entry.hasSets = true
-      entry.names.add(skill.name)
-    }
-  }
-  return [...members.entries()]
-    .map(([name, entry]) => ({
-      name,
-      skillNames: [...entry.names].sort((a, b) => a.localeCompare(b)),
-      kind: (entry.hasOrigin && entry.hasSets ? 'both' : entry.hasOrigin ? 'collection' : 'sets') as UnifiedCollection['kind'],
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name))
+  const state: GroupSwitchState = disabled.length === 0 ? 'on' : enabled.length === 0 ? 'off' : 'mixed'
+  return { state, enabled, disabled }
 }
 
-/** Skills that belong to no tag, no origin collection, and no author set. */
+/** Names of every group a skill belongs to (tags + collections). */
+export function groupNamesOf(name: string, tags: readonly SkillTag[], collections: readonly CollectionGroup[]): string[] {
+  const names: string[] = []
+  for (const tag of tags) if (tag.skillNames.includes(name)) names.push(tag.name)
+  for (const collection of collections) if (collection.skillNames.includes(name)) names.push(collection.name)
+  return names
+}
+
+/**
+ * Members of a group that are currently enabled AND also belong to at least
+ * one other group — the set a "close" action must ask about.
+ */
+export function conflictsOnClose(
+  members: readonly string[],
+  enabledNames: ReadonlySet<string>,
+  otherGroups: ReadonlyArray<{ members: readonly string[] }>,
+): string[] {
+  return members.filter((name) => {
+    if (!enabledNames.has(name)) return false
+    return otherGroups.some((group) => group.members.includes(name))
+  })
+}
+
+/** Skills that belong to no tag and no origin collection. */
 export function uncategorizedSkills(
   skills: readonly CatalogSkill[],
   tags: readonly SkillTag[],
@@ -70,7 +77,6 @@ export function uncategorizedSkills(
   return skills.filter((skill) => {
     if (inTags.has(skill.name)) return false
     if (origins[skill.name] !== undefined) return false
-    if ((skill.sets ?? []).length > 0) return false
     return true
   })
 }

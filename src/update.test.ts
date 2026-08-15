@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { checkLatestRelease, compareVersions, isUpdateAvailable, parseVersion } from './update.ts'
+import { readFileSync } from 'node:fs'
+import { checkLatestRelease, compareVersions, CURRENT_VERSION, isUpdateAvailable, parseVersion } from './update.ts'
+
+describe('CURRENT_VERSION', () => {
+  it('matches the package manifest version', () => {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+    expect(CURRENT_VERSION).toBe(pkg.version)
+  })
+})
 
 describe('parseVersion', () => {
   it('parses plain and v-prefixed semver tags', () => {

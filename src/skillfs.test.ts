@@ -86,20 +86,10 @@ describe('parseFrontmatter', () => {
     expect(parseFrontmatter('---\nname: ok-name\n---')).toEqual({ error: 'frontmatter requires a description field' })
   })
 
-  it('parses a single-string sets field into a list', () => {
-    const parsed = parseFrontmatter('---\nname: ok-name\ndescription: x\nsets: engineering\n---')
-    expect(parsed).toMatchObject({ value: { sets: ['engineering'] } })
-  })
-
-  it('parses an array sets field, trimming and dropping empties', () => {
-    const parsed = parseFrontmatter('---\nname: ok-name\ndescription: x\nsets: [engineering, " 3d ", ""]\n---')
-    expect(parsed).toMatchObject({ value: { sets: ['engineering', '3d'] } })
-  })
-
-  it('omits sets when the field is absent or empty', () => {
+  it('ignores sets frontmatter (sets grouping was removed)', () => {
     const expected = { name: 'ok-name', description: 'x', invocation: { modelInvocable: true, userInvocable: true }, content: '' }
-    expect(parseFrontmatter('---\nname: ok-name\ndescription: x\n---')).toEqual({ value: expected })
-    expect(parseFrontmatter('---\nname: ok-name\ndescription: x\nsets: []\n---')).toEqual({ value: expected })
+    expect(parseFrontmatter('---\nname: ok-name\ndescription: x\nsets: engineering\n---')).toEqual({ value: expected })
+    expect(parseFrontmatter('---\nname: ok-name\ndescription: x\nsets: [engineering, " 3d ", ""]\n---')).toEqual({ value: expected })
   })
 })
 
