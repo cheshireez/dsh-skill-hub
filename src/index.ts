@@ -67,6 +67,8 @@ export function apply(ctx: Context, config?: Config): void {
   const resolveSaved = (saved: Partial<HubConfig>): HubConfig => ({
     enabled: saved.enabled ?? base.enabled ?? DEFAULTS.enabled,
     announceToAgent: saved.announceToAgent ?? base.announceToAgent ?? DEFAULTS.announceToAgent,
+    ...(saved.dotModelColor !== undefined ? { dotModelColor: saved.dotModelColor } : {}),
+    ...(saved.dotUserColor !== undefined ? { dotUserColor: saved.dotUserColor } : {}),
   })
   let current: () => HubConfig = () => resolveSaved({})
   // The raw saved config layer (fields the user explicitly overrode); the

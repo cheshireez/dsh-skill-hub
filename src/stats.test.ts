@@ -3,11 +3,11 @@ import { countSkillInvocations, createSkillStatsReader, readSkillStats, type Ses
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 /** Minimal user/message event carrying a skill-invocation source. */
-function invocationEvent(name: string, seq = 1): SessionEvent {
+function invocationEvent(name: string, seq = 1, time = 0): SessionEvent {
   return {
     type: 'user/message',
     seq,
-    time: 0,
+    time,
     data: {
       id: 'm' + seq as never,
       role: 'user',
@@ -28,11 +28,11 @@ function plainUserEvent(seq = 1): SessionEvent {
 }
 
 /** Minimal `skill` tool call (model-invoked skill). */
-function skillToolCall(name: string, seq = 1): SessionEvent {
+function skillToolCall(name: string, seq = 1, time = 0): SessionEvent {
   return {
     type: 'tool/call',
     seq,
-    time: 0,
+    time,
     data: { turn: 1, step: 1, callId: 'c' + seq as never, name: 'skill', arguments: JSON.stringify({ name }) },
   } as unknown as SessionEvent
 }
@@ -46,8 +46,8 @@ describe('countSkillInvocations', () => {
       plainUserEvent(4),
     ]
     const counts = countSkillInvocations(events)
-    expect(counts.get('code-review')).toBe(2)
-    expect(counts.get('tdd')).toBe(1)
+    expect(counts.get('code-review')?.count).toBe(2)
+    expect(counts.get('tdd')?.count).toBe(1)
     expect(counts.size).toBe(2)
   })
 
@@ -59,8 +59,8 @@ describe('countSkillInvocations', () => {
       { type: 'tool/call', seq: 4, time: 0, data: { turn: 1, step: 1, callId: 'c4', name: 'bash', arguments: '{}' } } as unknown as SessionEvent,
     ]
     const counts = countSkillInvocations(events)
-    expect(counts.get('godot-master')).toBe(2)
-    expect(counts.get('tdd')).toBe(1)
+    expect(counts.get('godot-master')?.count).toBe(2)
+    expect(counts.get('tdd')?.count).toBe(1)
     expect(counts.size).toBe(2)
   })
 
@@ -71,13 +71,24 @@ describe('countSkillInvocations', () => {
       { type: 'tool/call', seq: 3, time: 0, data: { turn: 1, step: 1, callId: 'c3', name: 'skill', arguments: 'not json' } } as unknown as SessionEvent,
     ]
     const counts = countSkillInvocations(events)
-    expect(counts.get('tdd')).toBe(2)
+    expect(counts.get('tdd')?.count).toBe(2)
     expect(counts.size).toBe(1)
   })
 
   it('returns an empty map for a log with no invocations', () => {
     expect(countSkillInvocations([]).size).toBe(0)
     expect(countSkillInvocations([plainUserEvent(1)]).size).toBe(0)
+  })
+
+  it('records the latest lastUsed time across events', () => {
+    const events = [
+      invocationEvent('a', 1, 1000),
+      invocationEvent('a', 2, 3000),
+      invocationEvent('a', 3, 2000),
+      skillToolCall('a', 4, 2500),
+    ]
+    const stats = countSkillInvocations(events)
+    expect(stats.get('a')).toEqual({ count: 4, lastUsed: 3000 })
   })
 })
 
@@ -95,8 +106,8 @@ describe('readSkillStats', () => {
       }),
     }
     expect(await readSkillStats(query)).toEqual([
-      { name: 'code-review', count: 1 },
-      { name: 'tdd', count: 2 },
+      { name: 'code-review', count: 1, lastUsed: 0 },
+      { name: 'tdd', count: 2, lastUsed: 0 },
     ])
   })
 
@@ -111,7 +122,7 @@ describe('readSkillStats', () => {
         return { events: [invocationEvent('tdd', 1)] }
       },
     }
-    expect(await readSkillStats(query)).toEqual([{ name: 'tdd', count: 1 }])
+    expect(await readSkillStats(query)).toEqual([{ name: 'tdd', count: 1, lastUsed: 0 }])
   })
 })
 

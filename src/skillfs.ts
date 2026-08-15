@@ -264,7 +264,23 @@ export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Pro
       continue
     }
     const parsed = parseFrontmatter(text)
-    if ('error' in parsed) diagnostics.push({ path: entry.path, root, reason: parsed.error })
+    if ('error' in parsed) {
+      diagnostics.push({ path: entry.path, root, reason: parsed.error })
+      continue
+    }
+    const { value } = parsed
+    // The provider registers a skill by its discovery path (directory name or
+    // flat file name), so a frontmatter name that diverges from the path makes
+    // the skill show up under a different identity than its metadata claims.
+    const pathName = entry.kind === 'directory' ? basename(entry.directory) : basename(entry.path, '.md')
+    if (value.name !== pathName) {
+      diagnostics.push({ path: entry.path, root, reason: `frontmatter name "${value.name}" does not match the discovery path "${pathName}" (the provider registers by path)` })
+    }
+    // Agents decide to auto-activate a skill from its one-line description, so
+    // a too-short description leaves the skill hard to discover automatically.
+    if (value.description.length < 10) {
+      diagnostics.push({ path: entry.path, root, reason: `description is only ${value.description.length} chars; write a one-line description so agents can auto-activate this skill` })
+    }
   }
   return diagnostics
 }

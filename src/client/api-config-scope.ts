@@ -20,8 +20,11 @@ import type { FormScope } from './settings-form.ts'
 /** Built-in defaults every field inherits until the user overrides it. */
 const DEFAULTS: HubConfig = { enabled: true, announceToAgent: true }
 
+/** Boolean config fields (color fields are strings). */
+const BOOLEAN_FIELDS = new Set<keyof HubConfig>(['enabled', 'announceToAgent'])
+
 /** Config fields the card edits (used to guard set/unset field names). */
-const FIELDS = new Set<keyof HubConfig>(['enabled', 'announceToAgent'])
+const FIELDS = new Set<keyof HubConfig>(['enabled', 'announceToAgent', 'dotModelColor', 'dotUserColor'])
 
 /** FormScope-compatible reactive config handle (see module doc). */
 export class ApiConfigScope implements FormScope {
@@ -67,7 +70,10 @@ export class ApiConfigScope implements FormScope {
   /** Write one field through the config route and adopt the persisted state. */
   async set(field: string, value: unknown): Promise<void> {
     if (!FIELDS.has(field as keyof HubConfig)) return
-    await this.apply({ [field]: Boolean(value) } as Partial<HubConfig>)
+    const patch = BOOLEAN_FIELDS.has(field as keyof HubConfig)
+      ? { [field]: Boolean(value) }
+      : { [field]: typeof value === 'string' ? value : undefined }
+    await this.apply(patch as Partial<HubConfig>)
   }
 
   /** Clear one field's override so it re-inherits the default. */
@@ -79,7 +85,7 @@ export class ApiConfigScope implements FormScope {
   /** Persist a patch, then re-seed from the route's fresh response. */
   private async apply(patch: Partial<HubConfig>): Promise<void> {
     // null on the wire clears a saved override (see ConfigRequest).
-    const request: Record<string, boolean | null> = {}
+    const request: Record<string, boolean | string | null> = {}
     for (const [key, value] of Object.entries(patch)) {
       request[key] = value === undefined ? null : value
     }

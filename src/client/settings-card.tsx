@@ -179,3 +179,57 @@ export function SwitchField(props: SwitchFieldProps): ReactElement {
     </div>
   )
 }
+
+/** One staged color field: a native color picker plus the hex draft text. */
+export interface ColorFieldProps {
+  id: string
+  label: string
+  hint: string
+  inheritLabel: string
+  overriddenLabel: string
+  resetLabel: string
+  disabled: boolean
+  /** Effective hex (#rrggbb) when overridden; empty string means inherit. */
+  text: string
+  overridden: boolean
+  onEdit: (text: string) => void
+  onReset: () => void
+}
+
+export function ColorField(props: ColorFieldProps): ReactElement {
+  const value = /^#[0-9a-f]{6}$/i.test(props.text) ? props.text : '#3fb950'
+  return (
+    <div className={css.field}>
+      <div className={css.head}>
+        <label className={css.label} htmlFor={props.id}>{props.label}</label>
+        {props.overridden ? (
+          <span className={css.badges}>
+            <span className={css.badge}>{props.overriddenLabel}</span>
+            <button type='button' className={css.reset} disabled={props.disabled} onClick={props.onReset}>
+              {props.resetLabel}
+            </button>
+          </span>
+        ) : null}
+      </div>
+      <div className={css.colorRow}>
+        <input
+          id={props.id}
+          type='color'
+          className={css.colorInput}
+          value={value}
+          disabled={props.disabled}
+          onChange={(event) => { props.onEdit(event.target.value) }}
+        />
+        <input
+          type='text'
+          className={css.select}
+          value={props.text}
+          disabled={props.disabled}
+          placeholder={props.inheritLabel}
+          onChange={(event) => { props.onEdit(event.target.value.trim()) }}
+        />
+      </div>
+      <p className={css.hint}>{props.hint}</p>
+    </div>
+  )
+}

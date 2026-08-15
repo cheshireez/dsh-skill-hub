@@ -170,7 +170,7 @@ describe('scanDiagnostics', () => {
   })
 
   it('returns an empty list for a healthy root', async () => {
-    await createSkill('user-dsh', 'good-skill', 'Good', home)
+    await createSkill('user-dsh', 'good-skill', 'Does good things well', home)
     expect(await scanDiagnostics('user-dsh', home)).toEqual([])
   })
 
@@ -191,6 +191,22 @@ describe('scanDiagnostics', () => {
 
   it('returns an empty list when the root does not exist', async () => {
     expect(await scanDiagnostics('user-dsh', join(dir, 'missing'))).toEqual([])
+  })
+
+  it('flags a frontmatter name that diverges from the discovery path', async () => {
+    await mkdir(join(skills, 'folder-name'))
+    await writeFile(join(skills, 'folder-name', 'SKILL.md'), '---\nname: other-name\ndescription: A decent longer description\n---', 'utf8')
+    const entries = await scanDiagnostics('user-dsh', home)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].reason).toContain('does not match the discovery path "folder-name"')
+  })
+
+  it('flags a too-short description', async () => {
+    await mkdir(join(skills, 'short-desc'))
+    await writeFile(join(skills, 'short-desc', 'SKILL.md'), '---\nname: short-desc\ndescription: x\n---', 'utf8')
+    const entries = await scanDiagnostics('user-dsh', home)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].reason).toContain('description is only 1 chars')
   })
 })
 

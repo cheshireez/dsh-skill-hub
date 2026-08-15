@@ -1,9 +1,9 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { IncomingMessage } from 'node:http'
 import type { SkillDefinition, SkillSummary } from '@deepseek-ai/dsh-skill'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeRoutes, type SkillHubRouteDeps } from './routes.ts'
 import { SkillHubStore, statePath } from './store.ts'
 import { SKILL_HUB_API, type CatalogResponse, type ConfigResponse, type ErrorResponse, type HubConfig } from './protocol.ts'
@@ -82,6 +82,13 @@ describe('skill-hub routes', () => {
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true })
   })
+
+  /** 按路径取路由（避免数组解构的位置脆弱性）。 */
+  function routeFor(path: string) {
+    const route = makeRoutes(deps).find((r) => r.path === path)
+    if (route === undefined) throw new Error('route not found: ' + path)
+    return route
+  }
 
   it('rejects non-loopback requests', async () => {
     const [catalog] = makeRoutes(deps)
@@ -175,8 +182,62 @@ describe('skill-hub routes', () => {
     expect(body.error).toContain('managed outside the hub')
   })
 
+  it('disables a whole group in one write', async () => {
+    for (const name of ['batch-a', 'batch-b']) {
+      const dir = join(home, 'skills', name)
+      await mkdir(dir, { recursive: true })
+      await writeFile(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: A batch skill\n---\n\nbody`, 'utf8')
+    }
+    skills.get = async (name: string) => definition({ name, path: join(home, 'skills', name, 'SKILL.md'), source: 'user-dsh' })
+    const [, , , toggleBatch] = makeRoutes(deps)
+    const res = new FakeResponse()
+    await toggleBatch.handler(fakeReq('POST', SKILL_HUB_API.toggleBatch, { names: ['batch-a', 'batch-b'], enabled: false }), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as import('./protocol.ts').ToggleBatchResponse
+    expect(body.ok).toBe(true)
+    expect(body.failures).toEqual([])
+    expect(await store.listDisabled()).toHaveLength(2)
+  })
+
+  it('re-enables a group and skips already-enabled names as no-ops', async () => {
+    const pathA = join(home, 'skills', 'batch-a', 'SKILL.md')
+    const pathB = join(home, 'skills', 'batch-b', 'SKILL.md')
+    for (const pth of [pathA, pathB]) {
+      await mkdir(dirname(pth), { recursive: true })
+      await writeFile(pth, '---\nname: x\ndescription: y\n---\n\nbody', 'utf8')
+    }
+    const { disableSkill } = await import('./skillfs.ts')
+    const disabledA = await disableSkill(pathA)
+    await store.addDisabled({ name: 'batch-a', description: 'y', path: disabledA, root: 'user-dsh', disabledAt: 1 })
+    skills.get = async (name: string) => definition({ name, source: 'user-dsh' })
+    const [, , , toggleBatch] = makeRoutes(deps)
+    const res = new FakeResponse()
+    await toggleBatch.handler(fakeReq('POST', SKILL_HUB_API.toggleBatch, { names: ['batch-a', 'batch-b'], enabled: true }), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as import('./protocol.ts').ToggleBatchResponse
+    expect(body.failures).toEqual([])
+    expect(await store.listDisabled()).toHaveLength(0)
+  })
+
+  it('reports per-name failures for read-only skills while landing the rest', async () => {
+    const dir = join(home, 'skills', 'batch-c')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'SKILL.md'), '---\nname: batch-c\ndescription: ok\n---', 'utf8')
+    skills.get = async (name: string) => name === 'batch-c'
+      ? definition({ name, path: join(dir, 'SKILL.md'), source: 'user-dsh' })
+      : definition({ name, source: 'bundled', provider: 'bundled' })
+    const [, , , toggleBatch] = makeRoutes(deps)
+    const res = new FakeResponse()
+    await toggleBatch.handler(fakeReq('POST', SKILL_HUB_API.toggleBatch, { names: ['batch-c', 'readonly-x'], enabled: false }), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as import('./protocol.ts').ToggleBatchResponse
+    expect(body.failures).toHaveLength(1)
+    expect(body.failures[0].name).toBe('readonly-x')
+    expect(await store.listDisabled()).toHaveLength(1)
+  })
+
   it('creates a skill scaffold and rejects bad names', async () => {
-    const [, , , create] = makeRoutes(deps)
+    const [, , , , create] = makeRoutes(deps)
     const ok = new FakeResponse()
     await create.handler(fakeReq('POST', SKILL_HUB_API.create, { name: 'new-skill', description: 'Fresh' }), ok as never)
     expect(ok.status).toBe(201)
@@ -187,14 +248,14 @@ describe('skill-hub routes', () => {
 
   it('refuses to create a duplicate name', async () => {
     skills.get = async () => definition({})
-    const [, , , create] = makeRoutes(deps)
+    const [, , , , create] = makeRoutes(deps)
     const res = new FakeResponse()
     await create.handler(fakeReq('POST', SKILL_HUB_API.create, { name: 'demo-skill' }), res as never)
     expect(res.status).toBe(409)
   })
 
   it('serves the hub config with saved overrides', async () => {
-    const [, , , , , config] = makeRoutes({
+    const [, , , , , , config] = makeRoutes({
       ...deps,
       config: () => ({ enabled: false, announceToAgent: true }),
       saved: () => ({ enabled: false }),
@@ -214,7 +275,7 @@ describe('skill-hub routes', () => {
       patches.push(patch)
       return { enabled: false, announceToAgent: false }
     }
-    const [, , , , , config] = makeRoutes({
+    const [, , , , , , config] = makeRoutes({
       ...deps,
       config: () => ({ enabled: true, announceToAgent: true }),
       saved: () => ({ enabled: false, announceToAgent: false }),
@@ -234,7 +295,7 @@ describe('skill-hub routes', () => {
       patches.push(patch)
       return { enabled: true, announceToAgent: true }
     }
-    const [, , , , , config] = makeRoutes({
+    const [, , , , , , config] = makeRoutes({
       ...deps,
       config: () => ({ enabled: false, announceToAgent: true }),
       saved: () => ({ enabled: false }),
@@ -248,7 +309,7 @@ describe('skill-hub routes', () => {
   })
 
   it('rejects non-boolean config patches', async () => {
-    const [, , , , , config] = makeRoutes(deps)
+    const [, , , , , , config] = makeRoutes(deps)
     const res = new FakeResponse()
     await config.handler(fakeReq('POST', SKILL_HUB_API.config, { enabled: 'yes' }), res as never)
     expect(res.status).toBe(400)
@@ -262,7 +323,7 @@ describe('skill-hub routes', () => {
       config: () => ({ enabled: false, announceToAgent: true }),
       saved: () => ({ enabled: false }),
     })
-    const [catalog, , , , , config] = routes
+    const [catalog, , , , , , config] = routes
     const business = new FakeResponse()
     await catalog.handler(fakeReq('GET', SKILL_HUB_API.catalog), business as never)
     expect(business.status).toBe(503)
@@ -270,5 +331,206 @@ describe('skill-hub routes', () => {
     await config.handler(fakeReq('GET', SKILL_HUB_API.config), cfg as never)
     expect(cfg.status).toBe(200)
   })
+  it('serves the market with installed flags', async () => {
+    await mkdir(join(home, 'skills', 'pdf'), { recursive: true })
+    const [, , , , , , , market] = makeRoutes(deps)
+    const res = new FakeResponse()
+    await market.handler(fakeReq('GET', SKILL_HUB_API.market), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as import('./protocol.ts').MarketResponse
+    expect(body.entries.length).toBeGreaterThan(0)
+    const pdf = body.entries.find((entry) => entry.name === 'pdf')
+    expect(pdf?.installed).toBe(true)
+    const docx = body.entries.find((entry) => entry.name === 'docx')
+    expect(docx?.installed).toBe(false)
+  })
+
+  it('imports a market skill from GitHub raw and validates it', async () => {
+    const content = '---\nname: docx\ndescription: Create and edit Word documents\n---\n\nbody'
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(content, { status: 200 })))
+    try {
+      const [, , , , , , , , importSkill] = makeRoutes(deps)
+      const res = new FakeResponse()
+      await importSkill.handler(fakeReq('POST', SKILL_HUB_API.importSkill, { name: 'docx' }), res as never)
+      expect(res.status).toBe(201)
+      const body = res.json() as import('./protocol.ts').ImportResponse
+      expect(body.name).toBe('docx')
+      await expect(access(join(home, 'skills', 'docx', 'SKILL.md'))).resolves.toBeUndefined()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('rejects a market import that is already installed', async () => {
+    await mkdir(join(home, 'skills', 'docx'), { recursive: true })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('---\nname: docx\ndescription: x\n---', { status: 200 })))
+    try {
+      const [, , , , , , , , importSkill] = makeRoutes(deps)
+      const res = new FakeResponse()
+      await importSkill.handler(fakeReq('POST', SKILL_HUB_API.importSkill, { name: 'docx' }), res as never)
+      expect(res.status).toBe(409)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('rejects unknown market names and mismatched downloads', async () => {
+    const [, , , , , , , , importSkill] = makeRoutes(deps)
+    const unknown = new FakeResponse()
+    await importSkill.handler(fakeReq('POST', SKILL_HUB_API.importSkill, { name: 'nope' }), unknown as never)
+    expect(unknown.status).toBe(400)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('---\nname: other\ndescription: x\n---', { status: 200 })))
+    try {
+      const bad = new FakeResponse()
+      await importSkill.handler(fakeReq('POST', SKILL_HUB_API.importSkill, { name: 'docx' }), bad as never)
+      expect(bad.status).toBe(422)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('surfaces download failures as 502', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 404 })))
+    try {
+      const [, , , , , , , , importSkill] = makeRoutes(deps)
+      const res = new FakeResponse()
+      await importSkill.handler(fakeReq('POST', SKILL_HUB_API.importSkill, { name: 'docx' }), res as never)
+      expect(res.status).toBe(502)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  // ------------------------------------------------------- groups
+  it('serves groups: user tags + system collections + origins', async () => {
+    const tag = await store.saveTag({ name: 'web' })
+    await store.setTagMembers(tag.id, ['demo-skill'])
+    await store.setOrigin('demo-skill', 'superpowers')
+    await store.setOrigin('pdf', 'anthropics/skills')
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.groups).handler(fakeReq('GET', SKILL_HUB_API.groups), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as import('./protocol.ts').GroupsResponse
+    expect(body.tags).toHaveLength(1)
+    expect(body.tags[0]).toMatchObject({ name: 'web', skillNames: ['demo-skill'] })
+    expect(body.collections).toEqual([
+      { name: 'anthropics/skills', skillNames: ['pdf'] },
+      { name: 'superpowers', skillNames: ['demo-skill'] },
+    ])
+    expect(body.origins).toEqual({ 'demo-skill': 'superpowers', pdf: 'anthropics/skills' })
+  })
+
+  // ---------------------------------------------------------- tag
+  it('creates and renames a tag', async () => {
+    const created = new FakeResponse()
+    await routeFor(SKILL_HUB_API.tag).handler(fakeReq('POST', SKILL_HUB_API.tag, { name: 'web' }), created as never)
+    expect(created.status).toBe(200)
+    const createdBody = created.json() as import('./protocol.ts').TagSaveResponse
+    expect(createdBody.tags).toHaveLength(1)
+    const id = createdBody.tags[0].id
+    const renamed = new FakeResponse()
+    await routeFor(SKILL_HUB_API.tag).handler(fakeReq('POST', SKILL_HUB_API.tag, { id, name: 'frontend' }), renamed as never)
+    expect(renamed.status).toBe(200)
+    const renamedBody = renamed.json() as import('./protocol.ts').TagSaveResponse
+    expect(renamedBody.tags[0]).toMatchObject({ id, name: 'frontend' })
+    const empty = new FakeResponse()
+    await routeFor(SKILL_HUB_API.tag).handler(fakeReq('POST', SKILL_HUB_API.tag, { name: '  ' }), empty as never)
+    expect(empty.status).toBe(400)
+  })
+
+  it('deletes a tag', async () => {
+    const created = new FakeResponse()
+    await routeFor(SKILL_HUB_API.tag).handler(fakeReq('POST', SKILL_HUB_API.tag, { name: 'tmp' }), created as never)
+    const id = (created.json() as import('./protocol.ts').TagSaveResponse).tags[0].id
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.tagDelete).handler(fakeReq('POST', SKILL_HUB_API.tagDelete, { id }), res as never)
+    expect(res.status).toBe(200)
+    expect((res.json() as import('./protocol.ts').TagDeleteResponse).tags).toEqual([])
+  })
+
+  it('sets tag members and drops names absent from the catalog', async () => {
+    skills.snapshot = async () => ({ skills: [summary()], complete: true })
+    const created = new FakeResponse()
+    await routeFor(SKILL_HUB_API.tag).handler(fakeReq('POST', SKILL_HUB_API.tag, { name: 'web' }), created as never)
+    const id = (created.json() as import('./protocol.ts').TagSaveResponse).tags[0].id
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.tagMembers).handler(fakeReq('POST', SKILL_HUB_API.tagMembers, { id, skillNames: ['demo-skill', 'ghost-skill'] }), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as import('./protocol.ts').TagMembersResponse
+    expect(body.tags[0].skillNames).toEqual(['demo-skill'])
+  })
+
+  // --------------------------------------------------------- origin
+  it('marks and clears a skill origin, aggregating collections', async () => {
+    const set = new FakeResponse()
+    await routeFor(SKILL_HUB_API.origin).handler(fakeReq('POST', SKILL_HUB_API.origin, { skillName: 'docx', origin: 'anthropics/skills' }), set as never)
+    expect(set.status).toBe(200)
+    const setBody = set.json() as import('./protocol.ts').OriginResponse
+    expect(setBody.collections).toEqual([{ name: 'anthropics/skills', skillNames: ['docx'] }])
+    const clear = new FakeResponse()
+    await routeFor(SKILL_HUB_API.origin).handler(fakeReq('POST', SKILL_HUB_API.origin, { skillName: 'docx', origin: null }), clear as never)
+    expect(clear.status).toBe(200)
+    expect((clear.json() as import('./protocol.ts').OriginResponse).collections).toEqual([])
+    const bad = new FakeResponse()
+    await routeFor(SKILL_HUB_API.origin).handler(fakeReq('POST', SKILL_HUB_API.origin, { skillName: 'docx', origin: '  ' }), bad as never)
+    expect(bad.status).toBe(400)
+  })
+
+  it('patches display toggles on the config route', async () => {
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.config).handler(fakeReq('POST', SKILL_HUB_API.config, { showUseCount: false }), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as import('./protocol.ts').ConfigResponse
+    expect(body.config.showUseCount).toBe(false)
+    const bad = new FakeResponse()
+    await routeFor(SKILL_HUB_API.config).handler(fakeReq('POST', SKILL_HUB_API.config, { showUseTime: 'x' }), bad as never)
+    expect(bad.status).toBe(400)
+  })
+
+  // ------------------------------------------------------- scene
+  it('creates, renames, and deletes a scene', async () => {
+    const created = new FakeResponse()
+    await routeFor(SKILL_HUB_API.scene).handler(fakeReq('POST', SKILL_HUB_API.scene, { name: '前端' }), created as never)
+    expect(created.status).toBe(200)
+    const createdBody = created.json() as import('./protocol.ts').SceneSaveResponse
+    expect(createdBody.scenes).toHaveLength(1)
+    const id = createdBody.scenes[0].id
+    const renamed = new FakeResponse()
+    await routeFor(SKILL_HUB_API.scene).handler(fakeReq('POST', SKILL_HUB_API.scene, { id, name: '后端' }), renamed as never)
+    expect((renamed.json() as import('./protocol.ts').SceneSaveResponse).scenes[0]).toMatchObject({ id, name: '后端' })
+    const empty = new FakeResponse()
+    await routeFor(SKILL_HUB_API.scene).handler(fakeReq('POST', SKILL_HUB_API.scene, { name: '  ' }), empty as never)
+    expect(empty.status).toBe(400)
+    const deleted = new FakeResponse()
+    await routeFor(SKILL_HUB_API.sceneDelete).handler(fakeReq('POST', SKILL_HUB_API.sceneDelete, { id }), deleted as never)
+    expect((deleted.json() as import('./protocol.ts').SceneDeleteResponse).scenes).toEqual([])
+  })
+
+  it('sets scene members and drops names absent from the catalog', async () => {
+    skills.snapshot = async () => ({ skills: [summary()], complete: true })
+    const created = new FakeResponse()
+    await routeFor(SKILL_HUB_API.scene).handler(fakeReq('POST', SKILL_HUB_API.scene, { name: 's' }), created as never)
+    const id = (created.json() as import('./protocol.ts').SceneSaveResponse).scenes[0].id
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.sceneMembers).handler(fakeReq('POST', SKILL_HUB_API.sceneMembers, { id, skillNames: ['demo-skill', 'ghost'] }), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as import('./protocol.ts').SceneMembersResponse
+    expect(body.scenes[0].skillNames).toEqual(['demo-skill'])
+  })
+
+  // ---------------------------------------------- import 记录 origin
+  it('records the repo origin when importing a market skill', async () => {
+    const content = '---\nname: docx\ndescription: Create and edit Word documents\n---\n\nbody'
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(content, { status: 200 })))
+    try {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.importSkill).handler(fakeReq('POST', SKILL_HUB_API.importSkill, { name: 'docx' }), res as never)
+      expect(res.status).toBe(201)
+      expect(await store.getOrigin('docx')).toBe('anthropics/skills')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
 })
 

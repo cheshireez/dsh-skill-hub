@@ -25,16 +25,29 @@ export interface SessionQueryLike {
   readSession(id: SessionId): Promise<{ events: SessionEvent[] }>
 }
 
-/** Count skill invocations in one session's event log, keyed by skill name. */
-export function countSkillInvocations(events: readonly SessionEvent[]): Map<string, number> {
-  const counts = new Map<string, number>()
-  const bump = (name: string): void => {
-    if (name !== '') counts.set(name, (counts.get(name) ?? 0) + 1)
+/** Per-skill invocation stats in one session's event log. */
+export interface InvocationStat {
+  count: number
+  /** Unix epoch ms of the most recent invocation in this batch. */
+  lastUsed: number
+}
+
+/** Collect per-skill invocation counts and last-used times from one session. */
+export function countSkillInvocations(events: readonly SessionEvent[]): Map<string, InvocationStat> {
+  const stats = new Map<string, InvocationStat>()
+  const bump = (name: string, time: number): void => {
+    if (name === '') return
+    const current = stats.get(name)
+    if (current === undefined) stats.set(name, { count: 1, lastUsed: time })
+    else {
+      current.count += 1
+      if (time > current.lastUsed) current.lastUsed = time
+    }
   }
   for (const event of events) {
     if (event.type === 'user/message') {
       const source = event.data.source
-      if (source.kind === 'skill-invocation') bump(source.name)
+      if (source.kind === 'skill-invocation') bump(source.name, event.time)
     } else if (event.type === 'tool/call') {
       const call = event.data
       if (call.name === 'skill') {
@@ -43,18 +56,18 @@ export function countSkillInvocations(events: readonly SessionEvent[]): Map<stri
           const parsed: unknown = JSON.parse(call.arguments)
           if (typeof parsed === 'object' && parsed !== null) {
             const name = (parsed as { name?: unknown }).name
-            if (typeof name === 'string') bump(name)
+            if (typeof name === 'string') bump(name, event.time)
           }
         } catch { /* unparseable arguments skip */ }
       }
     }
   }
-  return counts
+  return stats
 }
 
-/** Scan every session and total per-skill invocation counts. */
+/** Scan every session and total per-skill counts, keeping the latest lastUsed. */
 export async function readSkillStats(query: SessionQueryLike): Promise<SkillStat[]> {
-  const totals = new Map<string, number>()
+  const totals = new Map<string, InvocationStat>()
   const sessions = await query.listSessions()
   for (const record of sessions) {
     let snapshot: { events: SessionEvent[] }
@@ -63,11 +76,18 @@ export async function readSkillStats(query: SessionQueryLike): Promise<SkillStat
     } catch {
       continue // unreadable sessions are skipped, never fatal
     }
-    for (const [name, count] of countSkillInvocations(snapshot.events)) {
-      totals.set(name, (totals.get(name) ?? 0) + count)
+    for (const [name, stat] of countSkillInvocations(snapshot.events)) {
+      const total = totals.get(name)
+      if (total === undefined) totals.set(name, { ...stat })
+      else {
+        total.count += stat.count
+        if (stat.lastUsed > total.lastUsed) total.lastUsed = stat.lastUsed
+      }
     }
   }
-  return [...totals.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => a.name.localeCompare(b.name))
+  return [...totals.entries()]
+    .map(([name, stat]) => ({ name, count: stat.count, lastUsed: stat.lastUsed }))
+    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
 /** A memoized stats reader (the panel polls, but logs change slowly). */
