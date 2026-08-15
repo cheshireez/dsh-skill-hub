@@ -11,6 +11,11 @@ import {
   type CreateResponse,
   type ImportResponse,
   type MarketResponse,
+  type McpDeleteRequest,
+  type McpDeleteResponse,
+  type McpListResponse,
+  type McpSaveRequest,
+  type McpSaveResponse,
   type RepoDiscoverResponse,
   type RepoImportRequest,
   type RepoImportResponse,
@@ -101,6 +106,33 @@ export class SkillHubApi {
   async market(): Promise<MarketResponse> {
     const response = await fetch(SKILL_HUB_API.market)
     return readJson<MarketResponse>(response)
+  }
+
+  /** List MCP servers from the active profile patch. */
+  async mcpList(): Promise<McpListResponse> {
+    const response = await fetch(SKILL_HUB_API.mcp)
+    return readJson<McpListResponse>(response)
+  }
+
+  /** Create or update one MCP server. */
+  async mcpSave(payload: McpSaveRequest): Promise<McpSaveResponse> {
+    const response = await fetch(SKILL_HUB_API.mcp, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    return readJson<McpSaveResponse>(response)
+  }
+
+  /** Delete one MCP server. */
+  async mcpDelete(id: string): Promise<McpDeleteResponse> {
+    const payload: McpDeleteRequest = { id }
+    const response = await fetch(SKILL_HUB_API.mcpDelete, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    return readJson<McpDeleteResponse>(response)
   }
 
   /** Check the hub's own latest GitHub release. */

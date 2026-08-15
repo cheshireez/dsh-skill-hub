@@ -18,6 +18,8 @@ export const SKILL_HUB_API = {
   importSkill: '/api/skill-hub/import',
   repo: '/api/skill-hub/repo',
   repoImport: '/api/skill-hub/repo/import',
+  mcp: '/api/skill-hub/mcp',
+  mcpDelete: '/api/skill-hub/mcp/delete',
   update: '/api/skill-hub/update',
   groups: '/api/skill-hub/groups',
   tag: '/api/skill-hub/tag',
@@ -292,6 +294,59 @@ export interface RepoImportResponse {
   imported: Array<{ name: string; origin: string; path: string }>
   skipped: Array<{ name: string; reason: 'exists' }>
   failed: Array<{ name: string; error: string }>
+}
+
+/** One MCP server managed through the profile cordis.patch.yml. */
+export interface McpServerEntry {
+  /** Stable patch id, e.g. mcp-godot-ai. */
+  id: string
+  /** Package name; fixed to the dsh MCP client for hub-managed rows. */
+  name: string
+  /** Logical MCP server name exposed to tools. */
+  serverName: string
+  /** Transport: stdio / sse / streamable-http. */
+  transport: string
+  /** Executable or URL for the transport. */
+  command: string
+  /** Transport args (stdio only). */
+  args: string[]
+  /** Whether startup failures are ignored. */
+  failOnStartupError: boolean
+}
+
+/** GET /api/skill-hub/mcp — list MCP servers from the active profile patch. */
+export interface McpListResponse {
+  ok: true
+  servers: McpServerEntry[]
+  /** Resolved patch path (read-only display only). */
+  path: string
+}
+
+/** POST /api/skill-hub/mcp — create or update one MCP server by id. */
+export interface McpSaveRequest {
+  id: string
+  serverName: string
+  transport: string
+  command: string
+  args: string[]
+  failOnStartupError: boolean
+}
+
+/** POST /api/skill-hub/mcp */
+export interface McpSaveResponse {
+  ok: true
+  servers: McpServerEntry[]
+}
+
+/** POST /api/skill-hub/mcp/delete */
+export interface McpDeleteRequest {
+  id: string
+}
+
+/** POST /api/skill-hub/mcp/delete */
+export interface McpDeleteResponse {
+  ok: true
+  servers: McpServerEntry[]
 }
 
 /** GET /api/skill-hub/update — check the plugin's own latest GitHub release. */

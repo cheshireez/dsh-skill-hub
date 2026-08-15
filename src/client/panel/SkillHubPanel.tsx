@@ -5,7 +5,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import type { CatalogResponse, CatalogSkill, CollectionGroup, DisabledSkill, GroupsResponse, HubConfig, MarketRow, RepoDiscoverResponse, RepoImportResponse, RepoSkillEntry, SkillDetail, SkillTag, UpdateCheckResponse, WritableRoot } from '../../protocol.ts'
+import type { CatalogResponse, CatalogSkill, CollectionGroup, DisabledSkill, GroupsResponse, HubConfig, MarketRow, McpServerEntry, RepoDiscoverResponse, RepoImportResponse, RepoSkillEntry, SkillDetail, SkillTag, UpdateCheckResponse, WritableRoot } from '../../protocol.ts'
 import type { SkillHubApi } from '../api.ts'
 import { errorMessage, tt } from '../helpers.ts'
 import { filterBySource, formatRelativeTime, mergeCollections, uncategorizedSkills } from '../grouping.ts'
@@ -76,6 +76,10 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
   const [repoSelected, setRepoSelected] = useState<ReadonlySet<string>>(new Set())
   const [repoImporting, setRepoImporting] = useState(false)
   const [repoResult, setRepoResult] = useState<RepoImportResponse | null>(null)
+  const [mcpState, setMcpState] = useState<{ status: 'loading' | 'ready' | 'error'; servers: McpServerEntry[]; path: string }>({ status: 'loading', servers: [], path: '' })
+  const [editingMcp, setEditingMcp] = useState<McpServerEntry | null>(null)
+  const [mcpDraft, setMcpDraft] = useState({ id: '', serverName: '', transport: 'stdio', command: '', args: '', failOnStartupError: false })
+  const [mcpBusy, setMcpBusy] = useState(false)
   const [search, setSearch] = useState('')
   const [detail, setDetail] = useState<SkillDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -89,7 +93,7 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
   const [formMessage, setFormMessage] = useState<{ kind: 'error' | 'success'; text: string } | null>(null)
   const [uses, setUses] = useState<ReadonlyMap<string, { count: number; lastUsed?: number }>>(new Map())
   const [hubConfig, setHubConfig] = useState<HubConfig | null>(null)
-  const [tab, setTab] = useState<'skills' | 'scenes' | 'market'>('skills')
+  const [tab, setTab] = useState<'skills' | 'scenes' | 'market' | 'mcp'>('skills')
   const [skillView, setSkillView] = useState<'flat' | 'groups'>('flat')
   const [sourceFilter, setSourceFilter] = useState('all')
   const [marketState, setMarketState] = useState<{ status: 'loading' | 'ready' | 'error'; entries: MarketRow[] }>({ status: 'loading', entries: [] })
@@ -155,6 +159,77 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
       setUpdateState({ status: 'error', message: errorMessage(error) })
     }
   }, [api])
+
+  /** Load MCP servers from the active profile patch. */
+  const loadMcp = useCallback(async (): Promise<void> => {
+    setMcpState((previous) => ({ ...previous, status: 'loading' }))
+    try {
+      const result = await api.mcpList()
+      setMcpState({ status: 'ready', servers: result.servers, path: result.path })
+    } catch (error) {
+      setMcpState((previous) => ({ ...previous, status: 'error' }))
+      setLoadError(errorMessage(error))
+    }
+  }, [api])
+
+  /** Open the MCP editor for a new or existing server. */
+  const openMcpEditor = useCallback((server: McpServerEntry | null): void => {
+    if (server === null) {
+      setMcpDraft({ id: '', serverName: '', transport: 'stdio', command: '', args: '', failOnStartupError: false })
+    } else {
+      setMcpDraft({
+        id: server.id,
+        serverName: server.serverName,
+        transport: server.transport,
+        command: server.command,
+        args: server.args.join(', '),
+        failOnStartupError: server.failOnStartupError,
+      })
+    }
+    setEditingMcp(server ?? { id: '', name: '', serverName: '', transport: 'stdio', command: '', args: [], failOnStartupError: false })
+  }, [])
+
+  /** Create or update one MCP server, then refresh the list. */
+  const saveMcp = useCallback(async (): Promise<void> => {
+    const id = mcpDraft.id.trim()
+    const serverName = mcpDraft.serverName.trim()
+    const command = mcpDraft.command.trim()
+    if (id === '' || serverName === '' || command === '') return
+    setMcpBusy(true)
+    setLoadError(null)
+    try {
+      const args = mcpDraft.args.split(',').map((arg) => arg.trim()).filter((arg) => arg !== '')
+      await api.mcpSave({
+        id,
+        serverName,
+        transport: mcpDraft.transport,
+        command,
+        args,
+        failOnStartupError: mcpDraft.failOnStartupError,
+      })
+      setEditingMcp(null)
+      await loadMcp()
+    } catch (error) {
+      setLoadError(errorMessage(error))
+    } finally {
+      setMcpBusy(false)
+    }
+  }, [api, mcpDraft, loadMcp])
+
+  /** Delete one MCP server, then refresh the list. */
+  const deleteMcp = useCallback(async (id: string): Promise<void> => {
+    setMcpBusy(true)
+    setLoadError(null)
+    try {
+      await api.mcpDelete(id)
+      setEditingMcp(null)
+      await loadMcp()
+    } catch (error) {
+      setLoadError(errorMessage(error))
+    } finally {
+      setMcpBusy(false)
+    }
+  }, [api, loadMcp])
 
   useEffect(() => {
     void load()
@@ -730,6 +805,7 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
           <button type='button' className={css.segBtn + (tab === 'skills' ? ' ' + css.segBtnActive : '')} onClick={() => { setTab('skills'); void loadGroups() }}>{tt('view.skills')}</button>
           <button type='button' className={css.segBtn + (tab === 'scenes' ? ' ' + css.segBtnActive : '')} onClick={() => { setTab('scenes'); void loadGroups() }}>{tt('view.scenes')}</button>
           <button type='button' className={css.segBtn + (tab === 'market' ? ' ' + css.segBtnActive : '')} onClick={() => { setTab('market'); void loadMarket() }}>{tt('view.market')}</button>
+          <button type='button' className={css.segBtn + (tab === 'mcp' ? ' ' + css.segBtnActive : '')} onClick={() => { setTab('mcp'); void loadMcp() }}>{tt('view.mcp')}</button>
         </span>
         <button type='button' className={css.legendToggle + (showLegend ? ' ' + css.legendToggleActive : '')} onClick={() => { setShowLegend((value) => !value) }} title={tt('legend.hint')}>?</button>
       </div>
@@ -946,6 +1022,75 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
 
     </>
   ) : null
+) : tab === 'mcp' ? (
+        <>
+          <section className={css.section}>
+            <p className={css.muted} style={{ margin: '4px 0', fontSize: 11.5 }}>{tt('mcp.hint')}</p>
+            {mcpState.status === 'loading' ? <div className={css.empty}>{tt('panel.loading')}</div> : null}
+            {mcpState.status === 'error' ? <div className={css.errorBanner}>{tt('mcp.error')}</div> : null}
+            {editingMcp === null ? (
+              <>
+                <div className={css.buttons} style={{ margin: '8px 0' }}>
+                  <button type='button' className={css.button + ' ' + css.primary} onClick={() => { openMcpEditor(null) }}>{tt('mcp.new')}</button>
+                </div>
+                {mcpState.servers.length === 0 && mcpState.status === 'ready' ? <div className={css.empty}>{tt('mcp.empty')}</div> : null}
+                {mcpState.servers.map((server) => (
+                  <div key={server.id} className={css.row}>
+                    <div className={css.rowMain}>
+                      <div className={css.rowName}>{server.id}</div>
+                      <div className={css.rowDesc}>{server.serverName} · {server.transport} · {server.command}</div>
+                    </div>
+                    <span className={css.badges}>
+                      <span className={css.badge + ' ' + css.badgeSource}>{server.transport}</span>
+                    </span>
+                    <div className={css.buttons}>
+                      <button type='button' className={css.opBtn} onClick={() => { openMcpEditor(server) }}>{tt('groups.edit')}</button>
+                      <button type='button' className={css.opBtn} disabled={mcpBusy} onClick={() => { void deleteMcp(server.id) }}>{tt('mcp.delete')}</button>
+                    </div>
+                  </div>
+                ))}
+                {mcpState.path !== '' ? <p className={css.muted} style={{ margin: '8px 0 0', fontSize: 11.5 }}>{tt('mcp.path')}: {mcpState.path}</p> : null}
+              </>
+            ) : (
+              <div className={css.form}>
+                <div className={css.formRow}>
+                  <label className={css.formLabel}>{tt('mcp.id')}</label>
+                  <input className={css.input} value={mcpDraft.id} onChange={(event) => { setMcpDraft((previous) => ({ ...previous, id: event.target.value })) }} placeholder={tt('mcp.placeholder.id')} />
+                </div>
+                <div className={css.formRow}>
+                  <label className={css.formLabel}>{tt('mcp.serverName')}</label>
+                  <input className={css.input} value={mcpDraft.serverName} onChange={(event) => { setMcpDraft((previous) => ({ ...previous, serverName: event.target.value })) }} placeholder={tt('mcp.placeholder.serverName')} />
+                </div>
+                <div className={css.formRow}>
+                  <label className={css.formLabel}>{tt('mcp.transport')}</label>
+                  <select className={css.select} value={mcpDraft.transport} onChange={(event) => { setMcpDraft((previous) => ({ ...previous, transport: event.target.value })) }}>
+                    <option value='stdio'>stdio</option>
+                    <option value='sse'>sse</option>
+                    <option value='streamable-http'>streamable-http</option>
+                  </select>
+                </div>
+                <div className={css.formRow}>
+                  <label className={css.formLabel}>{tt('mcp.command')}</label>
+                  <input className={css.input} value={mcpDraft.command} onChange={(event) => { setMcpDraft((previous) => ({ ...previous, command: event.target.value })) }} placeholder={tt('mcp.placeholder.command')} />
+                </div>
+                <div className={css.formRow}>
+                  <label className={css.formLabel}>{tt('mcp.args')}</label>
+                  <input className={css.input} value={mcpDraft.args} onChange={(event) => { setMcpDraft((previous) => ({ ...previous, args: event.target.value })) }} />
+                </div>
+                <div className={css.formRow}>
+                  <label className={css.formLabel}>
+                    <input type='checkbox' checked={mcpDraft.failOnStartupError} onChange={(event) => { setMcpDraft((previous) => ({ ...previous, failOnStartupError: event.target.checked })) }} />
+                    {tt('mcp.failOnStartupError')}
+                  </label>
+                </div>
+                <div className={css.buttons}>
+                  <button type='button' className={css.button + ' ' + css.primary} disabled={mcpBusy} onClick={() => { void saveMcp() }}>{tt('mcp.save')}</button>
+                  <button type='button' className={css.button} onClick={() => { setEditingMcp(null) }}>{tt('mcp.cancel')}</button>
+                </div>
+              </div>
+            )}
+          </section>
+        </>
 ) : catalog !== null ? (
         <>
           <div className={css.filterBar}>

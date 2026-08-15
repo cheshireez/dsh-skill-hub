@@ -28,6 +28,11 @@ import {
   type GroupsResponse,
   type HubConfig,
   type ImportResponse,
+  type McpDeleteRequest,
+  type McpDeleteResponse,
+  type McpListResponse,
+  type McpSaveRequest,
+  type McpSaveResponse,
   type MarketResponse,
   type MarketRow,
   type OriginRequest,
@@ -56,6 +61,7 @@ import {
 import { createSkill, disableSkill, enableSkill, normalizeSets, parseFrontmatter, rootOfPath, rootPath, scanDiagnostics } from './skillfs.ts'
 import { MARKET, marketEntry } from './market.ts'
 import { checkLatestRelease } from './update.ts'
+import { listMcpServers, mcpPatchPath, validateMcpRequest, writeMcpServers } from './mcp.ts'
 import { dshHome, type SkillHubStore } from './store.ts'
 import type { SkillStatsReader } from './stats.ts'
 
@@ -688,6 +694,84 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
           writeJson(res, 200, { ok: true, imported, skipped, failed } satisfies RepoImportResponse)
         } catch (error) {
           writeRepoError(res, error)
+        }
+      },
+    },
+    // ----------------------------------------------------------------- mcp
+    // List MCP servers from the active profile cordis.patch.yml.
+    {
+      kind: 'exact',
+      path: SKILL_HUB_API.mcp,
+      handler: async (req, res) => {
+        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
+        if (disabledGate(deps, res)) return
+        const path = mcpPatchPath()
+        if (req.method === 'GET') {
+          try {
+            const servers = await listMcpServers(path)
+            writeJson(res, 200, { ok: true, servers, path } satisfies McpListResponse)
+          } catch (error) {
+            writeError(res, 500, error)
+          }
+          return
+        }
+        if (req.method === 'POST') {
+          const raw = await readJsonBody(req)
+          if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
+          const request = raw as unknown as McpSaveRequest
+          const requestArgs = Array.isArray(request.args) ? request.args.filter((arg): arg is string => typeof arg === 'string') : []
+          const saveRequest: McpSaveRequest = {
+            id: typeof request.id === 'string' ? request.id.trim() : '',
+            serverName: typeof request.serverName === 'string' ? request.serverName.trim() : '',
+            transport: typeof request.transport === 'string' && request.transport !== '' ? request.transport : 'stdio',
+            command: typeof request.command === 'string' ? request.command.trim() : '',
+            args: requestArgs,
+            failOnStartupError: request.failOnStartupError === true,
+          }
+          const invalid = validateMcpRequest(saveRequest)
+          if (invalid !== null) { writeError(res, 400, invalid); return }
+          try {
+            const current = await listMcpServers(path)
+            const next = current.filter((server) => server.id !== saveRequest.id)
+            next.push({
+              id: saveRequest.id,
+              name: '@deepseek-ai/dsh-mcp-client',
+              serverName: saveRequest.serverName,
+              transport: saveRequest.transport,
+              command: saveRequest.command,
+              args: saveRequest.args,
+              failOnStartupError: saveRequest.failOnStartupError,
+            })
+            await writeMcpServers(next, path)
+            writeJson(res, 200, { ok: true, servers: await listMcpServers(path) } satisfies McpSaveResponse)
+          } catch (error) {
+            writeError(res, 500, error)
+          }
+          return
+        }
+        writeError(res, 405, 'method not allowed: ' + (req.method ?? ''))
+      },
+    },
+    // ------------------------------------------------------------ mcp/delete
+    {
+      kind: 'exact',
+      path: SKILL_HUB_API.mcpDelete,
+      handler: async (req, res) => {
+        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
+        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
+        if (disabledGate(deps, res)) return
+        const raw = await readJsonBody(req)
+        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
+        const id = typeof (raw as unknown as McpDeleteRequest).id === 'string' ? (raw as unknown as McpDeleteRequest).id.trim() : ''
+        if (id === '') { writeError(res, 400, 'id is required'); return }
+        try {
+          const path = mcpPatchPath()
+          const current = await listMcpServers(path)
+          const next = current.filter((server) => server.id !== id)
+          await writeMcpServers(next, path)
+          writeJson(res, 200, { ok: true, servers: await listMcpServers(path) } satisfies McpDeleteResponse)
+        } catch (error) {
+          writeError(res, 500, error)
         }
       },
     },
