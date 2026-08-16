@@ -17,25 +17,31 @@ import type { HubConfig } from '../protocol.ts'
 import type { SkillHubApi } from './api.ts'
 import type { FormScope } from './settings-form.ts'
 
+/** Model-invocable dot color default. Single source for the TS side; the
+ *  panel's CSS mirrors it via --hub-model (panel.module.css). */
+export const DEFAULT_DOT_MODEL_COLOR = '#2f81f7'
+/** User-invocable dot color default. Single source for the TS side; the
+ *  panel's CSS mirrors it via --hub-user (panel.module.css). */
+export const DEFAULT_DOT_USER_COLOR = '#3fb950'
+
 /** Built-in defaults every field inherits until the user overrides it. */
 const DEFAULTS: HubConfig = {
   enabled: true,
   announceToAgent: true,
   showUseCount: true,
   showUseTime: true,
-  showSourceColumn: true,
   showGroupSummary: true,
 }
 
 /** Boolean config fields (color fields are strings). */
 const BOOLEAN_FIELDS = new Set<keyof HubConfig>([
-  'enabled', 'announceToAgent', 'showUseCount', 'showUseTime', 'showSourceColumn', 'showGroupSummary',
+  'enabled', 'announceToAgent', 'showUseCount', 'showUseTime', 'showGroupSummary',
 ])
 
 /** Config fields the card edits (used to guard set/unset field names). */
 const FIELDS = new Set<keyof HubConfig>([
   'enabled', 'announceToAgent', 'dotModelColor', 'dotUserColor',
-  'showUseCount', 'showUseTime', 'showSourceColumn', 'showGroupSummary',
+  'showUseCount', 'showUseTime', 'showGroupSummary',
 ])
 
 /** FormScope-compatible reactive config handle (see module doc). */

@@ -41,19 +41,19 @@ describe('isUpdateAvailable', () => {
 
 describe('checkLatestRelease', () => {
   it('reports an available update for a newer release', async () => {
-    const fetchImpl = async () => new Response(JSON.stringify({ tag_name: 'v0.2.0', html_url: 'https://github.com/cheshireez/dsh-skill-hub/releases/tag/v0.2.0' }), { status: 200 })
+    const fetchImpl = async () => new Response(JSON.stringify({ tag_name: 'v9.9.9', html_url: 'https://github.com/cheshireez/dsh-skill-hub/releases/tag/v9.9.9' }), { status: 200 })
     const result = await checkLatestRelease('cheshireez/dsh-skill-hub', fetchImpl as typeof fetch)
     expect(result.ok).toBe(true)
-    expect(result.latestVersion).toBe('0.2.0')
+    expect(result.latestVersion).toBe('9.9.9')
     expect(result.updateAvailable).toBe(true)
-    expect(result.url).toBe('https://github.com/cheshireez/dsh-skill-hub/releases/tag/v0.2.0')
+    expect(result.url).toBe('https://github.com/cheshireez/dsh-skill-hub/releases/tag/v9.9.9')
   })
 
   it('reports up to date when the latest release matches', async () => {
-    const fetchImpl = async () => new Response(JSON.stringify({ tag_name: 'v0.1.0' }), { status: 200 })
+    const fetchImpl = async () => new Response(JSON.stringify({ tag_name: 'v' + CURRENT_VERSION }), { status: 200 })
     const result = await checkLatestRelease('cheshireez/dsh-skill-hub', fetchImpl as typeof fetch)
     expect(result.updateAvailable).toBe(false)
-    expect(result.latestVersion).toBe('0.1.0')
+    expect(result.latestVersion).toBe(CURRENT_VERSION)
   })
 
   it('treats 404 as no release', async () => {

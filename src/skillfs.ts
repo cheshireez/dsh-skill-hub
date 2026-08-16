@@ -12,10 +12,10 @@
  * content is the body after the frontmatter block, trimmed.
  */
 
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import { load } from 'js-yaml'
+import { dump, load } from 'js-yaml'
 import { isSkillName } from '@deepseek-ai/dsh-skill'
 import { dshHome } from './store.ts'
 import type { DiagnosticEntry, TrashEntry, WritableRoot } from './protocol.ts'
@@ -55,10 +55,13 @@ export async function createSkill(root: WritableRoot, name: string, description:
   const dir = join(rootPath(root, home), name)
   const file = join(dir, 'SKILL.md')
   await mkdir(dir, { recursive: true })
+  const safeDescription = description.trim() === '' ? 'New dsh skill created from the skill hub.' : description.trim()
   const body = [
     '---',
-    'name: ' + name,
-    'description: ' + (description.trim() === '' ? 'New dsh skill created from the skill hub.' : description.trim()),
+    // dump() emits a quoted string when plain text would parse as a number,
+    // mapping, or other non-string YAML (the official parser requires strings).
+    'name: ' + dump(name).trim(),
+    'description: ' + dump(safeDescription).trim(),
     '---',
     '',
     '# ' + name,
@@ -96,28 +99,41 @@ export async function enableSkill(disabledPath: string): Promise<string> {
 }
 
 /**
- * Move a skill directory into the root's trash (upstream-deletion follow-up).
- * The skill stays recoverable: the whole directory is renamed into
- * <root>/.trash/<name>-<timestamp>.
- * @returns the trashed directory path.
+ * Move a skill (directory bundle or flat .md file) into the root's trash.
+ * The skill stays recoverable: the source is renamed into
+ * <root>/.trash/<name>-<timestamp>. A directory bundle is addressed by its
+ * SKILL.md path and moved as a whole directory.
+ * @returns the trashed path plus the original path that was moved.
  */
-export async function trashSkill(name: string, root: WritableRoot, home = dshHome()): Promise<string> {
-  const source = join(rootPath(root, home), name)
-  const trashDir = join(rootPath(root, home), '.trash')
+export async function trashSkill(sourcePath: string): Promise<{ path: string; source: string }> {
+  const source = basename(sourcePath) === 'SKILL.md' ? dirname(sourcePath) : sourcePath
+  const trashDir = join(dirname(source), '.trash')
   await mkdir(trashDir, { recursive: true })
-  const target = join(trashDir, name + '-' + Date.now())
+  const target = join(trashDir, basename(source) + '-' + Date.now())
   await rename(source, target)
-  return target
+  return { path: target, source }
 }
 
-/** Restore a trashed skill directory back to its original location. */
+/** Restore a trashed skill (directory or flat file) to its original location. */
 export async function restoreSkill(entry: TrashEntry, home = dshHome()): Promise<string> {
   if (basename(dirname(entry.path)) !== '.trash') {
     throw new TypeError('not a trashed skill path: ' + entry.path)
   }
-  const target = join(dirname(dirname(entry.path)), entry.name)
+  const target = entry.sourcePath ?? join(dirname(dirname(entry.path)), entry.name)
+  if (entry.sourcePath !== undefined && rootOfPath(entry.sourcePath, home) === undefined) {
+    throw new TypeError('not a hub writable skill path: ' + entry.sourcePath)
+  }
   await rename(entry.path, target)
   return target
+}
+
+/** Permanently delete one trashed skill (directory or flat file). */
+export async function clearTrash(entry: TrashEntry, home = dshHome()): Promise<string> {
+  if (basename(dirname(entry.path)) !== '.trash' || rootOfPath(dirname(dirname(entry.path)), home) === undefined) {
+    throw new TypeError('not a hub trashed skill path: ' + entry.path)
+  }
+  await rm(entry.path, { recursive: true, force: true })
+  return entry.path
 }
 
 /** Classify a skill file path: 'directory' (SKILL.md), 'flat' (<name>.md), or undefined. */
@@ -199,10 +215,9 @@ export interface SkillEntry {
 /**
  * Scan one skills root for discovery files: directory bundles (SKILL.md)
  * and flat <name>.md files. Hub-disabled files (.disabled) are excluded;
- * the .system subdirectory is excluded when skipSystem is set (mirrors the
- * official provider's user-dsh behavior).
+ * dot-prefixed entries (including .trash and .system) are always skipped.
  */
-export async function scanRoot(base: string, skipSystem: boolean): Promise<SkillEntry[]> {
+export async function scanRoot(base: string): Promise<SkillEntry[]> {
   const entries: SkillEntry[] = []
   let names: string[]
   try {
@@ -213,7 +228,6 @@ export async function scanRoot(base: string, skipSystem: boolean): Promise<Skill
   }
   for (const name of names) {
     if (name.startsWith('.')) continue
-    if (skipSystem && name === '.system') continue
     const absolute = join(base, name)
     let stats
     try {
@@ -230,9 +244,9 @@ export async function scanRoot(base: string, skipSystem: boolean): Promise<Skill
   return entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 }
 
-/** Scan one writable root (user-dsh skips .system, mirroring the official provider). */
+/** Scan one writable root. */
 export function listSkillEntries(root: WritableRoot, home = dshHome()): Promise<SkillEntry[]> {
-  return scanRoot(rootPath(root, home), root === 'user-dsh')
+  return scanRoot(rootPath(root, home))
 }
 
 /**
@@ -290,4 +304,3 @@ export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Pro
   }
   return diagnostics
 }
-

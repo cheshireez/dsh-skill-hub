@@ -15,7 +15,10 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { DisabledSkill, HubConfig, RepoRoot, SkillTag, SourceRecord, TrashEntry } from './protocol.ts'
+import type { DisabledSkill, HubConfig, MarketSourceRecord, RepoRoot, SkillTag, SourceRecord, TrashEntry } from './protocol.ts'
+
+/** 默认场景名（系统预置的兜底场景，新技能自动归入）。 */
+export const DEFAULT_SCENE_NAME = '通用'
 
 /** Wire shape persisted on disk. */
 interface StoreFile {
@@ -27,8 +30,8 @@ interface StoreFile {
   tags?: SkillTag[]
   /** Upstream source tracking records (repo + commit snapshot). */
   sources?: SourceRecord[]
-  /** User-added market sources (owner/repo slugs). */
-  marketSources?: string[]
+  /** User-added market sources (owner/repo slugs + optional pinned ref). */
+  marketSources?: MarketSourceRecord[]
   /** Trashed skills (removed after upstream deletion, restorable). */
   trash?: TrashEntry[]
 }
@@ -44,13 +47,30 @@ export function statePath(home = dshHome()): string {
 }
 
 /** Current sidecar schema version. Bump on breaking shape changes and add a migration below. */
-export const STORE_VERSION = 2
+export const STORE_VERSION = 3
+
+/**
+ * Business-rule failure the routes layer can map onto a 4xx status instead
+ * of a blanket 500: user input is invalid (validation → 400), the target
+ * does not exist (not-found → 404), or the operation conflicts with an
+ * invariant (conflict → 409).
+ */
+export class StoreError extends Error {
+  readonly kind: 'validation' | 'not-found' | 'conflict'
+  constructor(kind: StoreError['kind'], message: string) {
+    super(message)
+    this.name = 'StoreError'
+    this.kind = kind
+  }
+}
 
 /**
  * Normalize an arbitrary parsed sidecar document to the current schema.
  * v1 to v2: scenes are dropped (the one-click role merged into group
  * switches), and origins are migrated into source records (repo = origin
  * value, commit snapshot empty — the first update check backfills it).
+ * v2 to v3: market sources become records ({ repo, ref?, commitSha? })
+ * instead of bare repo slugs, so a source can pin a release/branch version.
  * Returns null when the file claims a newer schema than this plugin
  * understands, so the caller starts empty instead of risking data loss.
  */
@@ -63,7 +83,12 @@ function migrateStore(parsed: unknown): { version: number; disabled: unknown; co
   const config = typeof record.config === 'object' && record.config !== null && !Array.isArray(record.config) ? record.config : undefined
   const tags = Array.isArray(record.tags) ? record.tags : undefined
   const trash = Array.isArray(record.trash) ? record.trash : undefined
-  const marketSources = Array.isArray(record.marketSources) ? record.marketSources : undefined
+  // v2 stored bare slugs; v3 stores records. Normalize both shapes here.
+  const marketSources = Array.isArray(record.marketSources)
+    ? record.marketSources.map((entry) => typeof entry === 'string'
+      ? { repo: entry }
+      : entry)
+    : undefined
 
   // v2 stores structured source records; v1 only had a skillName to
   // collection string map (origins). Migrate each origin into a SourceRecord
@@ -104,9 +129,12 @@ export class SkillHubStore {
   private config: Partial<HubConfig> = {}
   private tagsById = new Map<string, SkillTag>()
   private sourcesByRepo = new Map<string, SourceRecord>()
-  private marketSources: string[] = []
+  private marketSources: MarketSourceRecord[] = []
   private trashByName = new Map<string, TrashEntry>()
   private loaded = false
+  /** Serializes persist runs: concurrent mutators must not let an earlier
+   *  snapshot overwrite a later one (rename is atomic, ordering is not). */
+  private writeChain: Promise<void> = Promise.resolve()
 
   constructor(private readonly file: string = statePath()) {}
 
@@ -127,7 +155,7 @@ export class SkillHubStore {
             }
           }
         }
-        const saved = migrated.config as { enabled?: unknown; announceToAgent?: unknown; dotModelColor?: unknown; dotUserColor?: unknown; showUseCount?: unknown; showUseTime?: unknown; showSourceColumn?: unknown; showGroupSummary?: unknown } | undefined
+        const saved = migrated.config as { enabled?: unknown; announceToAgent?: unknown; dotModelColor?: unknown; dotUserColor?: unknown; showUseCount?: unknown; showUseTime?: unknown; showGroupSummary?: unknown } | undefined
         if (typeof saved === 'object' && saved !== null) {
           if (typeof saved.enabled === 'boolean') this.config.enabled = saved.enabled
           if (typeof saved.announceToAgent === 'boolean') this.config.announceToAgent = saved.announceToAgent
@@ -135,17 +163,17 @@ export class SkillHubStore {
           if (typeof saved.dotUserColor === 'string' && saved.dotUserColor !== '') this.config.dotUserColor = saved.dotUserColor
           if (typeof saved.showUseCount === 'boolean') this.config.showUseCount = saved.showUseCount
           if (typeof saved.showUseTime === 'boolean') this.config.showUseTime = saved.showUseTime
-          if (typeof saved.showSourceColumn === 'boolean') this.config.showSourceColumn = saved.showSourceColumn
           if (typeof saved.showGroupSummary === 'boolean') this.config.showGroupSummary = saved.showGroupSummary
         }
         if (Array.isArray(migrated.tags)) {
           for (const entry of migrated.tags as unknown[]) {
-            const tag = entry as { id?: unknown; name?: unknown; skillNames?: unknown } | null
+            const tag = entry as { id?: unknown; name?: unknown; skillNames?: unknown; default?: unknown } | null
             if (tag !== null && typeof tag === 'object' && typeof tag.id === 'string' && typeof tag.name === 'string' && Array.isArray(tag.skillNames)) {
               this.tagsById.set(tag.id, {
                 id: tag.id,
                 name: tag.name,
                 skillNames: tag.skillNames.filter((n): n is string => typeof n === 'string'),
+                ...(tag.default === true ? { default: true } : {}),
               })
             }
           }
@@ -169,18 +197,39 @@ export class SkillHubStore {
           }
         }
         if (Array.isArray(migrated.marketSources)) {
-          for (const repo of migrated.marketSources) {
-            if (typeof repo === 'string' && repo !== '' && !this.marketSources.includes(repo)) this.marketSources.push(repo)
+          for (const entry of migrated.marketSources as unknown[]) {
+            const item = entry as { repo?: unknown; ref?: unknown; commitSha?: unknown } | null
+            if (item !== null && typeof item === 'object' && typeof item.repo === 'string' && item.repo !== '' && !this.marketSources.some((s) => s.repo === item.repo)) {
+              this.marketSources.push({
+                repo: item.repo,
+                ...(typeof item.ref === 'string' && item.ref !== '' ? { ref: item.ref } : {}),
+                ...(typeof item.commitSha === 'string' && item.commitSha !== '' ? { commitSha: item.commitSha } : {}),
+              })
+            }
           }
         }
         if (Array.isArray(migrated.trash)) {
           for (const entry of migrated.trash as unknown[]) {
-            const item = entry as { name?: unknown; path?: unknown; movedAt?: unknown } | null
+            const item = entry as { name?: unknown; path?: unknown; movedAt?: unknown; sourcePath?: unknown } | null
             if (item !== null && typeof item === 'object' && typeof item.name === 'string' && typeof item.path === 'string') {
+              const origin = (item as Record<string, unknown>).origin as { repo?: unknown; root?: unknown; ref?: unknown; commitSha?: unknown } | undefined
+              const tagIds = (item as Record<string, unknown>).tagIds
               this.trashByName.set(item.name, {
                 name: item.name,
                 path: item.path,
                 movedAt: typeof item.movedAt === 'number' ? item.movedAt : 0,
+                ...(typeof item.sourcePath === 'string' && item.sourcePath !== '' ? { sourcePath: item.sourcePath } : {}),
+                ...(origin !== null && typeof origin === 'object' && typeof origin.repo === 'string' && origin.repo !== '' && (origin.root === 'skills' || origin.root === 'design-templates')
+                  ? {
+                      origin: {
+                        repo: origin.repo,
+                        root: origin.root,
+                        ...(typeof origin.ref === 'string' && origin.ref !== '' ? { ref: origin.ref } : {}),
+                        commitSha: typeof origin.commitSha === 'string' ? origin.commitSha : '',
+                      },
+                    }
+                  : {}),
+                ...(Array.isArray(tagIds) ? { tagIds: tagIds.filter((id): id is string => typeof id === 'string') } : {}),
               })
             }
           }
@@ -193,6 +242,18 @@ export class SkillHubStore {
         console.warn('[dsh-skill-hub] sidecar state unreadable, starting empty:', error instanceof Error ? error.message : error)
       }
     }
+    await this.ensureDefaultTag()
+  }
+
+  /**
+   * 保证存在默认场景：没有任何 default 标记的 tag 时创建「通用」。
+   * 新技能创建后自动归入它；用户可改名，但默认场景不可删除。
+   */
+  private async ensureDefaultTag(): Promise<void> {
+    if ([...this.tagsById.values()].some((tag) => tag.default === true)) return
+    const tag: SkillTag = { id: crypto.randomUUID(), name: DEFAULT_SCENE_NAME, skillNames: [], default: true }
+    this.tagsById.set(tag.id, tag)
+    await this.persist()
   }
 
   async listDisabled(): Promise<DisabledSkill[]> {
@@ -258,11 +319,11 @@ export class SkillHubStore {
   async saveTag(input: { id?: string; name: string }): Promise<SkillTag> {
     await this.ensureLoaded()
     const name = input.name.trim()
-    if (name === '') throw new TypeError('tag name must not be empty')
+    if (name === '') throw new StoreError('validation', 'tag name must not be empty')
     let tag: SkillTag
     if (input.id !== undefined) {
       const existing = this.tagsById.get(input.id)
-      if (existing === undefined) throw new TypeError('tag not found: ' + input.id)
+      if (existing === undefined) throw new StoreError('not-found', 'tag not found: ' + input.id)
       tag = { ...existing, name }
     } else {
       tag = { id: crypto.randomUUID(), name, skillNames: [] }
@@ -272,11 +333,30 @@ export class SkillHubStore {
     return tag
   }
 
-  /** Delete a tag by id (no-op when absent). */
+  /** Delete a tag by id (no-op when absent). The default scene cannot be deleted. */
   async deleteTag(id: string): Promise<void> {
     await this.ensureLoaded()
+    const tag = this.tagsById.get(id)
+    if (tag?.default === true) throw new StoreError('conflict', 'the default scene cannot be deleted')
     if (!this.tagsById.delete(id)) return
     await this.persist()
+  }
+
+  /** The default scene (「通用」), guaranteed to exist after ensureLoaded. */
+  async getDefaultTag(): Promise<SkillTag | undefined> {
+    await this.ensureLoaded()
+    return [...this.tagsById.values()].find((tag) => tag.default === true)
+  }
+
+  /** Append one skill name to a tag (deduplicated; no-op when already a member). */
+  async addSkillToTag(id: string, name: string): Promise<SkillTag | undefined> {
+    await this.ensureLoaded()
+    const existing = this.tagsById.get(id)
+    if (existing === undefined || name.trim() === '' || existing.skillNames.includes(name)) return existing
+    const tag: SkillTag = { ...existing, skillNames: [...existing.skillNames, name] }
+    this.tagsById.set(id, tag)
+    await this.persist()
+    return tag
   }
 
   /**
@@ -295,6 +375,18 @@ export class SkillHubStore {
     return tag
   }
 
+  /** Remove one skill from every tag group (used when the skill is deleted). */
+  async removeSkillFromTags(name: string): Promise<void> {
+    await this.ensureLoaded()
+    let changed = false
+    for (const tag of this.tagsById.values()) {
+      if (!tag.skillNames.includes(name)) continue
+      tag.skillNames = tag.skillNames.filter((n) => n !== name)
+      changed = true
+    }
+    if (changed) await this.persist()
+  }
+
   // ------------------------------------------------------------ sources
 
   /** All source records, sorted by repo. */
@@ -309,14 +401,13 @@ export class SkillHubStore {
     return this.sourcesByRepo.get(repo)
   }
 
-  /** Persist a source record as-is (null removes it). */
-  async saveSource(source: SourceRecord | null): Promise<void> {
+  /** The source record that tracks a skill name (undefined when untracked). */
+  async getSourceForSkill(name: string): Promise<SourceRecord | undefined> {
     await this.ensureLoaded()
-    if (source === null) {
-      return
+    for (const source of this.sourcesByRepo.values()) {
+      if (source.skills.includes(name)) return source
     }
-    this.sourcesByRepo.set(source.repo, source)
-    await this.persist()
+    return undefined
   }
 
   /** Remove a source record entirely (no-op when absent). */
@@ -363,6 +454,20 @@ export class SkillHubStore {
     return this.sourcesByRepo.get(repo)
   }
 
+  /** Remove one skill from every source record (used when the skill is deleted). */
+  async removeSkillFromSources(name: string): Promise<void> {
+    await this.ensureLoaded()
+    let changed = false
+    for (const [repo, source] of this.sourcesByRepo) {
+      if (!source.skills.includes(name)) continue
+      const skills = source.skills.filter((n) => n !== name)
+      if (skills.length === 0) this.sourcesByRepo.delete(repo)
+      else this.sourcesByRepo.set(repo, { ...source, skills })
+      changed = true
+    }
+    if (changed) await this.persist()
+  }
+
   /** Update a source's commit snapshot. */
   async setSourceCommit(repo: string, commitSha: string): Promise<void> {
     await this.ensureLoaded()
@@ -372,12 +477,33 @@ export class SkillHubStore {
     await this.persist()
   }
 
-  /** Merge per-path manifest entries into a source (incremental imports). */
-  async mergeSourceManifest(repo: string, manifest: Record<string, number>): Promise<void> {
+  /** Update a source's pinned ref (release tag / branch) when the market syncs. */
+  async setSourceRef(repo: string, ref: string): Promise<void> {
+    await this.ensureLoaded()
+    const existing = this.sourcesByRepo.get(repo)
+    if (existing === undefined || ref.trim() === '') return
+    this.sourcesByRepo.set(repo, { ...existing, ref: ref.trim() })
+    await this.persist()
+  }
+
+  /**
+   * Merge per-path manifest entries into a source (incremental imports).
+   * When `dir` is given, every baseline path under that skill directory is
+   * dropped first, so files the upstream removed never linger in the
+   * baseline and skew later update diffs.
+   */
+  async mergeSourceManifest(repo: string, manifest: Record<string, number>, dir?: string): Promise<void> {
     await this.ensureLoaded()
     const existing = this.sourcesByRepo.get(repo)
     if (existing === undefined || Object.keys(manifest).length === 0) return
-    this.sourcesByRepo.set(repo, { ...existing, manifest: { ...(existing.manifest ?? {}), ...manifest } })
+    const base: Record<string, number> = { ...(existing.manifest ?? {}) }
+    if (dir !== undefined && dir !== '') {
+      const prefix = dir + '/'
+      for (const path of Object.keys(base)) {
+        if (path.startsWith(prefix)) delete base[path]
+      }
+    }
+    this.sourcesByRepo.set(repo, { ...existing, manifest: { ...base, ...manifest } })
     await this.persist()
   }
 
@@ -393,28 +519,59 @@ export class SkillHubStore {
 
   // ------------------------------------------------------ market sources
 
-  /** The user's market source repos, in addition order. */
-  async listMarketSources(): Promise<string[]> {
+  /** The user's market sources, in addition order. */
+  async listMarketSources(): Promise<MarketSourceRecord[]> {
     await this.ensureLoaded()
     return [...this.marketSources]
   }
 
-  /** Add a repo slug (deduplicated). Returns the fresh list. */
-  async addMarketSource(repo: string): Promise<string[]> {
+  /** One market source by repo (undefined when absent). */
+  async getMarketSource(repo: string): Promise<MarketSourceRecord | undefined> {
     await this.ensureLoaded()
-    if (!this.marketSources.includes(repo)) this.marketSources.push(repo)
+    return this.marketSources.find((entry) => entry.repo === repo)
+  }
+
+  /** Add a repo (deduplicated), optionally with a pinned ref. Returns the fresh list. */
+  async addMarketSource(repo: string, ref?: string): Promise<MarketSourceRecord[]> {
+    await this.ensureLoaded()
+    const existing = this.marketSources.find((entry) => entry.repo === repo)
+    if (existing === undefined) {
+      this.marketSources.push(ref !== undefined && ref !== '' ? { repo, ref } : { repo })
+    } else if (ref !== undefined && ref !== '' && existing.ref !== ref) {
+      existing.ref = ref
+    }
     await this.persist()
     return [...this.marketSources]
   }
 
-  /** Remove a repo slug (no-op when absent). Returns the fresh list. */
-  async removeMarketSource(repo: string): Promise<string[]> {
+  /** Remove a repo (no-op when absent). Returns the fresh list. */
+  async removeMarketSource(repo: string): Promise<MarketSourceRecord[]> {
     await this.ensureLoaded()
-    const index = this.marketSources.indexOf(repo)
+    const index = this.marketSources.findIndex((entry) => entry.repo === repo)
     if (index === -1) return [...this.marketSources]
     this.marketSources.splice(index, 1)
     await this.persist()
     return [...this.marketSources]
+  }
+
+  /** Pin a market source to an explicit ref (branch/tag). Returns the record. */
+  async setMarketSourceRef(repo: string, ref: string): Promise<MarketSourceRecord | undefined> {
+    await this.ensureLoaded()
+    const entry = this.marketSources.find((item) => item.repo === repo)
+    if (entry === undefined || ref.trim() === '') return entry
+    entry.ref = ref.trim()
+    delete entry.commitSha
+    await this.persist()
+    return entry
+  }
+
+  /** Record the commit a market source's pinned ref resolved to (update baseline). */
+  async setMarketSourceCommit(repo: string, commitSha: string): Promise<void> {
+    await this.ensureLoaded()
+    const entry = this.marketSources.find((item) => item.repo === repo)
+    if (entry === undefined || commitSha === '') return
+    entry.commitSha = commitSha
+    await this.persist()
   }
 
   // ---------------------------------------------------------------- trash
@@ -445,19 +602,27 @@ export class SkillHubStore {
     await this.persist()
   }
 
-  private async persist(): Promise<void> {
-    const payload: StoreFile = {
-      version: STORE_VERSION,
-      disabled: [...this.entries.values()],
-      config: this.config,
-      ...(this.tagsById.size > 0 ? { tags: [...this.tagsById.values()] } : {}),
-      ...(this.sourcesByRepo.size > 0 ? { sources: [...this.sourcesByRepo.values()] } : {}),
-      ...(this.marketSources.length > 0 ? { marketSources: [...this.marketSources] } : {}),
-      ...(this.trashByName.size > 0 ? { trash: [...this.trashByName.values()] } : {}),
-    }
-    const tmp = this.file + '.tmp'
-    await mkdir(dirname(this.file), { recursive: true })
-    await writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8')
-    await rename(tmp, this.file)
+  private persist(): Promise<void> {
+    // The payload is built inside the queued step (not here), so every
+    // concurrent mutation made before a write actually lands is included in
+    // the final file instead of being rolled back by an older snapshot.
+    const run = this.writeChain.then(async () => {
+      const payload: StoreFile = {
+        version: STORE_VERSION,
+        disabled: [...this.entries.values()],
+        config: this.config,
+        ...(this.tagsById.size > 0 ? { tags: [...this.tagsById.values()] } : {}),
+        ...(this.sourcesByRepo.size > 0 ? { sources: [...this.sourcesByRepo.values()] } : {}),
+        ...(this.marketSources.length > 0 ? { marketSources: [...this.marketSources] } : {}),
+        ...(this.trashByName.size > 0 ? { trash: [...this.trashByName.values()] } : {}),
+      }
+      const tmp = this.file + '.tmp'
+      await mkdir(dirname(this.file), { recursive: true })
+      await writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8')
+      await rename(tmp, this.file)
+    })
+    // Keep the chain alive on failure; callers still observe the rejection.
+    this.writeChain = run.catch(() => {})
+    return run
   }
 }

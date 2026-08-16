@@ -8,6 +8,7 @@
  */
 
 import { createRequire } from 'node:module'
+import { githubAuthHeaders } from './repo.ts'
 import type { UpdateCheckResponse } from './protocol.ts'
 
 /** Repository checked for releases. Keep in sync with package.json. */
@@ -47,7 +48,7 @@ export async function checkLatestRelease(repo = UPDATE_REPO, fetchImpl: typeof f
   let response: Response
   try {
     response = await fetchImpl(url, {
-      headers: { accept: 'application/vnd.github+json' },
+      headers: { accept: 'application/vnd.github+json', ...githubAuthHeaders() },
     })
   } catch (error) {
     return {
@@ -72,6 +73,20 @@ export async function checkLatestRelease(repo = UPDATE_REPO, fetchImpl: typeof f
   }
 
   if (!response.ok) {
+    // Rate-limit exhaustion gets a friendlier message with the reset time.
+    const remaining = response.headers.get('x-ratelimit-remaining')
+    const reset = response.headers.get('x-ratelimit-reset')
+    if ((response.status === 403 || response.status === 429) && remaining === '0' && reset !== null) {
+      const at = new Date(Number(reset) * 1000)
+      return {
+        ok: true,
+        currentVersion,
+        latestVersion: null,
+        updateAvailable: false,
+        url: null,
+        error: 'github rate limit reached; retry after ' + at.toLocaleTimeString() + ' or set GITHUB_TOKEN',
+      }
+    }
     return {
       ok: true,
       currentVersion,

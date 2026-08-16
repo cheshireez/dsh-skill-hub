@@ -66,25 +66,38 @@ export function conflictsOnClose(
   })
 }
 
-/** Skills that belong to no tag and no origin collection. */
-export function uncategorizedSkills(
-  skills: readonly CatalogSkill[],
-  tags: readonly SkillTag[],
-  origins: Record<string, string>,
-): CatalogSkill[] {
-  const inTags = new Set<string>()
-  for (const tag of tags) for (const name of tag.skillNames) inTags.add(name)
-  return skills.filter((skill) => {
-    if (inTags.has(skill.name)) return false
-    if (origins[skill.name] !== undefined) return false
-    return true
-  })
+/** Origin-repo filter value: skills with no source record (private skills). */
+export const PRIVATE_SOURCE = 'private'
+
+/**
+ * Apply the origin filter ('all' or a specific origin repo; skills without a
+ * source record count as PRIVATE_SOURCE). The origins map is the store's
+ * skillName → repo derivation, so filtering follows the tracked source
+ * records instead of the filesystem root a skill happens to live under.
+ */
+export function filterBySource(skills: readonly CatalogSkill[], source: string, origins: Readonly<Record<string, string>>): CatalogSkill[] {
+  if (source === 'all') return [...skills]
+  return skills.filter((skill) => (origins[skill.name] ?? PRIVATE_SOURCE) === source)
 }
 
-/** Apply the source filter ('all' or a specific source value). */
-export function filterBySource(skills: readonly CatalogSkill[], source: string): CatalogSkill[] {
-  if (source === 'all') return [...skills]
-  return skills.filter((skill) => skill.source === source)
+/** Catalog sort keys offered by the filter bar. */
+export type SortKey = 'name' | 'added' | 'uses'
+
+/**
+ * Sort a skill list in place-safe copy order: name ascending, added
+ * descending (newest first, unknown addedAt last), or uses descending
+ * (most-called first). Unknown values always trail.
+ */
+export function sortSkills(skills: readonly CatalogSkill[], key: SortKey, getUses?: (name: string) => number | undefined): CatalogSkill[] {
+  const list = [...skills]
+  if (key === 'name') {
+    list.sort((a, b) => a.name.localeCompare(b.name))
+  } else if (key === 'added') {
+    list.sort((a, b) => (b.addedAt ?? -Infinity) - (a.addedAt ?? -Infinity))
+  } else if (key === 'uses') {
+    list.sort((a, b) => (getUses?.(b.name) ?? 0) - (getUses?.(a.name) ?? 0))
+  }
+  return list
 }
 
 /** Localized relative-time tuple; the caller resolves it via tt(). */

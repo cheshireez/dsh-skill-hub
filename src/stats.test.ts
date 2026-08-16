@@ -127,7 +127,25 @@ describe('readSkillStats', () => {
 })
 
 describe('createSkillStatsReader', () => {
-  it('caches results within the TTL window', async () => {
+  it('returns empty on first call, then serves the background scan from cache', async () => {
+    let resolveScan: (() => void) | undefined
+    const query: SessionQueryLike = {
+      listSessions: async () => [{ header: { id: 'a' as never } }],
+      readSession: () => new Promise((resolve) => {
+        resolveScan = () => resolve({ events: [invocationEvent('tdd', 1)] } as never)
+      }),
+    }
+    const reader = createSkillStatsReader(query, 60_000)
+    // 首次调用不等待全量扫描：立即返回空。
+    expect(await reader()).toEqual([])
+    // 后台扫描完成后，后续调用命中缓存。
+    resolveScan!()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(await reader()).toEqual([{ name: 'tdd', count: 1, lastUsed: 0 }])
+    expect(await reader()).toEqual([{ name: 'tdd', count: 1, lastUsed: 0 }])
+  })
+
+  it('serves stale totals after expiry and rescans only once', async () => {
     let reads = 0
     const query: SessionQueryLike = {
       listSessions: async () => [{ header: { id: 'a' as never } }],
@@ -136,9 +154,15 @@ describe('createSkillStatsReader', () => {
         return { events: [invocationEvent('tdd', 1)] }
       },
     }
-    const reader = createSkillStatsReader(query, 60_000)
-    await reader()
-    await reader()
-    expect(reads).toBe(1)
+    const reader = createSkillStatsReader(query, 200)
+    expect(await reader()).toEqual([])
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    expect(await reader()).toEqual([{ name: 'tdd', count: 1, lastUsed: 0 }])
+    // TTL 过期时立即返回 stale 值并触发一次后台刷新；后续调用命中缓存。
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(await reader()).toEqual([{ name: 'tdd', count: 1, lastUsed: 0 }])
+    expect(await reader()).toEqual([{ name: 'tdd', count: 1, lastUsed: 0 }])
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(reads).toBe(2)
   })
 })

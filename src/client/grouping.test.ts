@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { CatalogSkill, SkillTag } from '../protocol.ts'
-import { conflictsOnClose, filterBySource, formatRelativeTime, groupNamesOf, groupSwitchView, uncategorizedSkills } from './grouping.ts'
+import { conflictsOnClose, filterBySource, formatRelativeTime, groupNamesOf, groupSwitchView, PRIVATE_SOURCE, sortSkills } from './grouping.ts'
 
-function skill(name: string, source = 'user-dsh', writable = true): CatalogSkill {
+function skill(name: string, writable = true): CatalogSkill {
   return {
     name,
     description: '',
     invocation: { modelInvocable: true, userInvocable: true },
-    source,
     provider: 'filesystem',
     writable,
   }
@@ -54,20 +53,42 @@ describe('groupNamesOf', () => {
   })
 })
 
-describe('uncategorizedSkills', () => {
-  it('excludes skills in any tag or origin', () => {
-    const skills = [skill('tagged'), skill('origin'), skill('free')]
-    const tags: SkillTag[] = [{ id: '1', name: 't', skillNames: ['tagged'] }]
-    const origins = { origin: 'superpowers' }
-    expect(uncategorizedSkills(skills, tags, origins).map((s) => s.name)).toEqual(['free'])
+describe('filterBySource', () => {
+  it('filters by origin repo, buckets untracked skills as private, and returns all for "all"', () => {
+    const origins = { a: 'repo/x', b: 'repo/y' }
+    const skills = [skill('a'), skill('b'), skill('c')]
+    expect(filterBySource(skills, 'repo/x', origins).map((s) => s.name)).toEqual(['a'])
+    expect(filterBySource(skills, PRIVATE_SOURCE, origins).map((s) => s.name)).toEqual(['c'])
+    expect(filterBySource(skills, 'all', origins)).toHaveLength(3)
   })
 })
 
-describe('filterBySource', () => {
-  it('filters by source and returns all for "all"', () => {
-    const skills = [skill('a', 'user-dsh'), skill('b', 'bundled')]
-    expect(filterBySource(skills, 'user-dsh').map((s) => s.name)).toEqual(['a'])
-    expect(filterBySource(skills, 'all')).toHaveLength(2)
+describe('sortSkills', () => {
+  it('sorts by name ascending', () => {
+    const skills = [skill('zeta'), skill('alpha'), skill('beta')]
+    expect(sortSkills(skills, 'name').map((s) => s.name)).toEqual(['alpha', 'beta', 'zeta'])
+  })
+
+  it('sorts by added time descending, unknown times last', () => {
+    const skills = [
+      { ...skill('old'), addedAt: 100 },
+      { ...skill('new'), addedAt: 300 },
+      { ...skill('unknown') },
+    ]
+    expect(sortSkills(skills, 'added').map((s) => s.name)).toEqual(['new', 'old', 'unknown'])
+  })
+
+  it('sorts by invocation count descending, unknown counts as zero', () => {
+    const skills = [skill('few'), skill('many'), skill('none')]
+    const uses: Record<string, number | undefined> = { few: 2, many: 9 }
+    expect(sortSkills(skills, 'uses', (name) => uses[name]).map((s) => s.name)).toEqual(['many', 'few', 'none'])
+  })
+
+  it('does not mutate the input list', () => {
+    const skills = [skill('b'), skill('a')]
+    const sorted = sortSkills(skills, 'name')
+    expect(sorted.map((s) => s.name)).toEqual(['a', 'b'])
+    expect(skills.map((s) => s.name)).toEqual(['b', 'a'])
   })
 })
 

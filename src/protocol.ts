@@ -9,6 +9,7 @@
 export const SKILL_HUB_API = {
   catalog: '/api/skill-hub/catalog',
   skill: '/api/skill-hub/skill',
+  skillDelete: '/api/skill-hub/skill/delete',
   toggle: '/api/skill-hub/toggle',
   toggleBatch: '/api/skill-hub/toggle-batch',
   create: '/api/skill-hub/create',
@@ -17,6 +18,9 @@ export const SKILL_HUB_API = {
   market: '/api/skill-hub/market',
   marketSource: '/api/skill-hub/market/source',
   marketSourceDelete: '/api/skill-hub/market/source/delete',
+  marketSourceRef: '/api/skill-hub/market/source/ref',
+  marketCheck: '/api/skill-hub/market/check',
+  marketSync: '/api/skill-hub/market/source/sync',
   repo: '/api/skill-hub/repo',
   repoImport: '/api/skill-hub/repo/import',
   update: '/api/skill-hub/update',
@@ -29,6 +33,7 @@ export const SKILL_HUB_API = {
   sourceSync: '/api/skill-hub/sources/sync',
   sourceDelete: '/api/skill-hub/sources/delete',
   sourceRestore: '/api/skill-hub/sources/restore',
+  sourceTrashClear: '/api/skill-hub/sources/trash/clear',
 } as const
 
 /** User-level roots the hub may write to (matches dsh-skill-filesystem ranks 400/500). */
@@ -48,10 +53,13 @@ export interface CatalogSkill {
   description: string
   whenToUse?: string
   invocation: HubInvocation
-  source: string
   provider: string
   /** Whether the hub may toggle this skill (user-level filesystem skills only). */
   writable: boolean
+  /** SKILL.md creation time (epoch ms); used for "added" sorting. Absent when unknown. */
+  addedAt?: number
+  /** SKILL.md last-modified time (epoch ms); used for "updated" display. Absent when unknown. */
+  updatedAt?: number
 }
 
 /** One disabled skill tracked by the hub sidecar (SKILL.md renamed away). */
@@ -90,10 +98,13 @@ export interface SkillDetail {
   description: string
   whenToUse?: string
   invocation: HubInvocation
-  source: string
   provider: string
   /** Absolute file path when the skill came from disk. */
   path?: string
+  /** SKILL.md creation time (epoch ms); absent when the file is unreadable. */
+  addedAt?: number
+  /** SKILL.md last-modified time (epoch ms); absent when the file is unreadable. */
+  updatedAt?: number
   /** Markdown instruction body. */
   content: string
 }
@@ -101,6 +112,19 @@ export interface SkillDetail {
 export interface SkillDetailResponse {
   ok: true
   skill: SkillDetail
+}
+
+/** POST /api/skill-hub/skill/delete — 把单个技能移入回收站（可恢复）。 */
+export interface SkillDeleteRequest {
+  name: string
+}
+
+/** POST /api/skill-hub/skill/delete */
+export interface SkillDeleteResponse {
+  ok: true
+  name: string
+  /** 移入回收站后的路径（目录或文件）。 */
+  path: string
 }
 
 /** POST /api/skill-hub/toggle */
@@ -185,10 +209,41 @@ export interface HubConfig {
   showUseCount?: boolean
   /** Show per-skill last-used relative time. Default true. */
   showUseTime?: boolean
-  /** Show the per-source column on rows. Default true. */
-  showSourceColumn?: boolean
   /** Show group-header usage summaries (count + last used). Default true. */
   showGroupSummary?: boolean
+}
+
+/**
+ * Hub config defaults — the single source every layer reads: the cordis
+ * schema (index.ts), the host's saved-override merge, and the routes'
+ * fallback view. Changing a default here changes all three.
+ */
+export const HUB_CONFIG_DEFAULTS = {
+  enabled: true,
+  announceToAgent: true,
+  showUseCount: true,
+  showUseTime: true,
+  showGroupSummary: true,
+} as const
+
+/**
+ * Resolve the effective hub config: saved sidecar overrides win over the
+ * cordis composition entry (the web card owns runtime config), missing
+ * booleans fall back to HUB_CONFIG_DEFAULTS, and dot colors pass through
+ * (saved first, then base) only when set.
+ */
+export function resolveHubConfig(saved: Partial<HubConfig>, base: Partial<HubConfig> = {}): HubConfig {
+  const dotModelColor = saved.dotModelColor !== undefined ? saved.dotModelColor : base.dotModelColor
+  const dotUserColor = saved.dotUserColor !== undefined ? saved.dotUserColor : base.dotUserColor
+  return {
+    enabled: saved.enabled ?? base.enabled ?? HUB_CONFIG_DEFAULTS.enabled,
+    announceToAgent: saved.announceToAgent ?? base.announceToAgent ?? HUB_CONFIG_DEFAULTS.announceToAgent,
+    showUseCount: saved.showUseCount ?? base.showUseCount ?? HUB_CONFIG_DEFAULTS.showUseCount,
+    showUseTime: saved.showUseTime ?? base.showUseTime ?? HUB_CONFIG_DEFAULTS.showUseTime,
+    showGroupSummary: saved.showGroupSummary ?? base.showGroupSummary ?? HUB_CONFIG_DEFAULTS.showGroupSummary,
+    ...(dotModelColor !== undefined ? { dotModelColor } : {}),
+    ...(dotUserColor !== undefined ? { dotUserColor } : {}),
+  }
 }
 
 /** HEX color validation shared by host routes and the settings card. */
@@ -214,28 +269,77 @@ export interface ConfigRequest {
   /** Set the field; null clears the saved override so it re-inherits the default. */
   showUseTime?: boolean | null
   /** Set the field; null clears the saved override so it re-inherits the default. */
-  showSourceColumn?: boolean | null
-  /** Set the field; null clears the saved override so it re-inherits the default. */
   showGroupSummary?: boolean | null
+  /** Set the dot color; null clears the saved override so it re-inherits the default. */
+  dotModelColor?: string | null
+  /** Set the dot color; null clears the saved override so it re-inherits the default. */
+  dotUserColor?: string | null
+}
+
+/** One market source: a tracked upstream repo plus its pinned version. */
+export interface MarketSourceRecord {
+  /** Repo slug (owner/repo). */
+  repo: string
+  /** Pinned version: release tag, branch name, or custom ref. Absent = not yet pinned. */
+  ref?: string
+  /** Commit the pinned ref last resolved to (update-check baseline). */
+  commitSha?: string
 }
 
 /** GET /api/skill-hub/market — the user's added market sources. */
 export interface MarketSourcesResponse {
   ok: true
-  /** Added repo slugs (owner/repo), in addition order. */
-  repos: string[]
+  /** Added market sources, in addition order. */
+  repos: MarketSourceRecord[]
 }
 
 /** POST /api/skill-hub/market/source — add one repo as a market source. */
 export interface MarketSourceRequest {
-  /** owner/repo or a github.com URL. */
+  /** owner/repo, owner/repo@ref, or a github.com URL. */
   repo: string
 }
 
 /** POST /api/skill-hub/market/source|delete */
 export interface MarketSourceResponse {
   ok: true
-  repos: string[]
+  repos: MarketSourceRecord[]
+}
+
+/** POST /api/skill-hub/market/source/ref — pin a market source to an explicit ref. */
+export interface MarketSourceRefRequest {
+  repo: string
+  /** Release tag or branch name chosen for the repo. */
+  ref: string
+}
+
+/** GET /api/skill-hub/market/check — update check over market sources. */
+export interface MarketCheckResponse {
+  ok: true
+  results: Array<{
+    repo: string
+    /** Pinned ref, when one is recorded. */
+    ref?: string
+    /** Latest release tag on the repo, when it has one. */
+    latestTag?: string
+    /** Whether the pinned ref (or the repo) has moved ahead. */
+    updateAvailable: boolean
+    /** Latest commit of the checked ref. */
+    commitSha: string
+    /** Throttled: the check was skipped within the interval. */
+    throttled?: boolean
+    error?: string
+  }>
+}
+
+/** POST /api/skill-hub/market/source/sync — align a market source to its pinned ref. */
+export interface MarketSyncResponse {
+  ok: true
+  repo: string
+  /** The ref the source is now pinned to. */
+  ref: string
+  commitSha: string
+  /** Local skills tracked from this repo (candidates for a batch update). */
+  skills: string[]
 }
 
 /** A skill discovered in a GitHub repo under skills/ or design-templates/. */
@@ -265,7 +369,14 @@ export type RepoRoot = 'skills' | 'design-templates'
 export interface RepoDiscoverResponse {
   ok: true
   repo: string
-  ref: string
+  /**
+   * Ref the discovery ran against (release tag / branch / default branch).
+   * Null means the repo has no release and no pinned ref — the client must
+   * ask the user to pick a branch (see `branches`) and pin it first.
+   */
+  ref: string | null
+  /** Branch names to choose from when ref is null (default branch first). */
+  branches?: string[]
   entries: RepoSkillEntry[]
 }
 
@@ -274,6 +385,8 @@ export interface RepoImportRequest {
   repo: string
   /** Selected SKILL.md paths from the discover response. */
   paths: string[]
+  /** The ref the discovery ran against; the import must use the same one. */
+  ref?: string
 }
 
 /** POST /api/skill-hub/repo/import */
@@ -307,6 +420,8 @@ export interface SkillTag {
   name: string
   /** 成员技能名（集合技能与独立技能都可加入）。 */
   skillNames: string[]
+  /** 默认场景（「通用」）：系统预置、不可删除、新技能自动归入。 */
+  default?: boolean
 }
 
 /** 系统集合组：按 origin（来源集合标识）自动聚合。 */
@@ -390,6 +505,20 @@ export interface TrashEntry {
   path: string
   /** 移入回收站的时间（epoch ms）。 */
   movedAt: number
+  /** 移入回收站前的原始路径（目录或文件）；旧版本条目没有该字段。 */
+  sourcePath?: string
+  /**
+   * 移入回收站前的来源跟踪快照（恢复时用它把技能重新挂回来源记录，
+   * 否则恢复后的技能会丢失来源归属、变成「个人技能」）。
+   */
+  origin?: {
+    repo: string
+    root: RepoRoot
+    ref?: string
+    commitSha: string
+  }
+  /** 移入回收站前所属的场景（tag）ID；恢复时重新加回这些场景。 */
+  tagIds?: string[]
 }
 
 /** GET /api/skill-hub/sources */
@@ -427,6 +556,8 @@ export interface SourceCheckResult {
   deleted: string[]
   /** 节流跳过（距上次检查不足 5 分钟，未访问网络）。 */
   throttled?: boolean
+  /** 该来源此前没有快照（迁移/旧记录），本次已回填 commit，尚未有差异基线。 */
+  unverified?: boolean
 }
 
 /** POST /api/skill-hub/sources/check */
@@ -479,4 +610,13 @@ export interface SourceRestoreResponse {
   ok: true
   name: string
   path: string
+}
+
+/** POST /api/skill-hub/sources/trash/clear — 永久删除回收站里的全部技能。 */
+export interface SourceTrashClearResponse {
+  ok: true
+  /** 已永久删除的技能名。 */
+  deleted: string[]
+  /** 未能删除的技能（保留在回收站中）。 */
+  failed: Array<{ name: string; error: string }>
 }

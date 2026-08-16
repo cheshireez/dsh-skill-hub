@@ -93,15 +93,32 @@ export async function readSkillStats(query: SessionQueryLike): Promise<SkillStat
 /** A memoized stats reader (the panel polls, but logs change slowly). */
 export type SkillStatsReader = () => Promise<SkillStat[]>
 
-/** Wrap a query in a TTL cache so a 5s panel poll does not rescan every log. */
-export function createSkillStatsReader(query: SessionQueryLike, ttlMs = 30_000): SkillStatsReader {
+/**
+ * Wrap a query in a stale-while-revalidate cache: responses never wait for a
+ * full session-log scan. While the TTL is fresh the cached totals are
+ * returned; after expiry the stale totals are returned immediately and a
+ * single background rescan refreshes them — the panel's next poll picks the
+ * fresh numbers. A full scan decompresses every session log and can take
+ * seconds, so it must never sit on the request path.
+ */
+export function createSkillStatsReader(query: SessionQueryLike, ttlMs = 300_000): SkillStatsReader {
   let cached: SkillStat[] | undefined
   let cachedAt = 0
+  let refreshing: Promise<void> | null = null
   return async () => {
     const now = Date.now()
     if (cached !== undefined && now - cachedAt < ttlMs) return cached
-    cached = await readSkillStats(query)
-    cachedAt = Date.now()
-    return cached
+    // Expired (or first call): hand back the stale totals (empty on first
+    // call) and kick off one background rescan.
+    if (refreshing === null) {
+      refreshing = readSkillStats(query)
+        .then((stats) => {
+          cached = stats
+          cachedAt = Date.now()
+        })
+        .catch(() => { /* keep the previous totals on scan failure */ })
+        .finally(() => { refreshing = null })
+    }
+    return cached ?? []
   }
 }

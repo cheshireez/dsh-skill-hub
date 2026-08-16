@@ -47,6 +47,42 @@ export class RepoFetchError extends Error {
   }
 }
 
+/**
+ * GitHub token for authenticated API calls. Read from GITHUB_TOKEN /
+ * GH_TOKEN at module load; setGithubToken() overrides it at runtime (the
+ * plugin config route calls it when a saved token exists).
+ */
+let githubToken = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
+
+/** Override the GitHub token at runtime ('' falls back to the env var). */
+export function setGithubToken(token: string | undefined): void {
+  githubToken = token !== undefined && token !== '' ? token : (process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? '')
+}
+
+/** Authorization header for api.github.com / raw.githubusercontent.com calls. */
+export function githubAuthHeaders(): Record<string, string> {
+  return githubToken === '' ? {} : { authorization: 'Bearer ' + githubToken }
+}
+
+/**
+ * Build a RepoFetchError; when the response shows an exhausted rate limit,
+ * report the reset time instead of a bare HTTP status.
+ */
+export function fetchError(context: string, response: Response, fallbackStatus = 502): RepoFetchError {
+  const remaining = response.headers.get('x-ratelimit-remaining')
+  const reset = response.headers.get('x-ratelimit-reset')
+  if (response.status === 403 || response.status === 429) {
+    if (remaining === '0' && reset !== null) {
+      const at = new Date(Number(reset) * 1000)
+      return new RepoFetchError(
+        'github rate limit reached (anonymous quota exhausted); retry after ' + at.toLocaleTimeString() + ' or set GITHUB_TOKEN',
+        403,
+      )
+    }
+  }
+  return new RepoFetchError(context + ' (HTTP ' + response.status + ')', response.status === 404 ? 404 : fallbackStatus)
+}
+
 /** `owner/repo` slug for a parsed reference. */
 export function repoSlug(ref: RepoRef): string {
   return `${ref.owner}/${ref.repo}`
@@ -83,17 +119,22 @@ export function normalizeRepoInput(input: string): RepoRef | null {
   return { owner, repo, ...(ref !== undefined && ref !== '' ? { ref } : {}) }
 }
 
-/** Load repo metadata and the recursive git tree. Always resolves the default branch. */
-export async function loadRepoTree(repo: string, fetchImpl: typeof fetch = fetch): Promise<{ ref: string; tree: RepoTreeItem[] }> {
+/**
+ * Load repo metadata and the recursive git tree at the given ref. The meta
+ * request always resolves the default branch (used when ref is absent); the
+ * tree is fetched at `ref ?? default_branch` so an explicit branch/tag scans
+ * the exact same content a later download would fetch.
+ */
+export async function loadRepoTree(repo: string, ref?: string, fetchImpl: typeof fetch = fetch): Promise<{ ref: string; tree: RepoTreeItem[] }> {
   let metaResponse: Response
   try {
     metaResponse = await fetchImpl(`https://api.github.com/repos/${repo}`, {
-      headers: { accept: 'application/vnd.github+json' },
+      headers: { accept: 'application/vnd.github+json', ...githubAuthHeaders() },
     })
   } catch (error) {
     throw new RepoFetchError('github request failed: ' + (error instanceof Error ? error.message : String(error)))
   }
-  if (!metaResponse.ok) throw new RepoFetchError('github repo not found or unavailable (HTTP ' + metaResponse.status + ')', metaResponse.status === 404 ? 404 : 502)
+  if (!metaResponse.ok) throw fetchError('github repo not found or unavailable', metaResponse)
 
   let meta: unknown
   try {
@@ -102,17 +143,18 @@ export async function loadRepoTree(repo: string, fetchImpl: typeof fetch = fetch
     throw new RepoFetchError('invalid github repo response')
   }
   const record = typeof meta === 'object' && meta !== null ? meta as Record<string, unknown> : {}
-  const ref = typeof record.default_branch === 'string' && record.default_branch !== '' ? record.default_branch : 'main'
+  const defaultBranch = typeof record.default_branch === 'string' && record.default_branch !== '' ? record.default_branch : 'main'
+  const treeRef = ref !== undefined && ref !== '' ? ref : defaultBranch
 
   let treeResponse: Response
   try {
-    treeResponse = await fetchImpl(`https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`, {
-      headers: { accept: 'application/vnd.github+json' },
+    treeResponse = await fetchImpl(`https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(treeRef)}?recursive=1`, {
+      headers: { accept: 'application/vnd.github+json', ...githubAuthHeaders() },
     })
   } catch (error) {
     throw new RepoFetchError('github tree request failed: ' + (error instanceof Error ? error.message : String(error)))
   }
-  if (!treeResponse.ok) throw new RepoFetchError('github tree not found (HTTP ' + treeResponse.status + ')', treeResponse.status === 404 ? 404 : 502)
+  if (!treeResponse.ok) throw fetchError('github tree not found', treeResponse)
 
   let payload: unknown
   try {
@@ -123,7 +165,9 @@ export async function loadRepoTree(repo: string, fetchImpl: typeof fetch = fetch
   const treeRecord = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : {}
   if (treeRecord.truncated === true) throw new RepoFetchError('repo tree is too large to scan')
   const tree = Array.isArray(treeRecord.tree) ? treeRecord.tree as RepoTreeItem[] : []
-  return { ref, tree }
+  // Report the ref the tree was actually fetched at: downloaders must use
+  // this exact value so an explicit branch import never mixes trees.
+  return { ref: treeRef, tree }
 }
 
 /** Collect every file inside a skill directory, including SKILL.md itself. */
@@ -199,7 +243,7 @@ export async function downloadGitHubFile(repo: string, ref: string, path: string
   let firstError: string | null = null
   let response: Response | null = null
   try {
-    response = await fetchImpl(rawUrl)
+    response = await fetchImpl(rawUrl, { headers: githubAuthHeaders() })
   } catch (error) {
     firstError = error instanceof Error ? error.message : String(error)
   }
@@ -207,13 +251,13 @@ export async function downloadGitHubFile(repo: string, ref: string, path: string
     // Fallback: api.github.com/contents with the raw media type.
     const apiUrl = `https://api.github.com/repos/${repo}/contents/${encodedPath}`
     try {
-      response = await fetchImpl(apiUrl, { headers: { accept: 'application/vnd.github.raw' } })
+      response = await fetchImpl(apiUrl, { headers: { accept: 'application/vnd.github.raw', ...githubAuthHeaders() } })
     } catch (error) {
       throw new RepoFetchError('download failed: ' + (firstError ?? (error instanceof Error ? error.message : String(error))))
     }
   }
   if (response === null || !response.ok) {
-    throw new RepoFetchError('download failed (HTTP ' + response.status + ') for ' + path)
+    throw fetchError('download failed', response)
   }
   try {
     return Buffer.from(await response.arrayBuffer())
@@ -278,6 +322,55 @@ export async function downloadRepoSkill(
 // ------------------------------------------------------- source tracking
 
 /**
+ * The latest non-prerelease release tag of a repo, or undefined when the
+ * repo has no releases (GitHub's /releases/latest skips prereleases/drafts).
+ */
+export async function getLatestReleaseTag(repo: string, fetchImpl: typeof fetch = fetch): Promise<string | undefined> {
+  let response: Response
+  try {
+    response = await fetchImpl(`https://api.github.com/repos/${repo}/releases/latest`, {
+      headers: { accept: 'application/vnd.github+json', ...githubAuthHeaders() },
+    })
+  } catch (error) {
+    throw new RepoFetchError('github release request failed: ' + (error instanceof Error ? error.message : String(error)))
+  }
+  if (response.status === 404) return undefined
+  if (!response.ok) throw fetchError('github release lookup failed', response)
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch {
+    throw new RepoFetchError('invalid github release response')
+  }
+  const tag = typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>).tag_name : undefined
+  return typeof tag === 'string' && tag !== '' ? tag : undefined
+}
+
+/** Branch names of a repo, default branch first (one GitHub API request). */
+export async function listRepoBranches(repo: string, fetchImpl: typeof fetch = fetch): Promise<string[]> {
+  let response: Response
+  try {
+    response = await fetchImpl(`https://api.github.com/repos/${repo}/branches?per_page=100`, {
+      headers: { accept: 'application/vnd.github+json', ...githubAuthHeaders() },
+    })
+  } catch (error) {
+    throw new RepoFetchError('github branches request failed: ' + (error instanceof Error ? error.message : String(error)))
+  }
+  if (!response.ok) throw fetchError('github branches lookup failed', response)
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch {
+    throw new RepoFetchError('invalid github branches response')
+  }
+  if (!Array.isArray(payload)) return []
+  const names = payload
+    .map((item) => (typeof item === 'object' && item !== null ? (item as Record<string, unknown>).name : undefined))
+    .filter((name): name is string => typeof name === 'string' && name !== '')
+  return names
+}
+
+/**
  * Fetch the latest commit of a repo (explicit ref or default branch) with
  * its tree SHA. One GitHub API request; the tree SHA is used to diff the
  * upstream tree on change (one extra request).
@@ -288,11 +381,11 @@ export async function getLatestCommit(repo: string, ref?: string, fetchImpl: typ
     : `https://api.github.com/repos/${repo}/commits?per_page=1`
   let response: Response
   try {
-    response = await fetchImpl(url, { headers: { accept: 'application/vnd.github+json' } })
+    response = await fetchImpl(url, { headers: { accept: 'application/vnd.github+json', ...githubAuthHeaders() } })
   } catch (error) {
     throw new RepoFetchError('github request failed: ' + (error instanceof Error ? error.message : String(error)))
   }
-  if (!response.ok) throw new RepoFetchError('github commit lookup failed (HTTP ' + response.status + ')', response.status === 404 ? 404 : 502)
+  if (!response.ok) throw fetchError('github commit lookup failed', response)
   let payload: unknown
   try {
     payload = await response.json()
@@ -314,12 +407,12 @@ export async function loadRepoTreeAt(repo: string, treeSha: string, fetchImpl: t
   let response: Response
   try {
     response = await fetchImpl(`https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(treeSha)}?recursive=1`, {
-      headers: { accept: 'application/vnd.github+json' },
+      headers: { accept: 'application/vnd.github+json', ...githubAuthHeaders() },
     })
   } catch (error) {
     throw new RepoFetchError('github tree request failed: ' + (error instanceof Error ? error.message : String(error)))
   }
-  if (!response.ok) throw new RepoFetchError('github tree lookup failed (HTTP ' + response.status + ')', response.status === 404 ? 404 : 502)
+  if (!response.ok) throw fetchError('github tree lookup failed', response)
   let payload: unknown
   try {
     payload = await response.json()
@@ -344,6 +437,36 @@ export function skillManifest(tree: readonly RepoTreeItem[], dir: string): Recor
 }
 
 /**
+ * The real upstream directory of one tracked skill. Source records keep only
+ * the short name and top-level root (e.g. root "skills", name "ask-matt"),
+ * but upstream repos may nest skills under category directories
+ * (skills/engineering/ask-matt/) or move them between categories. Resolution
+ * order: exact match under the top-level root in the upstream tree, then the
+ * manifest's recorded blob path, then any same-name skill in the tree, then
+ * the flat root/name fallback. Passing the tree paths makes the lookup
+ * resilient to incomplete manifests and upstream moves.
+ */
+export function skillDirOf(
+  source: { root: RepoRoot; manifest?: Record<string, number> },
+  name: string,
+  treePaths?: readonly string[],
+): string {
+  if (treePaths !== undefined) {
+    const rootPrefix = source.root + '/'
+    const found = treePaths.find((path) => path.startsWith(rootPrefix) && path.endsWith('/' + name + '/SKILL.md'))
+    if (found !== undefined) return found.slice(0, found.lastIndexOf('/'))
+  }
+  const manifest = source.manifest ?? {}
+  const fromManifest = Object.keys(manifest).find((path) => path.endsWith('/' + name + '/SKILL.md'))
+  if (fromManifest !== undefined) return fromManifest.slice(0, fromManifest.lastIndexOf('/'))
+  if (treePaths !== undefined) {
+    const found = treePaths.find((path) => path.endsWith('/' + name + '/SKILL.md'))
+    if (found !== undefined) return found.slice(0, found.lastIndexOf('/'))
+  }
+  return source.root + '/' + name
+}
+
+/**
  * Diff one source record against an upstream tree at treeSha: which tracked
  * skills disappeared (no SKILL.md blob) and which changed (manifest baseline
  * differs, or no baseline exists — treated as changed). Pure over the tree.
@@ -356,10 +479,11 @@ export function diffRemoteSkills(
   for (const item of tree) {
     if (item.type === 'blob') blobs.set(item.path, typeof item.size === 'number' ? item.size : 0)
   }
+  const treePaths = [...blobs.keys()]
   const updated: string[] = []
   const deleted: string[] = []
   for (const name of source.skills) {
-    const prefix = source.root + '/' + name + '/'
+    const prefix = skillDirOf(source, name, treePaths) + '/'
     const remote = new Map<string, number>()
     for (const [path, size] of blobs) {
       if (path.startsWith(prefix)) remote.set(path, size)

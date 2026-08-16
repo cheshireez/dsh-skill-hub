@@ -14,7 +14,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-session-query'
-import type { HubConfig } from './protocol.ts'
+import { HUB_CONFIG_DEFAULTS, resolveHubConfig, type HubConfig } from './protocol.ts'
 import { SkillHubProvider } from './provider.ts'
 import { makeRoutes } from './routes.ts'
 import { createSkillStatsReader, type SkillStatsReader } from './stats.ts'
@@ -36,19 +36,16 @@ export interface Config {
   showUseCount?: boolean
   /** Show per-skill last-used relative time. Default true. */
   showUseTime?: boolean
-  /** Show the per-source column on rows. Default true. */
-  showSourceColumn?: boolean
   /** Show group-header usage summaries (count + last used). Default true. */
   showGroupSummary?: boolean
 }
 
 export const Config: z<Config> = z.object({
-  announceToAgent: z.boolean().default(true),
-  enabled: z.boolean().default(true),
-  showUseCount: z.boolean().default(true),
-  showUseTime: z.boolean().default(true),
-  showSourceColumn: z.boolean().default(true),
-  showGroupSummary: z.boolean().default(true),
+  announceToAgent: z.boolean().default(HUB_CONFIG_DEFAULTS.announceToAgent),
+  enabled: z.boolean().default(HUB_CONFIG_DEFAULTS.enabled),
+  showUseCount: z.boolean().default(HUB_CONFIG_DEFAULTS.showUseCount),
+  showUseTime: z.boolean().default(HUB_CONFIG_DEFAULTS.showUseTime),
+  showGroupSummary: z.boolean().default(HUB_CONFIG_DEFAULTS.showGroupSummary),
 })
 
 /** Order of the announcement section within the tool-guidance band. */
@@ -56,19 +53,9 @@ const SECTION_ORDER = 152
 
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
 export const SKILL_HUB_GUIDANCE = [
-  '本机已安装 dsh-skill-hub 插件（DSH Web GUI 技能中枢）：设置 →「技能」分区为管理主页；设置 → 插件列表中有本插件的配置卡片（启用/公告开关）。能力：完整本地技能目录（项目/自定义/用户/内置全部来源，走官方 ctx.skills 注册表，含第三方 provider）；按来源与自定义分组浏览，分组/来源头部的滑动开关可一键启用/禁用整组（跨组冲突时询问）；来源跟踪：从 GitHub 仓库（市场源或直接地址）导入的技能记录上游 repo/分支/commit 快照，可检查更新、选择同步、上游删除时跟进删除（移入回收站可恢复）；私人技能（无来源记录）不跟踪；调用次数与最近使用时间统计；查看技能正文；发现诊断；新建技能向导（写入 ~/.dsh/skills 或 ~/.agents/skills）。限制：仅用户级技能（user-dsh/user-agents 根目录）可写，项目/内置/运行时技能只读展示；路由仅回环可访问。用户提到「技能管理 / 技能列表 / 技能开关 / 技能同步 / 新建技能」时即指本插件，请据此协作。',
-  'The dsh-skill-hub plugin is installed (the DSH Web GUI skill hub): Settings → "Skills" is the management page; Settings → Plugins lists this plugin\'s configuration card (enable / announcement toggles). Capabilities: full local skill catalog (project / custom / user / bundled roots via the official ctx.skills registry, including third-party providers); browsing by source and custom groups, each group header carrying a sliding switch to enable/disable the whole group in one click (cross-group conflicts prompt the user); upstream source tracking: skills imported from GitHub repos (market sources or direct URLs) record the repo/ref/commit snapshot, support update checks, selective sync, and follow-up deletion when the upstream removes a skill (moves it into a restorable trash); private skills (no source record) are never tracked; invocation counts and last-used times; skill body inspection; discovery diagnostics; new-skill wizard (writes to ~/.dsh/skills or ~/.agents/skills). Limits: only user-level skills (user-dsh/user-agents roots) are writable; project/bundled/runtime skills are read-only; routes are loopback-only. When the user mentions "skill management / skill list / skill toggle / skill sync / new skill", this plugin is what they mean — collaborate accordingly.'
+  '本机已安装 dsh-skill-hub 插件（DSH Web GUI 技能中枢）：设置 →「技能」分区为管理主页；设置 → 插件列表中有本插件的配置卡片（启用/公告开关）。能力：完整本地技能目录（项目/自定义/用户/内置全部来源，走官方 ctx.skills 注册表，含第三方 provider）；按来源与自定义分组浏览，分组/来源头部的滑动开关可一键启用/禁用整组（跨组冲突时询问）；市场：内置市场目录（精选仓库一键添加）加自定义仓库源，扫描后勾选安装，每个市场源行显示已装/可更新/上游已删数量，支持「检查全部」与「全部更新」；来源跟踪：从 GitHub 仓库（市场源或直接地址）导入的技能记录上游 repo/commit 快照，可检查更新、选择同步、上游删除时跟进删除（移入回收站可恢复，恢复后保留来源与场景归属）；个人技能（无来源记录）不跟踪；调用次数与最近使用时间统计；查看技能正文；发现诊断；新建技能向导（写入 ~/.dsh/skills 或 ~/.agents/skills）。限制：仅用户级技能（user-dsh/user-agents 根目录）可写，项目/内置/运行时技能只读展示；路由仅回环可访问。用户提到「技能管理 / 技能列表 / 技能开关 / 技能同步 / 技能市场 / 更新技能 / 新建技能」时即指本插件，请据此协作。',
+  'The dsh-skill-hub plugin is installed (the DSH Web GUI skill hub): Settings → "Skills" is the management page; Settings → Plugins lists this plugin\'s configuration card (enable / announcement toggles). Capabilities: full local skill catalog (project / custom / user / bundled roots via the official ctx.skills registry, including third-party providers); browsing by source and custom groups, each group header carrying a sliding switch to enable/disable the whole group in one click (cross-group conflicts prompt the user); market: a built-in catalog of curated repos (one-click add) plus custom repo sources, scan-and-install import, per-source installed / updatable / deleted-upstream badges with "check all" and "update all" actions; upstream source tracking: skills imported from GitHub repos (market sources or direct URLs) record the repo/commit snapshot, support update checks, selective sync, and follow-up deletion when the upstream removes a skill (moves it into a restorable trash; restoring keeps the source and scene membership); personal skills (no source record) are never tracked; invocation counts and last-used times; skill body inspection; discovery diagnostics; new-skill wizard (writes to ~/.dsh/skills or ~/.agents/skills). Limits: only user-level skills (user-dsh/user-agents roots) are writable; project/bundled/runtime skills are read-only; routes are loopback-only. When the user mentions "skill management / skill list / skill toggle / skill sync / skill market / update skills / new skill", this plugin is what they mean — collaborate accordingly.'
 ].join('\n\n')
-
-/** Defaults the hub applies when neither the cordis config nor the sidecar says otherwise. */
-const DEFAULTS: HubConfig = {
-  enabled: true,
-  announceToAgent: true,
-  showUseCount: true,
-  showUseTime: true,
-  showSourceColumn: true,
-  showGroupSummary: true,
-}
 
 /**
  * Mount the skill hub routes and announcement.
@@ -83,17 +70,9 @@ export function apply(ctx: Context, config?: Config): void {
   // (dsh-host-apiproxy's allowlist), so the card talks to /api/skill-hub/config
   // instead of the settings transport.
   const base = config ?? {}
-  const resolveSaved = (saved: Partial<HubConfig>): HubConfig => ({
-    enabled: saved.enabled ?? base.enabled ?? DEFAULTS.enabled,
-    announceToAgent: saved.announceToAgent ?? base.announceToAgent ?? DEFAULTS.announceToAgent,
-    showUseCount: saved.showUseCount ?? base.showUseCount ?? DEFAULTS.showUseCount,
-    showUseTime: saved.showUseTime ?? base.showUseTime ?? DEFAULTS.showUseTime,
-    showSourceColumn: saved.showSourceColumn ?? base.showSourceColumn ?? DEFAULTS.showSourceColumn,
-    showGroupSummary: saved.showGroupSummary ?? base.showGroupSummary ?? DEFAULTS.showGroupSummary,
-    ...(saved.dotModelColor !== undefined ? { dotModelColor: saved.dotModelColor } : {}),
-    ...(saved.dotUserColor !== undefined ? { dotUserColor: saved.dotUserColor } : {}),
-  })
-  let current: () => HubConfig = () => resolveSaved({})
+  // Saved sidecar overrides win over the cordis entry; the shared resolver
+  // fills the rest from HUB_CONFIG_DEFAULTS (single source, see protocol.ts).
+  let current: () => HubConfig = () => resolveHubConfig({}, base)
   // The raw saved config layer (fields the user explicitly overrode); the
   // config route reports it so the web card can mark overridden fields.
   let savedState: Partial<HubConfig> = {}
@@ -117,7 +96,7 @@ export function apply(ctx: Context, config?: Config): void {
   const updateConfig = async (patch: Partial<HubConfig>): Promise<HubConfig> => {
     await store.setConfig(patch)
     savedState = await store.getConfig()
-    const next = resolveSaved(savedState)
+    const next = resolveHubConfig(savedState, base)
     current = () => next
     sync()
     return next
@@ -186,7 +165,7 @@ export function apply(ctx: Context, config?: Config): void {
   sync()
   void store.getConfig().then((saved) => {
     savedState = saved
-    current = () => resolveSaved(saved)
+    current = () => resolveHubConfig(saved, base)
     sync()
   })
 

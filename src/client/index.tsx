@@ -34,6 +34,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import { SkillHubApi } from './api.ts'
 import { ApiConfigScope } from './api-config-scope.ts'
 import { en, zh, type HubKey } from './locales.ts'
+import { applySettingsNavIcon } from './settings-nav-icon.ts'
 import { SkillHubSettingsCard, SkillHubSettingsCardController } from './SkillHubSettingsCard.tsx'
 import { SkillHubPanel } from './panel/SkillHubPanel.tsx'
 
@@ -97,4 +98,7 @@ export function apply(ctx: ClientContext): void {
     }, () => <SkillHubPanel api={api} />)),
     'dsh-skill-hub: settings section',
   )
+
+  // Host shell has no section-icon registration; keep the nav gear swapped for the skill icon.
+  ctx.effect(() => applySettingsNavIcon(), 'dsh-skill-hub: settings nav icon')
 }

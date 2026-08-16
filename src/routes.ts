@@ -6,10 +6,14 @@
  * upstream deletion into a restorable trash). Every route carries a
  * loopback-only trust fence — these endpoints rename files under the user's
  * skill roots, so LAN-exposed dsh web deployments must not serve them.
+ *
+ * Every handler is declared through the local `route()` wrapper, which owns
+ * the shared request fences (loopback trust, HTTP method, master switch,
+ * JSON body) exactly once, so a new route cannot forget them.
  */
 
 import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { SkillDefinition, SkillSummary } from '@deepseek-ai/dsh-skill'
@@ -20,12 +24,15 @@ import {
   discoverRepoEntries,
   downloadRepoSkill,
   getLatestCommit,
+  getLatestReleaseTag,
+  listRepoBranches,
   loadRepoTree,
   loadRepoTreeAt,
   normalizeRepoInput,
   repoSkillEntry,
   repoSlug,
   RepoFetchError,
+  skillDirOf,
   skillManifest,
 } from './repo.ts'
 import {
@@ -34,6 +41,7 @@ import {
   type CatalogSkill,
   type CollectionGroup,
   type ConfigResponse,
+  type CreateResponse,
   type RepoDiscoverResponse,
   type RepoImportRequest,
   type RepoImportResponse,
@@ -41,9 +49,12 @@ import {
   type ErrorResponse,
   type GroupsResponse,
   type HubConfig,
+  type MarketCheckResponse,
+  type MarketSourceRefRequest,
   type MarketSourceRequest,
   type MarketSourceResponse,
   type MarketSourcesResponse,
+  type MarketSyncResponse,
   type SourceCheckRequest,
   type SourceCheckResponse,
   type SourceCheckResult,
@@ -51,11 +62,14 @@ import {
   type SourceDeleteResponse,
   type SourceRestoreRequest,
   type SourceRestoreResponse,
+  type SourceTrashClearResponse,
   type SourcesResponse,
   type SourceSyncRequest,
   type SourceSyncResponse,
   type SkillDetail,
   type SkillDetailResponse,
+  type SkillDeleteRequest,
+  type SkillDeleteResponse,
   type TagDeleteRequest,
   type TagDeleteResponse,
   type TagMembersRequest,
@@ -68,10 +82,11 @@ import {
   type ToggleResponse,
   type WritableRoot,
   HEX_COLOR_RE,
+  resolveHubConfig,
 } from './protocol.ts'
-import { createSkill, disableSkill, enableSkill, restoreSkill, rootOfPath, rootPath, scanDiagnostics, trashSkill } from './skillfs.ts'
+import { clearTrash, createSkill, disableSkill, enableSkill, restoreSkill, rootOfPath, rootPath, scanDiagnostics, trashSkill } from './skillfs.ts'
 import { checkLatestRelease } from './update.ts'
-import { dshHome, type SkillHubStore } from './store.ts'
+import { dshHome, StoreError, type SkillHubStore } from './store.ts'
 import type { SkillStatsReader } from './stats.ts'
 
 /** Cap on JSON request bodies (toggle/create payloads are tiny). */
@@ -116,10 +131,17 @@ function writeError(res: ServerResponse, status: number, error: unknown): void {
   writeJson(res, status, body)
 }
 
-/** Repo helpers use HTTP-specific errors; preserve the status they carry. */
-function writeRepoError(res: ServerResponse, error: unknown): void {
+/** HTTP status per store business-rule kind (user error, not server fault). */
+const STORE_ERROR_STATUS = { validation: 400, 'not-found': 404, conflict: 409 } as const
+
+/** Map known error types onto HTTP statuses: repo fetch + store business rules. */
+function writeRouteError(res: ServerResponse, error: unknown): void {
   if (error instanceof RepoFetchError) {
     writeError(res, error.status, error)
+    return
+  }
+  if (error instanceof StoreError) {
+    writeError(res, STORE_ERROR_STATUS[error.kind], error)
     return
   }
   writeError(res, 500, error)
@@ -160,7 +182,7 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 /** Sources the hub may toggle (the user-level filesystem roots). */
-function isWritableSource(source: string): boolean {
+function isWritableSource(source: string): source is WritableRoot {
   return source === 'user-dsh' || source === 'user-agents'
 }
 
@@ -190,18 +212,9 @@ export interface SkillHubRouteDeps {
   updateConfig?: (patch: Partial<HubConfig>) => Promise<HubConfig>
 }
 
-/** The resolved hub config a route sees (defaults when the owner omits it). */
+/** The resolved hub config a route sees (the shared resolver fills defaults). */
 function configOf(deps: SkillHubRouteDeps): HubConfig {
-  const config = deps.config?.() ?? {}
-  return {
-    enabled: true,
-    announceToAgent: true,
-    showUseCount: true,
-    showUseTime: true,
-    showSourceColumn: true,
-    showGroupSummary: true,
-    ...config,
-  }
+  return resolveHubConfig({}, deps.config?.() ?? {})
 }
 
 /** The raw saved config layer a route reports (empty when the owner omits it). */
@@ -219,6 +232,42 @@ function disabledGate(deps: SkillHubRouteDeps, res: ServerResponse): boolean {
 /** Resolve the home used for writable-root operations. */
 function homeOf(deps: SkillHubRouteDeps): string {
   return deps.home ?? dshHome()
+}
+
+/** A skill resolved as a hub-writable user-level file. */
+interface WritableSkill {
+  skill: SkillDefinition
+  /** Absolute discovery-file path (guaranteed present by the resolver). */
+  path: string
+  /** The writable root containing the file. */
+  root: WritableRoot
+}
+
+/** A refusal with the exact HTTP error the caller should answer with. */
+interface WritableSkillRefusal {
+  status: number
+  error: string
+}
+
+type WritableSkillResult = { ok: true } & WritableSkill | { ok: false } & WritableSkillRefusal
+
+/**
+ * Resolve a skill by name as something the hub may write, or the exact
+ * refusal the caller should answer with. Owns the guard sequence shared by
+ * toggle, toggle-batch, and skill/delete: registry lookup, writable source,
+ * writable file, and path containment inside a user root.
+ */
+async function resolveWritableSkill(deps: SkillHubRouteDeps, name: string, cwd?: string): Promise<WritableSkillResult> {
+  const lookup = cwd !== undefined && cwd !== '' ? { cwd } : undefined
+  const skill = await deps.skills.get(name, lookup)
+  if (skill === undefined) return { ok: false, status: 404, error: 'skill not found: ' + name }
+  if (!isWritableSource(skill.source)) {
+    return { ok: false, status: 409, error: 'source "' + skill.source + '" is managed outside the hub (read-only)' }
+  }
+  if (skill.path === undefined) return { ok: false, status: 409, error: 'provider-managed skill has no writable file' }
+  const root = rootOfPath(skill.path, homeOf(deps))
+  if (root === undefined) return { ok: false, status: 409, error: 'skill path is outside the hub writable roots' }
+  return { ok: true, skill, path: skill.path, root }
 }
 
 /** 系统集合组 + 用户 tag + origin 映射（groups 路由的数据源）。 */
@@ -248,20 +297,46 @@ async function knownSkillNames(deps: SkillHubRouteDeps): Promise<Set<string>> {
 async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promise<CatalogResponse> {
   const lookup = cwd !== undefined ? { cwd } : undefined
   const snapshot = await deps.skills.snapshot(lookup)
-  const skills: CatalogSkill[] = snapshot.skills.map((skill) => ({
-    name: skill.name,
-    description: skill.description,
-    ...(skill.whenToUse !== undefined ? { whenToUse: skill.whenToUse } : {}),
-    invocation: {
-      modelInvocable: skill.invocation.modelInvocable,
-      userInvocable: skill.invocation.userInvocable,
-    },
-    source: skill.source,
-    provider: skill.provider,
-    writable: isWritableSource(skill.source),
-  }))
-  const disabled = await deps.store.listDisabled()
   const home = homeOf(deps)
+  // 添加/更新时间 = 用户级技能文件的创建/修改时间（排序与详情展示用）。
+  // snapshot 只给 SkillSummary（无 path），所以按可写根推断路径；非用户级
+  // 来源没有稳定路径，省略字段，客户端排序会把它放到末尾。
+  // 全部技能并发收集（面板每 5 秒轮询一次，逐个串行 stat 会让响应随技能
+  // 数量线性变慢）。
+  const timesByName = new Map<string, { addedAt: number; updatedAt: number }>()
+  await Promise.all(snapshot.skills.map(async (skill) => {
+    if (!isWritableSource(skill.source)) return
+    const base = rootPath(skill.source, home)
+    for (const candidate of [join(base, skill.name, 'SKILL.md'), join(base, skill.name), join(base, skill.name + '.md')]) {
+      try {
+        const times = await stat(candidate)
+        timesByName.set(skill.name, { addedAt: times.birthtimeMs, updatedAt: times.mtimeMs })
+        return
+      } catch {
+        // 目录/文件不存在则尝试下一个候选路径。
+      }
+    }
+  }))
+  const skills: CatalogSkill[] = snapshot.skills.map((skill) => {
+    const row: CatalogSkill = {
+      name: skill.name,
+      description: skill.description,
+      ...(skill.whenToUse !== undefined ? { whenToUse: skill.whenToUse } : {}),
+      invocation: {
+        modelInvocable: skill.invocation.modelInvocable,
+        userInvocable: skill.invocation.userInvocable,
+      },
+      provider: skill.provider,
+      writable: isWritableSource(skill.source),
+    }
+    const times = timesByName.get(skill.name)
+    if (times !== undefined) {
+      row.addedAt = times.addedAt
+      row.updatedAt = times.updatedAt
+    }
+    return row
+  })
+  const disabled = await deps.store.listDisabled()
   const diagnostics = [
     ...(await scanDiagnostics('user-dsh', home)),
     ...(await scanDiagnostics('user-agents', home)),
@@ -279,7 +354,6 @@ function toDetail(skill: SkillDefinition): SkillDetail {
       modelInvocable: skill.invocation.modelInvocable,
       userInvocable: skill.invocation.userInvocable,
     },
-    source: skill.source,
     provider: skill.provider,
     ...(skill.path !== undefined ? { path: skill.path } : {}),
     content: skill.content,
@@ -288,10 +362,15 @@ function toDetail(skill: SkillDefinition): SkillDetail {
 
 /** Last successful check time per repo (in-memory throttle for GitHub rate limits). */
 const lastSourceCheck = new Map<string, number>()
+/** Last successful market update check per repo (same throttle). */
+const lastMarketCheck = new Map<string, number>()
 
 /** Replace one skill directory with a fresh download; restores the old dir on failure. */
 async function replaceSkillDir(targetDir: string, download: () => Promise<void>): Promise<void> {
-  const backup = targetDir + '.sync-bak-' + Date.now()
+  // 点前缀：发现扫描跳过点开头的目录（与导入临时目录 .<name>.import- 同一
+  // 约定），备份即使删除失败残留下来，也不会混进目录/发现诊断，更不会
+  // 造成同名技能重复注册。
+  const backup = join(dirname(targetDir), '.' + basename(targetDir) + '.sync-bak-' + Date.now())
   await rename(targetDir, backup)
   try {
     await download()
@@ -302,117 +381,185 @@ async function replaceSkillDir(targetDir: string, download: () => Promise<void>)
   await rm(backup, { recursive: true, force: true })
 }
 
+/** What a route handler receives: fences already passed, URL/body prepared. */
+interface RouteContext {
+  req: IncomingMessage
+  res: ServerResponse
+  /** Request URL parsed against a localhost base (query reading for GET). */
+  url: URL
+  /** Parsed JSON body; empty object for requests without one. */
+  body: Record<string, unknown>
+}
+
+type RouteHandler = (context: RouteContext) => Promise<void>
+
+/** One declarative route: path + accepted methods + the business handler. */
+interface RouteSpec {
+  path: string
+  /** Accepted HTTP methods; anything else answers 405. */
+  methods: readonly ('GET' | 'POST')[]
+  /** POST requests must carry a JSON body (400 when missing/unparseable). */
+  jsonBody?: boolean
+  /** Skip the master-switch gate (the config route stays up while disabled). */
+  skipGate?: boolean
+  handler: RouteHandler
+}
+
 /**
  * Build every /api/skill-hub route.
  * @param deps - skill registry view + sidecar store.
  * @returns the exact-path routes.
  */
 export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
+  /**
+   * Wrap one handler in the shared request fences. Order matches the
+   * original per-handler prologue: loopback trust → HTTP method → master
+   * switch → JSON body. The outer catch maps errors onto the JSON error
+   * body (preserving RepoFetchError status codes).
+   */
+  const route = (spec: RouteSpec): WebRoute => ({
+    kind: 'exact',
+    path: spec.path,
+    handler: async (req, res) => {
+      if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
+      if (!spec.methods.includes(req.method as 'GET' | 'POST')) {
+        writeError(res, 405, 'method not allowed: ' + (req.method ?? ''))
+        return
+      }
+      if (spec.skipGate !== true && disabledGate(deps, res)) return
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      let body: Record<string, unknown> = {}
+      if (spec.jsonBody === true && req.method === 'POST') {
+        const parsed = await readJsonBody(req)
+        if (parsed === undefined) { writeError(res, 400, 'invalid JSON body'); return }
+        body = parsed
+      }
+      try {
+        await spec.handler({ req, res, url, body })
+      } catch (error) {
+        writeRouteError(res, error)
+      }
+    },
+  })
+
   return [
     // ------------------------------------------------------------ catalog
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.catalog,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'GET') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        try {
-          const url = new URL(req.url ?? '/', 'http://localhost')
-          const cwd = queryParam(url, 'cwd')
-          writeJson(res, 200, await buildCatalog(deps, cwd))
-        } catch (error) {
-          writeError(res, 500, error)
-        }
+      methods: ['GET'],
+      handler: async ({ res, url }) => {
+        const cwd = queryParam(url, 'cwd')
+        writeJson(res, 200, await buildCatalog(deps, cwd))
       },
-    },
+    }),
     // -------------------------------------------------------------- detail
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.skill,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'GET') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const url = new URL(req.url ?? '/', 'http://localhost')
+      methods: ['GET'],
+      handler: async ({ res, url }) => {
         const name = queryParam(url, 'name')
         if (name === undefined || name === '') { writeError(res, 400, 'name query parameter is required'); return }
         const cwd = queryParam(url, 'cwd')
-        try {
-          const skill = await deps.skills.get(name, cwd !== undefined ? { cwd } : undefined)
-          if (skill === undefined) { writeError(res, 404, 'skill not found: ' + name); return }
-          writeJson(res, 200, { ok: true, skill: toDetail(skill) } satisfies SkillDetailResponse)
-        } catch (error) {
-          writeError(res, 500, error)
+        const skill = await deps.skills.get(name, cwd !== undefined ? { cwd } : undefined)
+        if (skill === undefined) { writeError(res, 404, 'skill not found: ' + name); return }
+        const detail = toDetail(skill)
+        if (skill.path !== undefined) {
+          try {
+            const times = await stat(skill.path)
+            detail.addedAt = times.birthtimeMs
+            detail.updatedAt = times.mtimeMs
+          } catch {
+            // 文件不可读时省略时间字段，详情页不显示这两行。
+          }
         }
+        writeJson(res, 200, { ok: true, skill: detail } satisfies SkillDetailResponse)
       },
-    },
+    }),
+    // -------------------------------------------------------- skill/delete
+    // 把单个技能（目录或平面文件）移入回收站（可恢复），并清理禁用记录、tag 成员与来源映射。
+    route({
+      path: SKILL_HUB_API.skillDelete,
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as SkillDeleteRequest & { cwd?: string }
+        const name = typeof request.name === 'string' ? request.name : ''
+        if (name === '') { writeError(res, 400, 'name is required'); return }
+        const resolved = await resolveWritableSkill(deps, name, typeof request.cwd === 'string' ? request.cwd : undefined)
+        if (!resolved.ok) { writeError(res, resolved.status, resolved.error); return }
+        // 入回收站前快照来源归属与场景成员：恢复时把它们加回来，否则恢复
+        // 后的技能会丢失来源（变成「个人技能」）和场景分组。
+        const tracked = await deps.store.getSourceForSkill(name)
+        const tagIds = (await deps.store.listTags()).filter((tag) => tag.skillNames.includes(name)).map((tag) => tag.id)
+        const { path, source } = await trashSkill(resolved.path)
+        await deps.store.addTrash({
+          name,
+          path,
+          movedAt: Date.now(),
+          sourcePath: source,
+          ...(tracked !== undefined
+            ? { origin: { repo: tracked.repo, root: tracked.root, ...(tracked.ref !== undefined && tracked.ref !== '' ? { ref: tracked.ref } : {}), commitSha: tracked.commitSha } }
+            : {}),
+          ...(tagIds.length > 0 ? { tagIds } : {}),
+        })
+        await deps.store.removeDisabled(name)
+        await deps.store.removeSkillFromSources(name)
+        await deps.store.removeSkillFromTags(name)
+        deps.invalidate?.()
+        writeJson(res, 200, { ok: true, name, path } satisfies SkillDeleteResponse)
+      },
+    }),
     // -------------------------------------------------------------- toggle
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.toggle,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const raw = await readJsonBody(req)
-        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
-        const request = raw as unknown as ToggleRequest & { cwd?: string }
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as ToggleRequest & { cwd?: string }
         const name = typeof request.name === 'string' ? request.name : ''
         if (name === '') { writeError(res, 400, 'name is required'); return }
         const lookup = typeof request.cwd === 'string' && request.cwd !== '' ? { cwd: request.cwd } : undefined
-        try {
-          if (request.enabled === true) {
-            const record = await deps.store.getDisabled(name)
-            if (record === undefined) { writeError(res, 404, 'skill is not hub-disabled: ' + name); return }
+        if (request.enabled === true) {
+          const record = await deps.store.getDisabled(name)
+          if (record === undefined) { writeError(res, 404, 'skill is not hub-disabled: ' + name); return }
+          try {
             await enableSkill(record.path)
-            await deps.store.removeDisabled(name)
-          } else {
-            const skill = await deps.skills.get(name, lookup)
-            if (skill === undefined) { writeError(res, 404, 'skill not found: ' + name); return }
-            if (!isWritableSource(skill.source)) {
-              writeError(res, 409, 'source "' + skill.source + '" is managed outside the hub (read-only)')
+          } catch (error) {
+            // The renamed file may have vanished (external cleanup); report
+            // precisely instead of a generic 500, like toggle-batch does.
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+              writeError(res, 409, 'disabled skill file is missing on disk: ' + record.path)
               return
             }
-            if (skill.path === undefined) {
-              writeError(res, 409, 'provider-managed skill has no writable file')
-              return
-            }
-            const root = rootOfPath(skill.path, homeOf(deps))
-            if (root === undefined) {
-              writeError(res, 409, 'skill path is outside the hub writable roots')
-              return
-            }
-            const disabledPath = await disableSkill(skill.path)
-            await deps.store.addDisabled({
-              name,
-              description: skill.description,
-              path: disabledPath,
-              root,
-              disabledAt: Date.now(),
-            })
+            throw error
           }
-          deps.invalidate?.()
-          writeJson(res, 200, { ok: true, catalog: await buildCatalog(deps, lookup?.cwd) } satisfies ToggleResponse)
-        } catch (error) {
-          writeError(res, 500, error)
+          await deps.store.removeDisabled(name)
+        } else {
+          const resolved = await resolveWritableSkill(deps, name, typeof request.cwd === 'string' ? request.cwd : undefined)
+          if (!resolved.ok) { writeError(res, resolved.status, resolved.error); return }
+          const disabledPath = await disableSkill(resolved.path)
+          await deps.store.addDisabled({
+            name,
+            description: resolved.skill.description,
+            path: disabledPath,
+            root: resolved.root,
+            disabledAt: Date.now(),
+          })
         }
+        deps.invalidate?.()
+        writeJson(res, 200, { ok: true, catalog: await buildCatalog(deps, lookup?.cwd) } satisfies ToggleResponse)
       },
-    },
+    }),
     // -------------------------------------------------------- toggle-batch
     // One write for a whole group: enables every hub-disabled name, or
     // disables every writable name. Skips already-target states as no-ops;
     // per-name failures are reported, never fatal.
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.toggleBatch,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const raw = await readJsonBody(req)
-        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
-        const request = raw as unknown as ToggleBatchRequest & { cwd?: string }
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as ToggleBatchRequest & { cwd?: string }
         const names = Array.isArray(request.names) ? request.names.filter((n): n is string => typeof n === 'string' && n !== '') : []
         if (names.length === 0) { writeError(res, 400, 'names must be a non-empty array'); return }
         const enabled = request.enabled === true
@@ -426,14 +573,10 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
               await enableSkill(record.path)
               await deps.store.removeDisabled(name)
             } else {
-              const skill = await deps.skills.get(name, lookup)
-              if (skill === undefined) { failures.push({ name, error: 'skill not found' }); continue }
-              if (!isWritableSource(skill.source)) { failures.push({ name, error: 'source "' + skill.source + '" is read-only' }); continue }
-              if (skill.path === undefined) { failures.push({ name, error: 'provider-managed skill has no writable file' }); continue }
-              const root = rootOfPath(skill.path, homeOf(deps))
-              if (root === undefined) { failures.push({ name, error: 'skill path is outside the hub writable roots' }); continue }
-              const disabledPath = await disableSkill(skill.path)
-              await deps.store.addDisabled({ name, description: skill.description, path: disabledPath, root, disabledAt: Date.now() })
+              const resolved = await resolveWritableSkill(deps, name, typeof request.cwd === 'string' ? request.cwd : undefined)
+              if (!resolved.ok) { failures.push({ name, error: resolved.error }); continue }
+              const disabledPath = await disableSkill(resolved.path)
+              await deps.store.addDisabled({ name, description: resolved.skill.description, path: disabledPath, root: resolved.root, disabledAt: Date.now() })
             }
           } catch (error) {
             failures.push({ name, error: error instanceof Error ? error.message : String(error) })
@@ -442,69 +585,64 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
         deps.invalidate?.()
         writeJson(res, 200, { ok: true, catalog: await buildCatalog(deps, lookup?.cwd), failures } satisfies ToggleBatchResponse)
       },
-    },
+    }),
     // -------------------------------------------------------------- create
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.create,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const raw = await readJsonBody(req)
-        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
-        const request = raw as unknown as CreateRequest
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as CreateRequest
         const name = typeof request.name === 'string' ? request.name.trim() : ''
         if (!isSkillName(name)) { writeError(res, 400, 'skill name must be kebab-case (lowercase letters, digits, dashes)'); return }
         const root: WritableRoot = request.root ?? 'user-dsh'
         if (root !== 'user-dsh' && root !== 'user-agents') { writeError(res, 400, 'root must be user-dsh or user-agents'); return }
-        try {
-          const existing = await deps.skills.get(name)
-          if (existing !== undefined) { writeError(res, 409, 'skill name already exists: ' + name); return }
-          if (await deps.store.getDisabled(name) !== undefined) { writeError(res, 409, 'skill name is disabled: re-enable it from the disabled list first'); return }
-          const path = await createSkill(root, name, typeof request.description === 'string' ? request.description : '', homeOf(deps))
-          deps.invalidate?.()
-          writeJson(res, 201, { ok: true, path, root } satisfies import('./protocol.ts').CreateResponse)
-        } catch (error) {
-          writeError(res, 500, error)
+        const existing = await deps.skills.get(name)
+        if (existing !== undefined) { writeError(res, 409, 'skill name already exists: ' + name); return }
+        if (await deps.store.getDisabled(name) !== undefined) { writeError(res, 409, 'skill name is disabled: re-enable it from the disabled list first'); return }
+        // A directory may exist without producing a registry entry (invalid
+        // frontmatter — exactly what the diagnostics section reports).
+        // Refuse to overwrite it instead of silently truncating its SKILL.md.
+        const target = join(rootPath(root, homeOf(deps)), name)
+        if (await pathExists(target)) {
+          writeError(res, 409, 'skill directory already exists on disk: ' + name + ' (check the discovery diagnostics)')
+          return
         }
+        const path = await createSkill(root, name, typeof request.description === 'string' ? request.description : '', homeOf(deps))
+        // 新技能自动归入默认场景（「通用」）。
+        const defaultTag = await deps.store.getDefaultTag()
+        if (defaultTag !== undefined) await deps.store.addSkillToTag(defaultTag.id, name)
+        deps.invalidate?.()
+        writeJson(res, 201, { ok: true, path, root } satisfies CreateResponse)
       },
-    },
+    }),
     // ---------------------------------------------------------------- stats
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.stats,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'GET') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
+      methods: ['GET'],
+      handler: async ({ res }) => {
         if (deps.stats === undefined) {
           writeJson(res, 200, { ok: true, available: false, stats: [] } satisfies import('./protocol.ts').StatsResponse)
           return
         }
-        try {
-          const stats = await deps.stats()
-          writeJson(res, 200, { ok: true, available: true, stats } satisfies import('./protocol.ts').StatsResponse)
-        } catch (error) {
-          writeError(res, 500, error)
-        }
+        const stats = await deps.stats()
+        writeJson(res, 200, { ok: true, available: true, stats } satisfies import('./protocol.ts').StatsResponse)
       },
-    },
+    }),
     // --------------------------------------------------------------- config
     // The config route stays mounted even with the master switch off, so the
     // settings card can always read and re-enable the hub.
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.config,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
+      methods: ['GET', 'POST'],
+      jsonBody: true,
+      skipGate: true,
+      handler: async ({ req, res, body }) => {
         if (req.method === 'GET') {
           writeJson(res, 200, { ok: true, config: configOf(deps), saved: savedOf(deps) } satisfies ConfigResponse)
           return
         }
-        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        const raw = await readJsonBody(req)
-        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
+        const raw = body
         const patch: Partial<HubConfig> = {}
         if (raw.enabled !== undefined) {
           if (raw.enabled === null) patch.enabled = undefined
@@ -516,7 +654,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
           else if (typeof raw.announceToAgent !== 'boolean') { writeError(res, 400, 'announceToAgent must be a boolean or null'); return }
           else patch.announceToAgent = raw.announceToAgent
         }
-        for (const key of ['showUseCount', 'showUseTime', 'showSourceColumn', 'showGroupSummary'] as const) {
+        for (const key of ['showUseCount', 'showUseTime', 'showGroupSummary'] as const) {
           const value = raw[key]
           if (value === undefined) continue
           if (value === null) { patch[key] = undefined; continue }
@@ -539,478 +677,576 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
           }
           config = merged
         } else {
-          try {
-            config = await deps.updateConfig(patch)
-          } catch (error) {
-            writeError(res, 500, error)
-            return
-          }
+          config = await deps.updateConfig(patch)
         }
         writeJson(res, 200, { ok: true, config, saved: savedOf(deps) } satisfies ConfigResponse)
       },
-    },
+    }),
     // --------------------------------------------------------------- market
     // Codex-style market sources: the user adds repo slugs; each source can
     // be scanned through /repo and imported through /repo/import.
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.market,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'GET') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        try {
-          writeJson(res, 200, { ok: true, repos: await deps.store.listMarketSources() } satisfies MarketSourcesResponse)
-        } catch (error) {
-          writeError(res, 500, error)
-        }
+      methods: ['GET'],
+      handler: async ({ res }) => {
+        writeJson(res, 200, { ok: true, repos: await deps.store.listMarketSources() } satisfies MarketSourcesResponse)
       },
-    },
-    {
-      kind: 'exact',
+    }),
+    route({
       path: SKILL_HUB_API.marketSource,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const raw = await readJsonBody(req)
-        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
-        const request = raw as unknown as MarketSourceRequest
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as MarketSourceRequest
         const input = typeof request.repo === 'string' ? request.repo.trim() : ''
         const parsed = normalizeRepoInput(input)
         if (parsed === null) { writeError(res, 400, 'repo must be owner/repo or a github.com URL'); return }
-        try {
-          writeJson(res, 200, { ok: true, repos: await deps.store.addMarketSource(repoSlug(parsed)) } satisfies MarketSourceResponse)
-        } catch (error) {
-          writeError(res, 500, error)
-        }
+        // An explicit @ref pins the source immediately (e.g. repo@v1.2.3);
+        // otherwise the first scan resolves latest-release / branch choice.
+        const ref = parsed.ref !== undefined ? parsed.ref : undefined
+        writeJson(res, 200, { ok: true, repos: await deps.store.addMarketSource(repoSlug(parsed), ref) } satisfies MarketSourceResponse)
       },
-    },
-    {
-      kind: 'exact',
+    }),
+    route({
       path: SKILL_HUB_API.marketSourceDelete,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const raw = await readJsonBody(req)
-        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
-        const request = raw as unknown as MarketSourceRequest
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as MarketSourceRequest
         const input = typeof request.repo === 'string' ? request.repo.trim() : ''
         const parsed = normalizeRepoInput(input)
         if (parsed === null) { writeError(res, 400, 'repo must be owner/repo or a github.com URL'); return }
-        try {
-          writeJson(res, 200, { ok: true, repos: await deps.store.removeMarketSource(repoSlug(parsed)) } satisfies MarketSourceResponse)
-        } catch (error) {
-          writeError(res, 500, error)
-        }
+        writeJson(res, 200, { ok: true, repos: await deps.store.removeMarketSource(repoSlug(parsed)) } satisfies MarketSourceResponse)
       },
-    },
+    }),
+    // ------------------------------------------------------- market/source/ref
+    // Pin a market source to an explicit ref (branch chosen after a scan
+    // found no release, or a user-specified tag).
+    route({
+      path: SKILL_HUB_API.marketSourceRef,
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as MarketSourceRefRequest
+        const parsed = normalizeRepoInput(typeof request.repo === 'string' ? request.repo : '')
+        const ref = typeof request.ref === 'string' ? request.ref.trim() : ''
+        if (parsed === null) { writeError(res, 400, 'repo must be owner/repo or a github.com URL'); return }
+        if (ref === '') { writeError(res, 400, 'ref is required'); return }
+        const record = await deps.store.setMarketSourceRef(repoSlug(parsed), ref)
+        if (record === undefined) { writeError(res, 404, 'market source not found: ' + repoSlug(parsed)); return }
+        writeJson(res, 200, { ok: true, repos: await deps.store.listMarketSources() } satisfies MarketSourceResponse)
+      },
+    }),
+    // ------------------------------------------------------- market/check
+    // Update check over every market source: compares the pinned ref's
+    // commit against the recorded baseline and surfaces newer releases.
+    // 5-minute throttle mirrors the source check.
+    route({
+      path: SKILL_HUB_API.marketCheck,
+      methods: ['GET'],
+      handler: async ({ res }) => {
+        const sources = await deps.store.listMarketSources()
+        if (lastMarketCheck.size > 500) lastMarketCheck.clear()
+        const results: MarketCheckResponse['results'] = []
+        for (const source of sources) {
+          const base = { repo: source.repo, ...(source.ref !== undefined ? { ref: source.ref } : {}) }
+          const now = Date.now()
+          const last = lastMarketCheck.get(source.repo) ?? 0
+          if (now - last < MIN_CHECK_INTERVAL_MS) {
+            results.push({ ...base, updateAvailable: false, commitSha: source.commitSha ?? '', throttled: true })
+            continue
+          }
+          try {
+            const latestTag = await getLatestReleaseTag(source.repo)
+            if (source.ref === undefined) {
+              // Not pinned yet: report the latest release so the UI can
+              // suggest pinning, but never claim an update.
+              results.push({ ...base, updateAvailable: false, commitSha: source.commitSha ?? '', ...(latestTag !== undefined ? { latestTag } : {}) })
+              continue
+            }
+            const latest = await getLatestCommit(source.repo, source.ref)
+            lastMarketCheck.set(source.repo, now)
+            const commitMoved = source.commitSha !== undefined && latest.commitSha !== source.commitSha
+            const newRelease = latestTag !== undefined && latestTag !== source.ref
+            results.push({ ...base, updateAvailable: commitMoved || newRelease, commitSha: latest.commitSha, ...(newRelease ? { latestTag } : {}) })
+          } catch (error) {
+            results.push({ ...base, updateAvailable: false, commitSha: source.commitSha ?? '', error: error instanceof Error ? error.message : String(error) })
+          }
+        }
+        writeJson(res, 200, { ok: true, results } satisfies MarketCheckResponse)
+      },
+    }),
+    // ------------------------------------------------------- market/source/sync
+    // Align a market source to its version: resolve the pinned ref (or pick
+    // the latest release when unpinned), record the commit, and propagate the
+    // ref to the matching tracked source record so source checks/syncs follow
+    // it. Returns the local skills tracked from this repo so the UI can offer
+    // a batch update.
+    route({
+      path: SKILL_HUB_API.marketSync,
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as MarketSourceRefRequest
+        const parsed = normalizeRepoInput(typeof request.repo === 'string' ? request.repo : '')
+        if (parsed === null) { writeError(res, 400, 'repo must be owner/repo or a github.com URL'); return }
+        const repo = repoSlug(parsed)
+        const source = await deps.store.getMarketSource(repo)
+        if (source === undefined) { writeError(res, 404, 'market source not found: ' + repo); return }
+        // Resolve the ref: pinned ref wins; otherwise auto-adopt the latest
+        // release; a repo without releases must be pinned via the branch picker first.
+        let ref = source.ref
+        if (ref === undefined || ref === '') {
+          const latestTag = await getLatestReleaseTag(repo)
+          if (latestTag === undefined) { writeError(res, 409, 'repo has no release — pick a branch first'); return }
+          ref = latestTag
+          await deps.store.setMarketSourceRef(repo, ref)
+        }
+        const latest = await getLatestCommit(repo, ref)
+        await deps.store.setMarketSourceCommit(repo, latest.commitSha)
+        // Propagate the ref to the tracked source record so checks follow it.
+        await deps.store.setSourceRef(repo, ref)
+        const tracked = await deps.store.getSource(repo)
+        writeJson(res, 200, {
+          ok: true,
+          repo,
+          ref,
+          commitSha: latest.commitSha,
+          skills: tracked !== undefined ? [...tracked.skills] : [],
+        } satisfies MarketSyncResponse)
+      },
+    }),
     // ---------------------------------------------------------------- repo
     // Discover importable skills in a public GitHub repo (skills/ + design-templates/).
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.repo,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'GET') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const url = new URL(req.url ?? '/', 'http://localhost')
+      methods: ['GET'],
+      handler: async ({ res, url }) => {
         const input = queryParam(url, 'repo') ?? ''
         const parsed = normalizeRepoInput(input)
         if (parsed === null) { writeError(res, 400, 'repo must be owner/repo or a github.com URL'); return }
         const repo = repoSlug(parsed)
-        try {
-          const { ref, tree } = await loadRepoTree(repo)
-          const existing = await knownSkillNames(deps)
-          const entries = discoverRepoEntries(tree, repo, existing)
-          writeJson(res, 200, { ok: true, repo, ref, entries } satisfies RepoDiscoverResponse)
-        } catch (error) {
-          writeRepoError(res, error)
+        // Version resolution: explicit @ref wins; then the market source's
+        // pinned ref (branch picked earlier); then the latest release;
+        // a repo without releases must be pinned to a branch by the user
+        // (branches returned, ref null).
+        let ref = parsed.ref
+        if (ref === undefined || ref === '') {
+          const pinned = await deps.store.getMarketSource(repo)
+          if (pinned?.ref !== undefined && pinned.ref !== '') {
+            ref = pinned.ref
+          }
         }
+        if (ref === undefined || ref === '') {
+          const releaseTag = await getLatestReleaseTag(repo)
+          if (releaseTag !== undefined) {
+            ref = releaseTag
+          } else {
+            const branches = await listRepoBranches(repo)
+            if (branches.length === 0) { writeError(res, 404, 'repo has no branches to scan'); return }
+            writeJson(res, 200, { ok: true, repo, ref: null, branches, entries: [] } satisfies RepoDiscoverResponse)
+            return
+          }
+        }
+        const { ref: resolvedRef, tree } = await loadRepoTree(repo, ref)
+        const existing = await knownSkillNames(deps)
+        const entries = discoverRepoEntries(tree, repo, existing)
+        writeJson(res, 200, { ok: true, repo, ref: resolvedRef, entries } satisfies RepoDiscoverResponse)
       },
-    },
+    }),
     // ----------------------------------------------------------- repo/import
     // Install selected repo skills, preserving full skill directories and
     // recording the upstream source (repo + commit snapshot + manifest) so
     // they form one tracked collection group.
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.repoImport,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const raw = await readJsonBody(req)
-        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
-        const request = raw as unknown as RepoImportRequest
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as RepoImportRequest
         const input = typeof request.repo === 'string' ? request.repo.trim() : ''
         const paths = Array.isArray(request.paths) ? request.paths.filter((path): path is string => typeof path === 'string' && path !== '') : []
         if (paths.length === 0) { writeError(res, 400, 'paths must be a non-empty array'); return }
         const parsed = normalizeRepoInput(input)
         if (parsed === null) { writeError(res, 400, 'repo must be owner/repo or a github.com URL'); return }
         const repo = repoSlug(parsed)
+        // The ref the discovery ran against must drive this import too, so
+        // the tree, commit snapshot, and recorded source ref all agree
+        // (falls back to the input's own @ref when the client omitted it).
+        const ref = typeof request.ref === 'string' && request.ref !== '' ? request.ref : parsed.ref
+        const { ref: resolvedRef, tree } = await loadRepoTree(repo, ref)
+        const existing = await knownSkillNames(deps)
+        const entries = discoverRepoEntries(tree, repo, existing)
+        const byPath = new Map(entries.map((entry) => [entry.path, entry]))
+        const selected = paths.map((path) => byPath.get(path)).filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
+        if (selected.length > 500) { writeError(res, 400, 'select at most 500 skills per import'); return }
+        const totalBytes = selected.reduce((sum, entry) => sum + entry.totalBytes, 0)
+        if (totalBytes > 200 * 1024 * 1024) { writeError(res, 400, 'selected skills exceed the 200MB import limit'); return }
+
+        // Snapshot the upstream commit for the source record (best-effort:
+        // a failure still imports, just with an unverified snapshot).
+        let commitSha = ''
         try {
-          const { ref, tree } = await loadRepoTree(repo)
-          const existing = await knownSkillNames(deps)
-          const entries = discoverRepoEntries(tree, repo, existing)
-          const byPath = new Map(entries.map((entry) => [entry.path, entry]))
-          const selected = paths.map((path) => byPath.get(path)).filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
-          if (selected.length > 500) { writeError(res, 400, 'select at most 500 skills per import'); return }
-          const totalBytes = selected.reduce((sum, entry) => sum + entry.totalBytes, 0)
-          if (totalBytes > 200 * 1024 * 1024) { writeError(res, 400, 'selected skills exceed the 200MB import limit'); return }
-
-          // Snapshot the upstream commit for the source record (best-effort:
-          // a failure still imports, just with an unverified snapshot).
-          let commitSha = ''
-          try {
-            const latest = await getLatestCommit(repo, parsed.ref)
-            commitSha = latest.commitSha
-          } catch {
-            // source record keeps an empty snapshot; first check backfills it
-          }
-
-          const imported: RepoImportResponse['imported'] = []
-          const skipped: RepoImportResponse['skipped'] = []
-          const failed: RepoImportResponse['failed'] = []
-          const targetRoot = rootPath('user-dsh', homeOf(deps))
-          await mkdir(targetRoot, { recursive: true })
-          for (const entry of selected) {
-            if (entry.existing) {
-              skipped.push({ name: entry.name, reason: 'exists' })
-              continue
-            }
-            if (await pathExists(join(targetRoot, entry.name))) {
-              skipped.push({ name: entry.name, reason: 'exists' })
-              continue
-            }
-            const files = collectRepoSkillFiles(tree, entry.dir)
-            try {
-              const result = await downloadRepoSkill(repo, ref, entry, files, targetRoot)
-              await deps.store.addSourceSkill(repo, entry.root, commitSha, parsed.ref, entry.name)
-              await deps.store.mergeSourceManifest(repo, skillManifest(tree, entry.dir))
-              imported.push({ name: entry.name, origin: entry.origin, path: result.skillPath })
-            } catch (error) {
-              failed.push({ name: entry.name, error: error instanceof Error ? error.message : String(error) })
-            }
-          }
-          deps.invalidate?.()
-          writeJson(res, 200, { ok: true, imported, skipped, failed } satisfies RepoImportResponse)
-        } catch (error) {
-          writeRepoError(res, error)
+          const latest = await getLatestCommit(repo, resolvedRef)
+          commitSha = latest.commitSha
+        } catch {
+          // source record keeps an empty snapshot; first check backfills it
         }
+
+        const imported: RepoImportResponse['imported'] = []
+        const skipped: RepoImportResponse['skipped'] = []
+        const failed: RepoImportResponse['failed'] = []
+        const targetRoot = rootPath('user-dsh', homeOf(deps))
+        await mkdir(targetRoot, { recursive: true })
+        // 导入的技能与新建技能一样自动归入默认场景「通用」，否则它们在
+        // 场景 tab 里不可见（来源集合只出现在来源 tab）。
+        const defaultTag = await deps.store.getDefaultTag()
+        for (const entry of selected) {
+          if (entry.existing) {
+            skipped.push({ name: entry.name, reason: 'exists' })
+            continue
+          }
+          if (await pathExists(join(targetRoot, entry.name))) {
+            skipped.push({ name: entry.name, reason: 'exists' })
+            continue
+          }
+          const files = collectRepoSkillFiles(tree, entry.dir)
+          try {
+            const result = await downloadRepoSkill(repo, resolvedRef, entry, files, targetRoot)
+            await deps.store.addSourceSkill(repo, entry.root, commitSha, resolvedRef, entry.name)
+            await deps.store.mergeSourceManifest(repo, skillManifest(tree, entry.dir), entry.dir)
+            if (defaultTag !== undefined) await deps.store.addSkillToTag(defaultTag.id, entry.name)
+            imported.push({ name: entry.name, origin: entry.origin, path: result.skillPath })
+          } catch (error) {
+            failed.push({ name: entry.name, error: error instanceof Error ? error.message : String(error) })
+          }
+        }
+        deps.invalidate?.()
+        writeJson(res, 200, { ok: true, imported, skipped, failed } satisfies RepoImportResponse)
       },
-    },
+    }),
     // -------------------------------------------------------------- update
     // 自身更新检查：查询 GitHub latest release（语义同 cc-switch 的检查更新）。
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.update,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'GET') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        try {
-          writeJson(res, 200, await checkLatestRelease())
-        } catch (error) {
-          writeError(res, 500, error)
-        }
+      methods: ['GET'],
+      handler: async ({ res }) => {
+        writeJson(res, 200, await checkLatestRelease())
       },
-    },
+    }),
     // -------------------------------------------------------------- groups
     // 用户 tag 分组 + 系统集合组 + origin 映射（前端分组栏的数据源）。
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.groups,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'GET') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        try {
-          writeJson(res, 200, await buildGroups(deps))
-        } catch (error) {
-          writeError(res, 500, error)
-        }
+      methods: ['GET'],
+      handler: async ({ res }) => {
+        writeJson(res, 200, await buildGroups(deps))
       },
-    },
+    }),
     // ----------------------------------------------------------------- tag
     // 新建（缺省 id）或重命名（带 id）一个用户 tag 分组。
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.tag,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const raw = await readJsonBody(req)
-        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
-        const name = typeof raw.name === 'string' ? raw.name.trim() : ''
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const name = typeof body.name === 'string' ? body.name.trim() : ''
         if (name === '') { writeError(res, 400, 'tag name is required'); return }
-        const id = typeof raw.id === 'string' && raw.id !== '' ? raw.id : undefined
-        try {
-          await deps.store.saveTag({ id, name })
-          writeJson(res, 200, { ok: true, tags: await deps.store.listTags() } satisfies TagSaveResponse)
-        } catch (error) {
-          writeError(res, 500, error)
-        }
+        const id = typeof body.id === 'string' && body.id !== '' ? body.id : undefined
+        await deps.store.saveTag({ id, name })
+        writeJson(res, 200, { ok: true, tags: await deps.store.listTags() } satisfies TagSaveResponse)
       },
-    },
+    }),
     // ----------------------------------------------------------- tag/delete
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.tagDelete,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const raw = await readJsonBody(req)
-        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
-        const id = typeof (raw as unknown as TagDeleteRequest).id === 'string' ? (raw as unknown as TagDeleteRequest).id : ''
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const id = typeof (body as unknown as TagDeleteRequest).id === 'string' ? (body as unknown as TagDeleteRequest).id : ''
         if (id === '') { writeError(res, 400, 'tag id is required'); return }
-        try {
-          await deps.store.deleteTag(id)
-          writeJson(res, 200, { ok: true, tags: await deps.store.listTags() } satisfies TagDeleteResponse)
-        } catch (error) {
-          writeError(res, 500, error)
-        }
+        const tag = await deps.store.getTag(id)
+        if (tag?.default === true) { writeError(res, 409, 'the default scene cannot be deleted'); return }
+        await deps.store.deleteTag(id)
+        writeJson(res, 200, { ok: true, tags: await deps.store.listTags() } satisfies TagDeleteResponse)
       },
-    },
+    }),
     // ---------------------------------------------------------- tag/members
     // 直接设置某 tag 的完整成员列表；后端只保留目录中实际存在的技能名。
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.tagMembers,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const raw = await readJsonBody(req)
-        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
-        const request = raw as unknown as TagMembersRequest
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as TagMembersRequest
         const id = typeof request.id === 'string' ? request.id : ''
         if (id === '') { writeError(res, 400, 'tag id is required'); return }
         const names = Array.isArray(request.skillNames) ? request.skillNames.filter((n): n is string => typeof n === 'string') : []
-        try {
-          const known = await knownSkillNames(deps)
-          const saved = await deps.store.setTagMembers(id, names.filter((n) => known.has(n)))
-          if (saved === undefined) { writeError(res, 404, 'tag not found: ' + id); return }
-          writeJson(res, 200, { ok: true, tags: await deps.store.listTags() } satisfies TagMembersResponse)
-        } catch (error) {
-          writeError(res, 500, error)
-        }
+        const known = await knownSkillNames(deps)
+        const saved = await deps.store.setTagMembers(id, names.filter((n) => known.has(n)))
+        if (saved === undefined) { writeError(res, 404, 'tag not found: ' + id); return }
+        writeJson(res, 200, { ok: true, tags: await deps.store.listTags() } satisfies TagMembersResponse)
       },
-    },
+    }),
     // ------------------------------------------------------------- sources
     // 来源列表 + 派生 origin 映射 + 集合组 + 回收站。
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.sources,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'GET') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        try {
-          const [sources, origins, trash] = await Promise.all([deps.store.listSources(), deps.store.listOrigins(), deps.store.listTrash()])
-          const byCollection = new Map<string, string[]>()
-          for (const [skillName, origin] of Object.entries(origins)) {
-            const list = byCollection.get(origin)
-            if (list === undefined) byCollection.set(origin, [skillName])
-            else list.push(skillName)
-          }
-          const collections: CollectionGroup[] = [...byCollection.entries()]
-            .map(([name, skillNames]) => ({ name, skillNames: [...skillNames].sort((a, b) => a.localeCompare(b)) }))
-            .sort((a, b) => a.name.localeCompare(b.name))
-          writeJson(res, 200, { ok: true, sources, origins, collections, trash } satisfies SourcesResponse)
-        } catch (error) {
-          writeError(res, 500, error)
+      methods: ['GET'],
+      handler: async ({ res }) => {
+        const [sources, origins, trash] = await Promise.all([deps.store.listSources(), deps.store.listOrigins(), deps.store.listTrash()])
+        const byCollection = new Map<string, string[]>()
+        for (const [skillName, origin] of Object.entries(origins)) {
+          const list = byCollection.get(origin)
+          if (list === undefined) byCollection.set(origin, [skillName])
+          else list.push(skillName)
         }
+        const collections: CollectionGroup[] = [...byCollection.entries()]
+          .map(([name, skillNames]) => ({ name, skillNames: [...skillNames].sort((a, b) => a.localeCompare(b)) }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+        writeJson(res, 200, { ok: true, sources, origins, collections, trash } satisfies SourcesResponse)
       },
-    },
+    }),
     // -------------------------------------------------------- sources/check
     // 检查指定（或全部）来源的上游更新。每个来源最多 1 次 commit 请求；
     // 仅当 commit 变化时再拉一次 tree 做逐技能差异。5 分钟节流。
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.sourceCheck,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const raw = await readJsonBody(req)
-        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
-        const request = raw as unknown as SourceCheckRequest
-        const only = typeof request.repo === 'string' && request.repo !== '' ? request.repo : undefined
-        try {
-          const sources = only !== undefined
-            ? (await deps.store.getSource(only)) !== undefined ? [await deps.store.getSource(only) as NonNullable<Awaited<ReturnType<SkillHubStore['getSource']>>>] : []
-            : await deps.store.listSources()
-          if (only !== undefined && sources.length === 0) { writeError(res, 404, 'source not found: ' + only); return }
-          const results: SourceCheckResult[] = []
-          for (const source of sources) {
-            const base = { repo: source.repo, ...(source.ref !== undefined ? { ref: source.ref } : {}) }
-            const now = Date.now()
-            const last = lastSourceCheck.get(source.repo) ?? 0
-            if (now - last < MIN_CHECK_INTERVAL_MS) {
-              results.push({ ...base, changed: false, updated: [], deleted: [], throttled: true })
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as SourceCheckRequest
+        let only: string | undefined
+        if (typeof request.repo === 'string' && request.repo !== '') {
+          // Normalize URLs/slugs the same way every other route does, so a
+          // check for "https://github.com/a/b" finds the "a/b" record.
+          const parsedOnly = normalizeRepoInput(request.repo)
+          only = parsedOnly !== null ? repoSlug(parsedOnly) : undefined
+        }
+        const source = only !== undefined ? await deps.store.getSource(only) : undefined
+        if (only !== undefined && source === undefined) { writeError(res, 404, 'source not found: ' + only); return }
+        const sources = source !== undefined ? [source] : await deps.store.listSources()
+        if (lastSourceCheck.size > 500) lastSourceCheck.clear()
+        const results: SourceCheckResult[] = []
+        for (const item of sources) {
+          const base = { repo: item.repo, ...(item.ref !== undefined ? { ref: item.ref } : {}) }
+          const now = Date.now()
+          const last = lastSourceCheck.get(item.repo) ?? 0
+          if (now - last < MIN_CHECK_INTERVAL_MS) {
+            results.push({ ...base, changed: false, updated: [], deleted: [], throttled: true })
+            continue
+          }
+          try {
+            const latest = await getLatestCommit(item.repo, item.ref)
+            lastSourceCheck.set(item.repo, now)
+            if (item.commitSha === '') {
+              // Migrated/legacy record without a snapshot: backfill the
+              // commit now and report "unverified" instead of claiming every
+              // skill is updated (there is no baseline to diff against yet).
+              await deps.store.setSourceCommit(item.repo, latest.commitSha)
+              results.push({ ...base, changed: false, updated: [], deleted: [], unverified: true, commitSha: latest.commitSha })
               continue
             }
-            try {
-              const latest = await getLatestCommit(source.repo, source.ref)
-              lastSourceCheck.set(source.repo, now)
-              if (latest.commitSha === source.commitSha) {
-                results.push({ ...base, changed: false, updated: [], deleted: [] })
-                continue
-              }
-              const tree = await loadRepoTreeAt(source.repo, latest.treeSha)
-              const diff = diffRemoteSkills(tree, source)
-              results.push({ ...base, changed: true, commitSha: latest.commitSha, updated: diff.updated, deleted: diff.deleted })
-            } catch (error) {
-              results.push({ ...base, changed: false, updated: [], deleted: [], error: error instanceof Error ? error.message : String(error) })
+            if (latest.commitSha === item.commitSha) {
+              results.push({ ...base, changed: false, updated: [], deleted: [] })
+              continue
             }
+            const tree = await loadRepoTreeAt(item.repo, latest.treeSha)
+            const diff = diffRemoteSkills(tree, item)
+            results.push({ ...base, changed: true, commitSha: latest.commitSha, updated: diff.updated, deleted: diff.deleted })
+          } catch (error) {
+            results.push({ ...base, changed: false, updated: [], deleted: [], error: error instanceof Error ? error.message : String(error) })
           }
-          writeJson(res, 200, { ok: true, results } satisfies SourceCheckResponse)
-        } catch (error) {
-          writeError(res, 500, error)
         }
+        writeJson(res, 200, { ok: true, results } satisfies SourceCheckResponse)
       },
-    },
+    }),
     // --------------------------------------------------------- sources/sync
     // 按上游重新下载所选（或全部）技能并更新 commit 快照与 manifest。
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.sourceSync,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const raw = await readJsonBody(req)
-        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
-        const request = raw as unknown as SourceSyncRequest
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as SourceSyncRequest
         const repo = typeof request.repo === 'string' ? request.repo.trim() : ''
         if (repo === '') { writeError(res, 400, 'repo is required'); return }
         const selected = Array.isArray(request.skills) ? request.skills.filter((n): n is string => typeof n === 'string' && n !== '') : undefined
-        try {
-          const source = await deps.store.getSource(repo)
-          if (source === undefined) { writeError(res, 404, 'source not found: ' + repo); return }
-          const targets = selected !== undefined ? selected : source.skills
-          const latest = await getLatestCommit(repo, source.ref)
-          const tree = await loadRepoTreeAt(repo, latest.treeSha)
-          const targetRoot = rootPath('user-dsh', homeOf(deps))
-          await mkdir(targetRoot, { recursive: true })
-          const synced: string[] = []
-          const failed: Array<{ name: string; error: string }> = []
-          for (const name of targets) {
-            try {
-              const entry = repoSkillEntry(name, source.root, repo)
-              const files = collectRepoSkillFiles(tree, entry.dir)
-              if (files.length === 0) { failed.push({ name, error: 'skill missing upstream' }); continue }
-              const targetDir = join(targetRoot, name)
-              const wasDisabled = (await deps.store.getDisabled(name)) !== undefined
-              if (await pathExists(targetDir)) {
-                await replaceSkillDir(targetDir, async () => {
-                  await downloadRepoSkill(repo, latest.commitSha, entry, files, targetRoot)
-                })
-              } else {
-                await downloadRepoSkill(repo, latest.commitSha, entry, files, targetRoot)
-              }
-              if (wasDisabled) {
-                // Preserve the disabled state: the fresh SKILL.md must not
-                // re-enter discovery.
-                await rename(join(targetDir, 'SKILL.md'), join(targetDir, 'SKILL.md.disabled'))
-              } else {
-                await deps.store.removeDisabled(name)
-              }
-              await deps.store.mergeSourceManifest(repo, skillManifest(tree, entry.dir))
-              synced.push(name)
-            } catch (error) {
-              failed.push({ name, error: error instanceof Error ? error.message : String(error) })
-            }
+        const source = await deps.store.getSource(repo)
+        if (source === undefined) { writeError(res, 404, 'source not found: ' + repo); return }
+        const targets = selected !== undefined ? selected : source.skills
+        const latest = await getLatestCommit(repo, source.ref)
+        const tree = await loadRepoTreeAt(repo, latest.treeSha)
+        const targetRoot = rootPath('user-dsh', homeOf(deps))
+        await mkdir(targetRoot, { recursive: true })
+        const synced: string[] = []
+        const failed: Array<{ name: string; error: string }> = []
+        for (const name of targets) {
+          // Sync writes under the user root: only accept real skill names
+          // this source actually tracks (a bare join would otherwise fold
+          // `..` segments out of the writable root).
+          if (!isSkillName(name) || !source.skills.includes(name)) {
+            failed.push({ name, error: 'skill is not tracked by this source' })
+            continue
           }
-          await deps.store.setSourceCommit(repo, latest.commitSha)
-          deps.invalidate?.()
-          writeJson(res, 200, { ok: true, repo, commitSha: latest.commitSha, synced, failed } satisfies SourceSyncResponse)
-        } catch (error) {
-          writeRepoError(res, error)
+          try {
+            const entry = repoSkillEntry(name, source.root, repo)
+            // 上游可能用分类子目录（skills/engineering/<name>/）且目录会移动：
+            // 先在上游 tree 里搜真实位置，manifest 兜底，否则嵌套技能会 404。
+            entry.dir = skillDirOf(source, name, tree.map((item) => item.path))
+            entry.path = entry.dir + '/SKILL.md'
+            const files = collectRepoSkillFiles(tree, entry.dir)
+            if (files.length === 0) { failed.push({ name, error: 'skill missing upstream' }); continue }
+            const targetDir = join(targetRoot, name)
+            const wasDisabled = (await deps.store.getDisabled(name)) !== undefined
+            if (await pathExists(targetDir)) {
+              await replaceSkillDir(targetDir, async () => {
+                await downloadRepoSkill(repo, latest.commitSha, entry, files, targetRoot)
+              })
+            } else {
+              await downloadRepoSkill(repo, latest.commitSha, entry, files, targetRoot)
+            }
+            if (wasDisabled) {
+              // Preserve the disabled state: the fresh SKILL.md must not
+              // re-enter discovery.
+              await rename(join(targetDir, 'SKILL.md'), join(targetDir, 'SKILL.md.disabled'))
+            } else {
+              await deps.store.removeDisabled(name)
+            }
+            await deps.store.mergeSourceManifest(repo, skillManifest(tree, entry.dir), entry.dir)
+            synced.push(name)
+          } catch (error) {
+            failed.push({ name, error: error instanceof Error ? error.message : String(error) })
+          }
         }
+        // Only advance the commit snapshot when every skill landed: a failed
+        // sync keeps the old commit, so the next check still diffs the tree
+        // and re-reports the missing skills instead of silently hiding them.
+        if (failed.length === 0) {
+          await deps.store.setSourceCommit(repo, latest.commitSha)
+        }
+        deps.invalidate?.()
+        writeJson(res, 200, { ok: true, repo, commitSha: latest.commitSha, synced, failed } satisfies SourceSyncResponse)
       },
-    },
+    }),
     // ------------------------------------------------------- sources/delete
     // 跟进上游删除：把所选技能的本地目录移入回收站（可恢复）。
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.sourceDelete,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const raw = await readJsonBody(req)
-        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
-        const request = raw as unknown as SourceDeleteRequest
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as SourceDeleteRequest
         const repo = typeof request.repo === 'string' ? request.repo.trim() : ''
         const skills = Array.isArray(request.skills) ? request.skills.filter((n): n is string => typeof n === 'string' && n !== '') : []
         if (repo === '') { writeError(res, 400, 'repo is required'); return }
         if (skills.length === 0) { writeError(res, 400, 'skills must be a non-empty array'); return }
-        try {
-          const source = await deps.store.getSource(repo)
-          if (source === undefined) { writeError(res, 404, 'source not found: ' + repo); return }
-          const home = homeOf(deps)
-          const trashed: string[] = []
-          const failed: Array<{ name: string; error: string }> = []
-          for (const name of skills) {
-            if (!await pathExists(join(rootPath('user-dsh', home), name))) {
-              failed.push({ name, error: 'skill directory not found' })
-              continue
-            }
-            try {
-              const path = await trashSkill(name, 'user-dsh', home)
-              await deps.store.addTrash({ name, path, movedAt: Date.now() })
-              await deps.store.removeDisabled(name)
-              trashed.push(name)
-            } catch (error) {
-              failed.push({ name, error: error instanceof Error ? error.message : String(error) })
-            }
+        const source = await deps.store.getSource(repo)
+        if (source === undefined) { writeError(res, 404, 'source not found: ' + repo); return }
+        const home = homeOf(deps)
+        const trashed: string[] = []
+        const failed: Array<{ name: string; error: string }> = []
+        const sourceNames = new Set(source.skills)
+        for (const name of skills) {
+          // Every name must be a real kebab-case skill that this source
+          // actually tracks; anything else must never touch the filesystem
+          // (a bare `join` would otherwise fold `..` segments out of the
+          // writable root — see the path-containment assert below).
+          if (!isSkillName(name) || !sourceNames.has(name)) {
+            failed.push({ name, error: 'skill is not tracked by this source' })
+            continue
           }
-          if (trashed.length > 0) {
-            await deps.store.setSourceSkills(repo, source.skills.filter((n) => !trashed.includes(n)))
-            deps.invalidate?.()
+          const sourcePath = join(rootPath('user-dsh', home), name)
+          if (rootOfPath(sourcePath, home) === undefined) {
+            failed.push({ name, error: 'skill path is outside the hub writable roots' })
+            continue
           }
-          writeJson(res, 200, { ok: true, trashed, failed } satisfies SourceDeleteResponse)
-        } catch (error) {
-          writeError(res, 500, error)
+          if (!await pathExists(sourcePath)) {
+            failed.push({ name, error: 'skill directory not found' })
+            continue
+          }
+          try {
+            // 入回收站前快照来源与场景归属，恢复时挂回（见 sourceRestore）。
+            const tagIds = (await deps.store.listTags()).filter((tag) => tag.skillNames.includes(name)).map((tag) => tag.id)
+            const { path } = await trashSkill(sourcePath)
+            await deps.store.addTrash({
+              name,
+              path,
+              movedAt: Date.now(),
+              sourcePath,
+              origin: { repo: source.repo, root: source.root, ...(source.ref !== undefined && source.ref !== '' ? { ref: source.ref } : {}), commitSha: source.commitSha },
+              ...(tagIds.length > 0 ? { tagIds } : {}),
+            })
+            await deps.store.removeDisabled(name)
+            await deps.store.removeSkillFromTags(name)
+            trashed.push(name)
+          } catch (error) {
+            failed.push({ name, error: error instanceof Error ? error.message : String(error) })
+          }
         }
+        if (trashed.length > 0) {
+          await deps.store.setSourceSkills(repo, source.skills.filter((n) => !trashed.includes(n)))
+          deps.invalidate?.()
+        }
+        writeJson(res, 200, { ok: true, trashed, failed } satisfies SourceDeleteResponse)
       },
-    },
+    }),
     // ------------------------------------------------------ sources/restore
     // 从回收站恢复一个技能目录。
-    {
-      kind: 'exact',
+    route({
       path: SKILL_HUB_API.sourceRestore,
-      handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
-        if (req.method !== 'POST') { writeError(res, 405, 'method not allowed: ' + (req.method ?? '')); return }
-        if (disabledGate(deps, res)) return
-        const raw = await readJsonBody(req)
-        if (raw === undefined) { writeError(res, 400, 'invalid JSON body'); return }
-        const request = raw as unknown as SourceRestoreRequest
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as SourceRestoreRequest
         const name = typeof request.name === 'string' ? request.name : ''
         if (name === '') { writeError(res, 400, 'name is required'); return }
-        try {
-          const entry = await deps.store.getTrash(name)
-          if (entry === undefined) { writeError(res, 404, 'trash entry not found: ' + name); return }
-          const home = homeOf(deps)
-          if (await pathExists(join(rootPath('user-dsh', home), name))) {
-            writeError(res, 409, 'skill directory already exists: ' + name)
-            return
-          }
-          const path = await restoreSkill(entry, home)
-          await deps.store.removeTrash(name)
-          deps.invalidate?.()
-          writeJson(res, 200, { ok: true, name, path } satisfies SourceRestoreResponse)
-        } catch (error) {
-          writeError(res, 500, error)
+        const entry = await deps.store.getTrash(name)
+        if (entry === undefined) { writeError(res, 404, 'trash entry not found: ' + name); return }
+        const home = homeOf(deps)
+        const target = entry.sourcePath ?? join(rootPath('user-dsh', home), name)
+        if (await pathExists(target)) {
+          writeError(res, 409, 'skill already exists: ' + name)
+          return
         }
+        const path = await restoreSkill(entry, home)
+        // 恢复来源归属（入回收站前快照的来源记录）与场景成员，否则恢复后
+        // 的技能会变成「个人技能」并脱离原场景。
+        if (entry.origin !== undefined) {
+          await deps.store.addSourceSkill(entry.origin.repo, entry.origin.root, entry.origin.commitSha, entry.origin.ref, name)
+        }
+        for (const tagId of entry.tagIds ?? []) {
+          await deps.store.addSkillToTag(tagId, name)
+        }
+        await deps.store.removeTrash(name)
+        deps.invalidate?.()
+        writeJson(res, 200, { ok: true, name, path } satisfies SourceRestoreResponse)
       },
-    },
+    }),
+    // ------------------------------------------------- sources/trash/clear
+    // 清空回收站：永久删除 .trash 里的技能，失败项保留可重试。
+    route({
+      path: SKILL_HUB_API.sourceTrashClear,
+      methods: ['POST'],
+      handler: async ({ res }) => {
+        const home = homeOf(deps)
+        const entries = await deps.store.listTrash()
+        const deleted: string[] = []
+        const failed: Array<{ name: string; error: string }> = []
+        for (const entry of entries) {
+          try {
+            await clearTrash(entry, home)
+            // A permanently deleted skill must not linger in user groups.
+            await deps.store.removeSkillFromTags(entry.name)
+            deleted.push(entry.name)
+          } catch (error) {
+            failed.push({ name: entry.name, error: error instanceof Error ? error.message : String(error) })
+          }
+        }
+        for (const name of deleted) await deps.store.removeTrash(name)
+        if (deleted.length > 0) deps.invalidate?.()
+        writeJson(res, 200, { ok: true, deleted, failed } satisfies SourceTrashClearResponse)
+      },
+    }),
   ]
 }
-

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { collectRepoSkillFiles, discoverRepoEntries, downloadGitHubFile, downloadRepoSkill, normalizeRepoInput, originForRoot, repoSlug } from './repo.ts'
+import { collectRepoSkillFiles, diffRemoteSkills, discoverRepoEntries, downloadGitHubFile, downloadRepoSkill, getLatestReleaseTag, listRepoBranches, normalizeRepoInput, originForRoot, repoSlug, skillDirOf } from './repo.ts'
 import type { RepoTreeItem } from './repo.ts'
 import type { RepoSkillEntry } from './protocol.ts'
 
@@ -85,6 +85,66 @@ describe('discoverRepoEntries', () => {
   })
 })
 
+describe('skillDirOf', () => {
+  it('recovers the nested upstream directory from the manifest', () => {
+    const source = { root: 'skills' as const, manifest: { 'skills/engineering/ask-matt/SKILL.md': 100, 'skills/engineering/ask-matt/OTHER.md': 5 } }
+    expect(skillDirOf(source, 'ask-matt')).toBe('skills/engineering/ask-matt')
+  })
+
+  it('finds the skill in the upstream tree when the manifest lacks an entry', () => {
+    const source = { root: 'skills' as const }
+    const paths = ['skills/engineering/grill-with-docs/SKILL.md', 'skills/engineering/grill-with-docs/agents/openai.yaml']
+    expect(skillDirOf(source, 'grill-with-docs', paths)).toBe('skills/engineering/grill-with-docs')
+  })
+
+  it('prefers the top-level-root match over a same-name skill elsewhere', () => {
+    const source = { root: 'skills' as const }
+    const paths = ['docs/engineering/a/SKILL.md', 'skills/misc/a/SKILL.md']
+    expect(skillDirOf(source, 'a', paths)).toBe('skills/misc/a')
+  })
+
+  it('follows an upstream move away from the manifest path', () => {
+    const source = { root: 'skills' as const, manifest: { 'skills/old/ask-matt/SKILL.md': 100 } }
+    const paths = ['skills/new/ask-matt/SKILL.md']
+    expect(skillDirOf(source, 'ask-matt', paths)).toBe('skills/new/ask-matt')
+  })
+
+  it('falls back to root/name without a manifest entry or tree', () => {
+    const source = { root: 'skills' as const }
+    expect(skillDirOf(source, 'plain')).toBe('skills/plain')
+  })
+})
+
+describe('diffRemoteSkills', () => {
+  it('matches nested skills via the manifest and reports real deletions only', () => {
+    const source = {
+      root: 'skills' as const,
+      skills: ['ask-matt', 'gone'],
+      manifest: {
+        'skills/engineering/ask-matt/SKILL.md': 100,
+        'skills/engineering/ask-matt/PHASE.md': 10,
+        'skills/gone/SKILL.md': 50,
+      },
+    }
+    const tree = [
+      blob('skills/engineering/ask-matt/SKILL.md', 100),
+      blob('skills/engineering/ask-matt/PHASE.md', 10),
+    ]
+    expect(diffRemoteSkills(tree, source)).toEqual({ updated: [], deleted: ['gone'] })
+  })
+
+  it('does not report skills missing from the manifest as deleted when the tree has them', () => {
+    const source = { root: 'skills' as const, skills: ['grill-with-docs'] }
+    const tree = [blob('skills/engineering/grill-with-docs/SKILL.md', 100)]
+    expect(diffRemoteSkills(tree, source)).toEqual({ updated: ['grill-with-docs'], deleted: [] })
+  })
+
+  it('reports size changes as updated', () => {
+    const source = { root: 'skills' as const, skills: ['a'], manifest: { 'skills/engineering/a/SKILL.md': 100 } }
+    expect(diffRemoteSkills([blob('skills/engineering/a/SKILL.md', 120)], source)).toEqual({ updated: ['a'], deleted: [] })
+  })
+})
+
 describe('downloadRepoSkill', () => {
   it('creates the target root when missing and imports a skill directory', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'dsh-repo-download-'))
@@ -129,5 +189,24 @@ describe('downloadGitHubFile', () => {
   it('reports the original error when both hosts fail', async () => {
     const fetchImpl = async () => { throw new Error('network down') }
     await expect(downloadGitHubFile('a/b', 'main', 'x/SKILL.md', fetchImpl as typeof fetch)).rejects.toThrow(/network down/)
+  })
+})
+
+describe('getLatestReleaseTag', () => {
+  it('returns the tag of the latest release', async () => {
+    const fetchImpl = async () => new Response(JSON.stringify({ tag_name: 'v1.2.3' }), { status: 200 })
+    expect(await getLatestReleaseTag('a/b', fetchImpl as typeof fetch)).toBe('v1.2.3')
+  })
+
+  it('returns undefined when the repo has no releases', async () => {
+    const fetchImpl = async () => new Response('not found', { status: 404 })
+    expect(await getLatestReleaseTag('a/b', fetchImpl as typeof fetch)).toBeUndefined()
+  })
+})
+
+describe('listRepoBranches', () => {
+  it('lists branch names from the branches endpoint', async () => {
+    const fetchImpl = async () => new Response(JSON.stringify([{ name: 'main' }, { name: 'dev' }]), { status: 200 })
+    expect(await listRepoBranches('a/b', fetchImpl as typeof fetch)).toEqual(['main', 'dev'])
   })
 })

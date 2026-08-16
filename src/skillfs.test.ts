@@ -2,7 +2,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createSkill, disableSkill, enableSkill, parseFrontmatter, rootOfPath, scanDiagnostics } from './skillfs.ts'
+import { clearTrash, createSkill, disableSkill, enableSkill, parseFrontmatter, restoreSkill, rootOfPath, scanDiagnostics, trashSkill } from './skillfs.ts'
 
 describe('parseFrontmatter', () => {
   it('parses a healthy frontmatter', () => {
@@ -115,6 +115,21 @@ describe('createSkill / disableSkill / enableSkill', () => {
     expect(parseFrontmatter(text)).toMatchObject({ value: { name: 'demo-skill', description: 'Does demo things' } })
   })
 
+  it('scaffolds numeric-looking names as YAML strings', async () => {
+    const path = await createSkill('user-dsh', '1312', '1231', home)
+    const text = await readFile(path, 'utf8')
+    expect(text).toContain("name: '1312'")
+    expect(text).toContain("description: '1231'")
+    expect(parseFrontmatter(text)).toMatchObject({ value: { name: '1312', description: '1231' } })
+  })
+
+  it('escapes YAML-significant description text', async () => {
+    const path = await createSkill('user-dsh', 'review-skill', 'Reviews: code #1', home)
+    expect(parseFrontmatter(await readFile(path, 'utf8'))).toMatchObject({
+      value: { name: 'review-skill', description: 'Reviews: code #1' },
+    })
+  })
+
   it('refuses non-kebab-case names', async () => {
     await expect(createSkill('user-dsh', 'Not Valid', '', home)).rejects.toThrow(/kebab-case/)
   })
@@ -140,6 +155,68 @@ describe('createSkill / disableSkill / enableSkill', () => {
 
   it('refuses to disable a non-skill file', async () => {
     await expect(disableSkill(join(home, 'skills', 'notes.txt'))).rejects.toThrow(/not a discoverable skill file/)
+  })
+})
+
+describe('trashSkill / restoreSkill', () => {
+  let dir: string
+  let home: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dsh-skill-hub-trash-'))
+    home = join(dir, 'home')
+    await mkdir(join(home, 'skills'), { recursive: true })
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('trashes and restores a directory bundle', async () => {
+    const file = await createSkill('user-dsh', 'trash-dir', 'Trash me', home)
+    const { path, source } = await trashSkill(file)
+    expect(source).toBe(join(home, 'skills', 'trash-dir'))
+    expect(path.startsWith(join(home, 'skills', '.trash', 'trash-dir-'))).toBe(true)
+    await expect(access(file)).rejects.toThrow()
+    const restored = await restoreSkill({ name: 'trash-dir', path, movedAt: 1, sourcePath: source }, home)
+    expect(restored).toBe(source)
+    await expect(access(file)).resolves.toBeUndefined()
+  })
+
+  it('trashes and restores a flat skill file', async () => {
+    const flat = join(home, 'skills', 'flat-trash.md')
+    await writeFile(flat, '---\nname: flat-trash\ndescription: Flat\n---\n\nbody', 'utf8')
+    const { path, source } = await trashSkill(flat)
+    expect(source).toBe(flat)
+    await expect(access(flat)).rejects.toThrow()
+    const restored = await restoreSkill({ name: 'flat-trash', path, movedAt: 1, sourcePath: source }, home)
+    expect(restored).toBe(flat)
+    await expect(access(flat)).resolves.toBeUndefined()
+  })
+
+  it('restores a legacy directory entry without a source path', async () => {
+    const file = await createSkill('user-dsh', 'legacy-dir', 'Legacy', home)
+    const { path } = await trashSkill(file)
+    const target = await restoreSkill({ name: 'legacy-dir', path, movedAt: 1 }, home)
+    expect(target).toBe(join(home, 'skills', 'legacy-dir'))
+    await expect(access(join(target, 'SKILL.md'))).resolves.toBeUndefined()
+  })
+
+  it('refuses to restore an entry whose source path is outside the hub roots', async () => {
+    await expect(restoreSkill({ name: 'x', path: join(home, 'skills', '.trash', 'x-1'), movedAt: 1, sourcePath: '/outside/x' }, home))
+      .rejects.toThrow(/writable skill path/)
+  })
+
+  it('permanently clears a trashed skill', async () => {
+    const trashDir = join(home, 'skills', '.trash', 'gone-1')
+    await mkdir(trashDir, { recursive: true })
+    await writeFile(join(trashDir, 'SKILL.md'), '---\nname: gone\ndescription: x\n---', 'utf8')
+    await clearTrash({ name: 'gone', path: trashDir, movedAt: 1, sourcePath: join(home, 'skills', 'gone') }, home)
+    await expect(access(trashDir)).rejects.toThrow()
+  })
+
+  it('refuses to clear a path outside the hub trash roots', async () => {
+    await expect(clearTrash({ name: 'x', path: '/tmp/.trash/x-1', movedAt: 1 }, home)).rejects.toThrow(/not a hub trashed skill path/)
   })
 })
 
@@ -211,4 +288,3 @@ describe('rootOfPath', () => {
     }
   })
 })
-

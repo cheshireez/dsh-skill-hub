@@ -11,6 +11,7 @@ import type { ReactElement } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import { ColorField, PluginSettingsCard, SwitchField } from './settings-card.tsx'
 import { booleanField, CardForm, colorField, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
+import { DEFAULT_DOT_MODEL_COLOR, DEFAULT_DOT_USER_COLOR } from './api-config-scope.ts'
 
 /** The card's projected state. */
 export interface SkillHubSettingsState extends CardShell {
@@ -20,7 +21,6 @@ export interface SkillHubSettingsState extends CardShell {
   dotUserColor: FieldState
   showUseCount: FieldState
   showUseTime: FieldState
-  showSourceColumn: FieldState
   showGroupSummary: FieldState
 }
 
@@ -41,7 +41,7 @@ export class SkillHubSettingsCardController {
 
   /** @param scope - the hub config scope the card edits (ApiConfigScope). */
   constructor(scope: FormScope) {
-    this.form = new CardForm(scope, [booleanField('enabled'), booleanField('announceToAgent'), colorField('dotModelColor'), colorField('dotUserColor'), booleanField('showUseCount'), booleanField('showUseTime'), booleanField('showSourceColumn'), booleanField('showGroupSummary')])
+    this.form = new CardForm(scope, [booleanField('enabled'), booleanField('announceToAgent'), colorField('dotModelColor'), colorField('dotUserColor'), booleanField('showUseCount'), booleanField('showUseTime'), booleanField('showGroupSummary')])
     this.store = this.form.bind(() => this.projection())
   }
 
@@ -54,7 +54,6 @@ export class SkillHubSettingsCardController {
       dotUserColor: this.form.field('dotUserColor'),
       showUseCount: this.form.field('showUseCount'),
       showUseTime: this.form.field('showUseTime'),
-      showSourceColumn: this.form.field('showSourceColumn'),
       showGroupSummary: this.form.field('showGroupSummary'),
     }
   }
@@ -115,6 +114,7 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
         label={t('settings.dotModelColor')}
         hint={t('settings.dotModelColorHint')}
         inheritLabel={t('settings.inherit')}
+        defaultColor={DEFAULT_DOT_MODEL_COLOR}
         {...fieldProps}
         {...state.dotModelColor}
         onEdit={(text) => { props.edit('dotModelColor', text) }}
@@ -125,6 +125,7 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
         label={t('settings.dotUserColor')}
         hint={t('settings.dotUserColorHint')}
         inheritLabel={t('settings.inherit')}
+        defaultColor={DEFAULT_DOT_USER_COLOR}
         {...fieldProps}
         {...state.dotUserColor}
         onEdit={(text) => { props.edit('dotUserColor', text) }}
@@ -145,14 +146,6 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
         {...state.showUseTime}
         onEdit={(text) => { props.edit('showUseTime', text) }}
         onReset={() => { props.resetField('showUseTime') }}
-      />
-      <SwitchField
-        label={t('settings.showSourceColumn')}
-        hint={t('settings.showSourceColumnHint')}
-        {...fieldProps}
-        {...state.showSourceColumn}
-        onEdit={(text) => { props.edit('showSourceColumn', text) }}
-        onReset={() => { props.resetField('showSourceColumn') }}
       />
       <SwitchField
         label={t('settings.showGroupSummary')}
