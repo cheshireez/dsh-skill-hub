@@ -2,7 +2,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createSkill, disableSkill, enableSkill, parseFrontmatter, rootOfPath, scanDiagnostics } from './skillfs.ts'
+import { clearTrash, createSkill, disableSkill, enableSkill, parseFrontmatter, restoreSkill, rootOfPath, scanDiagnostics, trashSkill } from './skillfs.ts'
 
 describe('parseFrontmatter', () => {
   it('parses a healthy frontmatter', () => {
@@ -86,20 +86,10 @@ describe('parseFrontmatter', () => {
     expect(parseFrontmatter('---\nname: ok-name\n---')).toEqual({ error: 'frontmatter requires a description field' })
   })
 
-  it('parses a single-string sets field into a list', () => {
-    const parsed = parseFrontmatter('---\nname: ok-name\ndescription: x\nsets: engineering\n---')
-    expect(parsed).toMatchObject({ value: { sets: ['engineering'] } })
-  })
-
-  it('parses an array sets field, trimming and dropping empties', () => {
-    const parsed = parseFrontmatter('---\nname: ok-name\ndescription: x\nsets: [engineering, " 3d ", ""]\n---')
-    expect(parsed).toMatchObject({ value: { sets: ['engineering', '3d'] } })
-  })
-
-  it('omits sets when the field is absent or empty', () => {
+  it('ignores sets frontmatter (sets grouping was removed)', () => {
     const expected = { name: 'ok-name', description: 'x', invocation: { modelInvocable: true, userInvocable: true }, content: '' }
-    expect(parseFrontmatter('---\nname: ok-name\ndescription: x\n---')).toEqual({ value: expected })
-    expect(parseFrontmatter('---\nname: ok-name\ndescription: x\nsets: []\n---')).toEqual({ value: expected })
+    expect(parseFrontmatter('---\nname: ok-name\ndescription: x\nsets: engineering\n---')).toEqual({ value: expected })
+    expect(parseFrontmatter('---\nname: ok-name\ndescription: x\nsets: [engineering, " 3d ", ""]\n---')).toEqual({ value: expected })
   })
 })
 
@@ -123,6 +113,21 @@ describe('createSkill / disableSkill / enableSkill', () => {
     expect(text).toContain('name: demo-skill')
     expect(text).toContain('description: Does demo things')
     expect(parseFrontmatter(text)).toMatchObject({ value: { name: 'demo-skill', description: 'Does demo things' } })
+  })
+
+  it('scaffolds numeric-looking names as YAML strings', async () => {
+    const path = await createSkill('user-dsh', '1312', '1231', home)
+    const text = await readFile(path, 'utf8')
+    expect(text).toContain("name: '1312'")
+    expect(text).toContain("description: '1231'")
+    expect(parseFrontmatter(text)).toMatchObject({ value: { name: '1312', description: '1231' } })
+  })
+
+  it('escapes YAML-significant description text', async () => {
+    const path = await createSkill('user-dsh', 'review-skill', 'Reviews: code #1', home)
+    expect(parseFrontmatter(await readFile(path, 'utf8'))).toMatchObject({
+      value: { name: 'review-skill', description: 'Reviews: code #1' },
+    })
   })
 
   it('refuses non-kebab-case names', async () => {
@@ -153,6 +158,68 @@ describe('createSkill / disableSkill / enableSkill', () => {
   })
 })
 
+describe('trashSkill / restoreSkill', () => {
+  let dir: string
+  let home: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dsh-skill-hub-trash-'))
+    home = join(dir, 'home')
+    await mkdir(join(home, 'skills'), { recursive: true })
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('trashes and restores a directory bundle', async () => {
+    const file = await createSkill('user-dsh', 'trash-dir', 'Trash me', home)
+    const { path, source } = await trashSkill(file)
+    expect(source).toBe(join(home, 'skills', 'trash-dir'))
+    expect(path.startsWith(join(home, 'skills', '.trash', 'trash-dir-'))).toBe(true)
+    await expect(access(file)).rejects.toThrow()
+    const restored = await restoreSkill({ name: 'trash-dir', path, movedAt: 1, sourcePath: source }, home)
+    expect(restored).toBe(source)
+    await expect(access(file)).resolves.toBeUndefined()
+  })
+
+  it('trashes and restores a flat skill file', async () => {
+    const flat = join(home, 'skills', 'flat-trash.md')
+    await writeFile(flat, '---\nname: flat-trash\ndescription: Flat\n---\n\nbody', 'utf8')
+    const { path, source } = await trashSkill(flat)
+    expect(source).toBe(flat)
+    await expect(access(flat)).rejects.toThrow()
+    const restored = await restoreSkill({ name: 'flat-trash', path, movedAt: 1, sourcePath: source }, home)
+    expect(restored).toBe(flat)
+    await expect(access(flat)).resolves.toBeUndefined()
+  })
+
+  it('restores a legacy directory entry without a source path', async () => {
+    const file = await createSkill('user-dsh', 'legacy-dir', 'Legacy', home)
+    const { path } = await trashSkill(file)
+    const target = await restoreSkill({ name: 'legacy-dir', path, movedAt: 1 }, home)
+    expect(target).toBe(join(home, 'skills', 'legacy-dir'))
+    await expect(access(join(target, 'SKILL.md'))).resolves.toBeUndefined()
+  })
+
+  it('refuses to restore an entry whose source path is outside the hub roots', async () => {
+    await expect(restoreSkill({ name: 'x', path: join(home, 'skills', '.trash', 'x-1'), movedAt: 1, sourcePath: '/outside/x' }, home))
+      .rejects.toThrow(/writable skill path/)
+  })
+
+  it('permanently clears a trashed skill', async () => {
+    const trashDir = join(home, 'skills', '.trash', 'gone-1')
+    await mkdir(trashDir, { recursive: true })
+    await writeFile(join(trashDir, 'SKILL.md'), '---\nname: gone\ndescription: x\n---', 'utf8')
+    await clearTrash({ name: 'gone', path: trashDir, movedAt: 1, sourcePath: join(home, 'skills', 'gone') }, home)
+    await expect(access(trashDir)).rejects.toThrow()
+  })
+
+  it('refuses to clear a path outside the hub trash roots', async () => {
+    await expect(clearTrash({ name: 'x', path: '/tmp/.trash/x-1', movedAt: 1 }, home)).rejects.toThrow(/not a hub trashed skill path/)
+  })
+})
+
 describe('scanDiagnostics', () => {
   let dir: string
   let home: string
@@ -170,7 +237,7 @@ describe('scanDiagnostics', () => {
   })
 
   it('returns an empty list for a healthy root', async () => {
-    await createSkill('user-dsh', 'good-skill', 'Good', home)
+    await createSkill('user-dsh', 'good-skill', 'Does good things well', home)
     expect(await scanDiagnostics('user-dsh', home)).toEqual([])
   })
 
@@ -192,6 +259,22 @@ describe('scanDiagnostics', () => {
   it('returns an empty list when the root does not exist', async () => {
     expect(await scanDiagnostics('user-dsh', join(dir, 'missing'))).toEqual([])
   })
+
+  it('flags a frontmatter name that diverges from the discovery path', async () => {
+    await mkdir(join(skills, 'folder-name'))
+    await writeFile(join(skills, 'folder-name', 'SKILL.md'), '---\nname: other-name\ndescription: A decent longer description\n---', 'utf8')
+    const entries = await scanDiagnostics('user-dsh', home)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].reason).toContain('does not match the discovery path "folder-name"')
+  })
+
+  it('flags a too-short description', async () => {
+    await mkdir(join(skills, 'short-desc'))
+    await writeFile(join(skills, 'short-desc', 'SKILL.md'), '---\nname: short-desc\ndescription: x\n---', 'utf8')
+    const entries = await scanDiagnostics('user-dsh', home)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].reason).toContain('description is only 1 chars')
+  })
 })
 
 describe('rootOfPath', () => {
@@ -205,4 +288,3 @@ describe('rootOfPath', () => {
     }
   })
 })
-

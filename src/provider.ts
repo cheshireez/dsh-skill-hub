@@ -35,8 +35,6 @@ interface ProviderRoot {
   source: string
   /** Official precedence rank. */
   rank: number
-  /** Skip the .system subdirectory (user-dsh only). */
-  skipSystem: boolean
 }
 
 /**
@@ -65,14 +63,22 @@ export class SkillHubProvider implements SkillProvider {
     void this.checkRoots()
   }
 
-  /** Invalidate the registry cache when the top-level root shape changed. */
+  /**
+   * Invalidate the registry cache when the discovered skill files changed.
+   * The stamp covers the per-skill discovery file's mtime + size (plus the
+   * entry set itself), so editing a SKILL.md body — not just adding or
+   * renaming directories — refreshes the GUI catalog.
+   */
   private async checkRoots(): Promise<void> {
     let stamp = ''
     for (const root of await this.roots(undefined)) {
-      try {
-        stamp += root.base + ':' + (await stat(root.base)).mtimeMs + ';'
-      } catch {
-        stamp += root.base + ':missing;'
+      for (const entry of await scanRoot(root.base)) {
+        try {
+          const info = await stat(entry.path)
+          stamp += entry.path + ':' + info.mtimeMs + ':' + info.size + ';'
+        } catch {
+          stamp += entry.path + ':missing;'
+        }
       }
     }
     if (this.rootStamp === '') {
@@ -88,7 +94,7 @@ export class SkillHubProvider implements SkillProvider {
   async list(options: { cwd?: string; signal?: AbortSignal }): Promise<readonly SkillCandidate[]> {
     const candidates: SkillCandidate[] = []
     for (const root of await this.roots(options.cwd)) {
-      for (const entry of await scanRoot(root.base, root.skipSystem)) {
+      for (const entry of await scanRoot(root.base)) {
         let text: string
         try {
           text = await readFile(entry.path, 'utf8')
@@ -102,7 +108,6 @@ export class SkillHubProvider implements SkillProvider {
           name: value.name,
           description: value.description,
           ...(value.whenToUse !== undefined ? { whenToUse: value.whenToUse } : {}),
-          ...(value.sets !== undefined ? { metadata: { sets: value.sets } } : {}),
           invocation: value.invocation,
           source: root.source,
           provider: this.name,
@@ -130,7 +135,6 @@ export class SkillHubProvider implements SkillProvider {
       name: value.name,
       description: value.description,
       ...(value.whenToUse !== undefined ? { whenToUse: value.whenToUse } : {}),
-      ...(value.sets !== undefined ? { metadata: { sets: value.sets } } : {}),
       invocation: value.invocation,
       source: candidate.source,
       provider: this.name,
@@ -143,14 +147,14 @@ export class SkillHubProvider implements SkillProvider {
   /** The roots this provider lists: user roots always, project roots with cwd. */
   private async roots(cwd?: string): Promise<ProviderRoot[]> {
     const roots: ProviderRoot[] = [
-      { base: rootPath('user-dsh', this.home), source: 'user-dsh', rank: USER_DSH_RANK, skipSystem: true },
-      { base: rootPath('user-agents', this.home), source: 'user-agents', rank: USER_AGENTS_RANK, skipSystem: false },
+      { base: rootPath('user-dsh', this.home), source: 'user-dsh', rank: USER_DSH_RANK },
+      { base: rootPath('user-agents', this.home), source: 'user-agents', rank: USER_AGENTS_RANK },
     ]
     if (cwd !== undefined && cwd !== '') {
       const project = await findProjectRoot(cwd)
       roots.unshift(
-        { base: join(project, '.dsh', 'skills'), source: 'project-dsh', rank: PROJECT_DSH_RANK, skipSystem: false },
-        { base: join(project, '.agents', 'skills'), source: 'project-agents', rank: PROJECT_AGENTS_RANK, skipSystem: false },
+        { base: join(project, '.dsh', 'skills'), source: 'project-dsh', rank: PROJECT_DSH_RANK },
+        { base: join(project, '.agents', 'skills'), source: 'project-agents', rank: PROJECT_AGENTS_RANK },
       )
     }
     return roots

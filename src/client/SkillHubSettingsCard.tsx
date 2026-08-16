@@ -9,13 +9,19 @@
 
 import type { ReactElement } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
-import { BooleanField, PluginSettingsCard, SwitchField } from './settings-card.tsx'
-import { booleanField, CardForm, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
+import { ColorField, PluginSettingsCard, SwitchField } from './settings-card.tsx'
+import { booleanField, CardForm, colorField, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
+import { DEFAULT_DOT_MODEL_COLOR, DEFAULT_DOT_USER_COLOR } from './api-config-scope.ts'
 
 /** The card's projected state. */
 export interface SkillHubSettingsState extends CardShell {
   enabled: FieldState
   announceToAgent: FieldState
+  dotModelColor: FieldState
+  dotUserColor: FieldState
+  showUseCount: FieldState
+  showUseTime: FieldState
+  showGroupSummary: FieldState
 }
 
 /** Props the slot renderer receives (locale copy + injected form actions). */
@@ -35,7 +41,7 @@ export class SkillHubSettingsCardController {
 
   /** @param scope - the hub config scope the card edits (ApiConfigScope). */
   constructor(scope: FormScope) {
-    this.form = new CardForm(scope, [booleanField('enabled'), booleanField('announceToAgent')])
+    this.form = new CardForm(scope, [booleanField('enabled'), booleanField('announceToAgent'), colorField('dotModelColor'), colorField('dotUserColor'), booleanField('showUseCount'), booleanField('showUseTime'), booleanField('showGroupSummary')])
     this.store = this.form.bind(() => this.projection())
   }
 
@@ -44,6 +50,11 @@ export class SkillHubSettingsCardController {
       ...this.form.shell(),
       enabled: this.form.field('enabled'),
       announceToAgent: this.form.field('announceToAgent'),
+      dotModelColor: this.form.field('dotModelColor'),
+      dotUserColor: this.form.field('dotUserColor'),
+      showUseCount: this.form.field('showUseCount'),
+      showUseTime: this.form.field('showUseTime'),
+      showGroupSummary: this.form.field('showGroupSummary'),
     }
   }
 
@@ -90,17 +101,59 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
         onEdit={(text) => { props.edit('enabled', text) }}
         onReset={() => { props.resetField('enabled') }}
       />
-      <BooleanField
-        id='settings-skill-hub-announce'
+      <SwitchField
         label={t('settings.announceToAgent')}
         hint={t('settings.announceToAgentHint')}
-        inheritLabel={t('settings.inherit')}
-        onLabel={t('settings.on')}
-        offLabel={t('settings.off')}
         {...fieldProps}
         {...state.announceToAgent}
         onEdit={(text) => { props.edit('announceToAgent', text) }}
         onReset={() => { props.resetField('announceToAgent') }}
+      />
+      <ColorField
+        id='skill-hub-dot-model-color'
+        label={t('settings.dotModelColor')}
+        hint={t('settings.dotModelColorHint')}
+        inheritLabel={t('settings.inherit')}
+        defaultColor={DEFAULT_DOT_MODEL_COLOR}
+        {...fieldProps}
+        {...state.dotModelColor}
+        onEdit={(text) => { props.edit('dotModelColor', text) }}
+        onReset={() => { props.resetField('dotModelColor') }}
+      />
+      <ColorField
+        id='skill-hub-dot-user-color'
+        label={t('settings.dotUserColor')}
+        hint={t('settings.dotUserColorHint')}
+        inheritLabel={t('settings.inherit')}
+        defaultColor={DEFAULT_DOT_USER_COLOR}
+        {...fieldProps}
+        {...state.dotUserColor}
+        onEdit={(text) => { props.edit('dotUserColor', text) }}
+        onReset={() => { props.resetField('dotUserColor') }}
+      />
+      <SwitchField
+        label={t('settings.showUseCount')}
+        hint={t('settings.showUseCountHint')}
+        {...fieldProps}
+        {...state.showUseCount}
+        onEdit={(text) => { props.edit('showUseCount', text) }}
+        onReset={() => { props.resetField('showUseCount') }}
+      />
+      <SwitchField
+        label={t('settings.showUseTime')}
+        hint={t('settings.showUseTimeHint')}
+        {...fieldProps}
+        {...state.showUseTime}
+        onEdit={(text) => { props.edit('showUseTime', text) }}
+        onReset={() => { props.resetField('showUseTime') }}
+      />
+      <SwitchField
+        label={t('settings.showGroupSummary')}
+        hint={t('settings.showGroupSummaryHint')}
+        {...fieldProps}
+        {...state.showGroupSummary}
+        onEdit={(text) => { props.edit('showGroupSummary', text) }}
+        onReset={() => { props.resetField('showGroupSummary') }}
       />
     </PluginSettingsCard>
   )

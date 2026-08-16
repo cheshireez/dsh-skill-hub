@@ -37,6 +37,18 @@ export function booleanField(field: string): FieldSpec {
   }
 }
 
+/** A #rrggbb color field, edited through hex draft text. */
+export function colorField(field: string): FieldSpec {
+  return {
+    field,
+    format: (value) => (typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : ''),
+    parse: (text) => {
+      if (/^#[0-9a-f]{6}$/i.test(text)) return { kind: 'set', value: text }
+      return undefined
+    },
+  }
+}
+
 /** Card-level state the chrome renders. */
 export interface CardShell {
   available: boolean

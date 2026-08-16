@@ -17,11 +17,32 @@ import type { HubConfig } from '../protocol.ts'
 import type { SkillHubApi } from './api.ts'
 import type { FormScope } from './settings-form.ts'
 
+/** Model-invocable dot color default. Single source for the TS side; the
+ *  panel's CSS mirrors it via --hub-model (panel.module.css). */
+export const DEFAULT_DOT_MODEL_COLOR = '#2f81f7'
+/** User-invocable dot color default. Single source for the TS side; the
+ *  panel's CSS mirrors it via --hub-user (panel.module.css). */
+export const DEFAULT_DOT_USER_COLOR = '#3fb950'
+
 /** Built-in defaults every field inherits until the user overrides it. */
-const DEFAULTS: HubConfig = { enabled: true, announceToAgent: true }
+const DEFAULTS: HubConfig = {
+  enabled: true,
+  announceToAgent: true,
+  showUseCount: true,
+  showUseTime: true,
+  showGroupSummary: true,
+}
+
+/** Boolean config fields (color fields are strings). */
+const BOOLEAN_FIELDS = new Set<keyof HubConfig>([
+  'enabled', 'announceToAgent', 'showUseCount', 'showUseTime', 'showGroupSummary',
+])
 
 /** Config fields the card edits (used to guard set/unset field names). */
-const FIELDS = new Set<keyof HubConfig>(['enabled', 'announceToAgent'])
+const FIELDS = new Set<keyof HubConfig>([
+  'enabled', 'announceToAgent', 'dotModelColor', 'dotUserColor',
+  'showUseCount', 'showUseTime', 'showGroupSummary',
+])
 
 /** FormScope-compatible reactive config handle (see module doc). */
 export class ApiConfigScope implements FormScope {
@@ -67,7 +88,10 @@ export class ApiConfigScope implements FormScope {
   /** Write one field through the config route and adopt the persisted state. */
   async set(field: string, value: unknown): Promise<void> {
     if (!FIELDS.has(field as keyof HubConfig)) return
-    await this.apply({ [field]: Boolean(value) } as Partial<HubConfig>)
+    const patch = BOOLEAN_FIELDS.has(field as keyof HubConfig)
+      ? { [field]: Boolean(value) }
+      : { [field]: typeof value === 'string' ? value : undefined }
+    await this.apply(patch as Partial<HubConfig>)
   }
 
   /** Clear one field's override so it re-inherits the default. */
@@ -79,7 +103,7 @@ export class ApiConfigScope implements FormScope {
   /** Persist a patch, then re-seed from the route's fresh response. */
   private async apply(patch: Partial<HubConfig>): Promise<void> {
     // null on the wire clears a saved override (see ConfigRequest).
-    const request: Record<string, boolean | null> = {}
+    const request: Record<string, boolean | string | null> = {}
     for (const [key, value] of Object.entries(patch)) {
       request[key] = value === undefined ? null : value
     }

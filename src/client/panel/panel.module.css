@@ -1,55 +1,219 @@
-/* dsh-skill-hub panel styles (theme-agnostic: transparent surfaces + currentColor). */
+/* dsh-skill-hub panel — Apple-style: generous whitespace, inset grouped
+   cards, hairline separators, restrained accents. Theme-agnostic: all
+   surfaces are translucent greys + currentColor, so light/dark both work. */
 
-.panel { padding: 16px 18px 28px; display: flex; flex-direction: column; gap: 10px; max-width: 880px; margin: 0 auto; }
-.header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.title { font-size: 17px; font-weight: 600; margin: 0; }
-.hint { font-size: 11.5px; opacity: .6; }
+.panel { padding: 28px 20px 44px; display: flex; flex-direction: column; gap: 14px; max-width: 720px; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; -webkit-font-smoothing: antialiased; color-scheme: light dark; /* Dot colors mirror src/client/api-config-scope.ts (DEFAULT_DOT_MODEL_COLOR / DEFAULT_DOT_USER_COLOR) — CSS cannot import TS, so keep the two in sync. */ --hub-model: #2f81f7; --hub-user: #3fb950; }
+.header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.title { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
+.hint { font-size: 12px; opacity: .5; }
 .actions { margin-left: auto; display: flex; gap: 8px; }
-.segmented { display: flex; border: 1px solid rgba(128,128,128,.35); border-radius: 6px; overflow: hidden; }
-.segBtn { padding: 4px 10px; font-size: 11.5px; background: transparent; color: inherit; border: none; cursor: pointer; }
-.segBtn + .segBtn { border-left: 1px solid rgba(128,128,128,.35); }
-.segBtnActive { background: rgba(128,128,128,.18); font-weight: 600; }
-.search { width: 100%; padding: 8px 10px; border: 1px solid rgba(128,128,128,.35); border-radius: 6px; background: transparent; color: inherit; font-size: 13px; }
-.section { display: flex; flex-direction: column; gap: 4px; }
-.sectionTitle { font-size: 12.5px; font-weight: 700; margin: 10px 0 2px; }
-.groupTitle { font-size: 12px; font-weight: 600; opacity: .72; margin: 8px 0 2px; }
-.row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid rgba(128,128,128,.18); border-radius: 8px; background: transparent; cursor: pointer; }
-.row:hover { border-color: rgba(128,128,128,.4); }
+
+/* Segmented control: soft capsule, neutral active fill. */
+.segmented { display: flex; background: rgba(128,128,128,.14); border-radius: 9px; padding: 2px; gap: 2px; }
+.segBtn { padding: 5px 13px; font-size: 12px; border: none; border-radius: 7px; background: transparent; color: inherit; opacity: .62; cursor: pointer; transition: background .15s ease, opacity .15s ease; }
+.segBtn:hover { opacity: .9; }
+.segBtnActive { background: rgba(128,128,128,.28); opacity: 1; font-weight: 600; }
+
+/* Search: filled rounded field, no border. */
+.search { width: 100%; padding: 10px 14px; border: none; border-radius: 10px; background: rgba(128,128,128,.12); color: inherit; font-size: 13px; outline: none; transition: background .15s ease; }
+.search::placeholder { opacity: .45; }
+.search:focus { background: rgba(128,128,128,.18); }
+
+/* Inset grouped list: one rounded card per group. */
+.section { display: flex; flex-direction: column; background: rgba(128,128,128,.06); border-radius: 12px; overflow: hidden; margin-top: 4px; box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 4px 12px rgba(0,0,0,.04); }
+.sectionTitle { font-size: 13px; font-weight: 700; margin: 14px 16px 2px; }
+.groupHead { display: flex; align-items: center; gap: 8px; padding: 12px 14px 4px; }
+.groupTitle { font-size: 13px; font-weight: 600; opacity: .92; flex: 1; min-width: 0; }
+.groupOps { flex: none; display: inline-flex; gap: 6px; }
+
+/* Small neutral pill buttons (group-level actions). */
+.opBtn { font-size: 11px; padding: 3px 11px; border-radius: 999px; border: none; background: rgba(128,128,128,.13); color: inherit; cursor: pointer; transition: background .15s ease; }
+.opBtn:hover { background: rgba(128,128,128,.22); }
+.opBtn:disabled { opacity: .4; cursor: default; }
+
+/* Rows: hairline separators inside a card, no outer borders. */
+.row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: transparent; cursor: pointer; transition: background .12s ease; }
+.row:hover { background: rgba(128,128,128,.08); }
+.rowStatic { cursor: default; }
+.rowStatic:hover { background: transparent; }
+.row + .row { border-top: 0.5px solid rgba(128,128,128,.13); }
 .rowMain { flex: 1; min-width: 0; }
-.rowName { font-size: 13.5px; font-weight: 600; }
-.rowDesc { font-size: 12px; opacity: .65; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.badges { display: flex; gap: 4px; align-items: center; flex: none; }
-.badge { font-size: 10.5px; padding: 1px 6px; border-radius: 999px; border: 1px solid rgba(128,128,128,.3); opacity: .85; white-space: nowrap; }
-.badgeModel { color: #2f81f7; border-color: currentColor; }
-.badgeUser { color: #3fb950; border-color: currentColor; }
+.rowName { display: flex; align-items: center; gap: 5px; font-size: 13.5px; }
+.rowNameText { font-weight: 600; }
+.rowDesc { font-size: 12.5px; opacity: .52; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Quiet inline metadata (e.g. invocation count) — no chips. */
+.rowMeta { font-size: 11.5px; opacity: .45; flex: none; white-space: nowrap; }
+
+/* No badge chips on list rows; keep only for the detail head. */
+.badges { display: flex; gap: 6px; align-items: center; flex: none; }
+.badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 0.5px solid rgba(128,128,128,.3); opacity: .8; white-space: nowrap; }
+.badgeModel { color: var(--hub-model); border-color: currentColor; }
+.badgeUser { color: var(--hub-user); border-color: currentColor; }
 .badgeUses { color: #d29922; border-color: currentColor; }
-.badgeReadonly { opacity: .55; }
-.switchBtn { flex: none; font-size: 11.5px; padding: 3px 10px; border-radius: 999px; border: 1px solid rgba(128,128,128,.35); background: transparent; color: inherit; cursor: pointer; }
-.switchBtn:disabled { opacity: .5; cursor: default; }
-.switchOff:hover { border-color: #d1242f; color: #d1242f; }
-.switchOn { color: #3fb950; border-color: currentColor; }
-.switchOn:hover { color: #d1242f; border-color: currentColor; }
-.empty { font-size: 12.5px; opacity: .6; padding: 14px 0; text-align: center; }
-.diagRow { font-size: 12px; padding: 6px 10px; border-left: 3px solid #d29922; background: rgba(210,153,34,.08); border-radius: 4px; }
-.diagPath { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; opacity: .8; word-break: break-all; }
-.diagReason { opacity: .7; }
-.errorBanner { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: #d1242f; background: rgba(209,36,47,.08); border: 1px solid rgba(209,36,47,.3); border-radius: 6px; padding: 8px 10px; }
-.detail { display: flex; flex-direction: column; gap: 10px; }
+.badgeReadonly { opacity: .5; }
+
+/* iOS-style switch (kept, already matches the system look). */
+.switch { flex: none; width: 36px; height: 21px; padding: 2px; border: none; border-radius: 999px; background: rgba(128,128,128,.3); cursor: pointer; transition: background .18s ease; }
+.switch:disabled { opacity: .5; cursor: default; }
+.switchOn { background: #34c759; }
+.switchThumb { display: block; width: 17px; height: 17px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transform: translateX(0); transition: transform .18s ease; }
+.switchOn .switchThumb { transform: translateX(15px); }
+
+.empty { font-size: 13px; opacity: .5; padding: 20px 0; text-align: center; }
+.diagRow { font-size: 12px; padding: 9px 14px; border-left: 3px solid #d29922; background: rgba(210,153,34,.06); }
+.diagPath { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; opacity: .75; word-break: break-all; }
+.diagReason { opacity: .65; margin-top: 1px; }
+.updateLink { color: inherit; font-weight: 600; text-decoration: underline; }
+
+.errorBanner { display: flex; align-items: flex-start; gap: 10px; font-size: 12.5px; color: #d1242f; background: rgba(209,36,47,.07); border-radius: 10px; padding: 10px 14px; white-space: pre-wrap; word-break: break-all; }
+/* Green success banner (create finished); mirrors the error banner shape. */
+.successBanner { display: flex; align-items: flex-start; gap: 10px; font-size: 12.5px; color: #3fb950; background: rgba(63,185,80,.08); border-radius: 10px; padding: 10px 14px; white-space: pre-wrap; word-break: break-all; }
+
 .detailHead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.back { background: transparent; border: 1px solid rgba(128,128,128,.35); color: inherit; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
-.detailName { font-size: 16px; font-weight: 700; }
-.detailMeta { display: flex; flex-direction: column; gap: 4px; font-size: 12px; opacity: .8; }
+.back { background: rgba(128,128,128,.12); border: none; color: inherit; border-radius: 8px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; }
+.back:hover { background: rgba(128,128,128,.2); }
+.detailName { font-size: 19px; font-weight: 700; letter-spacing: -0.01em; }
+.detailMeta { display: flex; flex-direction: column; gap: 4px; font-size: 12px; opacity: .6; }
 .detailMetaLine { word-break: break-all; }
-.detailContent { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; border: 1px solid rgba(128,128,128,.2); border-radius: 8px; padding: 12px; max-height: 60vh; overflow: auto; }
-.form { display: flex; flex-direction: column; gap: 8px; border: 1px solid rgba(128,128,128,.25); border-radius: 8px; padding: 12px; }
-.formRow { display: flex; flex-direction: column; gap: 4px; }
-.formLabel { font-size: 11.5px; opacity: .75; }
-.input, .select { padding: 7px 9px; border: 1px solid rgba(128,128,128,.35); border-radius: 6px; background: transparent; color: inherit; font-size: 13px; }
+.detailContent { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; background: rgba(128,128,128,.05); border-radius: 12px; padding: 14px 16px; max-height: 62vh; overflow: auto; }
+
+.form { display: flex; flex-direction: column; gap: 10px; background: rgba(128,128,128,.05); border-radius: 12px; padding: 14px 16px; box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 4px 12px rgba(0,0,0,.04); }
+.formRow { display: flex; flex-direction: column; gap: 5px; }
+.formLabel { font-size: 12px; opacity: .6; }
+.input, .select { padding: 9px 12px; border: none; border-radius: 9px; background: rgba(128,128,128,.12); color: inherit; font-size: 13px; outline: none; }
+.input:focus, .select:focus { background: rgba(128,128,128,.18); }
 .buttons { display: flex; gap: 8px; align-items: center; }
-.button { padding: 6px 12px; border-radius: 6px; font-size: 12.5px; cursor: pointer; border: 1px solid rgba(128,128,128,.35); background: transparent; color: inherit; }
-.primary { border-color: #2f81f7; color: #2f81f7; }
-.primary:disabled { opacity: .5; cursor: default; }
+.button { padding: 6px 13px; border-radius: 8px; font-size: 12.5px; cursor: pointer; border: none; background: rgba(128,128,128,.12); color: inherit; transition: background .15s ease; }
+.button:hover { background: rgba(128,128,128,.2); }
+.primary { background: var(--hub-model); color: #fff; }
+.primary:hover { background: #2f81f7; opacity: .92; }
+.primary:disabled { opacity: .45; cursor: default; }
+.danger { background: #d1242f; color: #fff; }
+.danger:hover { background: #d1242f; opacity: .92; }
+.danger:disabled { opacity: .45; cursor: default; }
 .formError { color: #d1242f; }
 .formSuccess { color: #3fb950; }
-.muted { opacity: .6; }
+.muted { opacity: .55; }
 
+/* Status dots (model/user invocable) — quiet circles, colors from settings. */
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-left: 5px; vertical-align: middle; }
+.dotModel { background: var(--hub-model); }
+.dotUser { background: var(--hub-user); }
+.legend { display: flex; align-items: center; gap: 12px; font-size: 11.5px; opacity: .55; flex-wrap: wrap; padding: 2px 2px 0; }
+.legendItem { display: inline-flex; align-items: center; gap: 4px; }
+.legendItem .dot { margin-left: 0; }
+.legendHint { opacity: .8; }
+
+/* Chips become quiet text pills (no colored borders). */
+.badgeSource { background: rgba(128,128,128,.1); border: none; opacity: .72; }
+.badgeCount { background: rgba(128,128,128,.1); border: none; opacity: .72; }
+.badgeDisabled { background: rgba(128,128,128,.1); border: none; opacity: .58; }
+
+/* Collapsible drawer headers (groups view). */
+.disclosure { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 2px 0; border: none; background: none; color: inherit; cursor: pointer; text-align: left; }
+.disclosure:hover .groupTitle { opacity: 1; }
+.chevron { flex: none; width: 8px; height: 8px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); transition: transform .15s ease; opacity: .55; margin-right: 2px; }
+.chevronCollapsed { transform: rotate(-45deg); }
+
+/* Reduced header: title + quiet count on one line, controls on the next. */
+.headerCount { font-size: 12px; opacity: .5; margin-left: 2px; white-space: nowrap; }
+.subbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.legendToggle { flex: none; width: 22px; height: 22px; border-radius: 50%; border: none; background: rgba(128,128,128,.14); color: inherit; font-size: 12px; line-height: 1; cursor: pointer; opacity: .55; transition: opacity .15s ease, background .15s ease; }
+.legendToggle:hover { opacity: 1; }
+.legendToggleActive { opacity: 1; background: rgba(128,128,128,.28); }
+
+/* Source filter row (分类 view). */
+.filterBar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.filterBar .formLabel { margin: 0; }
+
+/* Invocation count: amber chip beside the skill name. */
+.useCount { display: inline-block; margin-left: 6px; font-size: 11px; font-weight: 700; color: #d29922; background: rgba(210,153,34,.12); border-radius: 999px; padding: 0 6px; line-height: 1.6; vertical-align: 1px; }
+/* Relative last-used time: right-aligned on the name row, above the description. */
+.useTime { margin-left: auto; font-size: 11px; opacity: .45; white-space: nowrap; }
+
+
+
+/* ---- v0.3: tri-state switches, dialogs, source headers ---- */
+
+/* Tri-state group switch: mixed = half-filled (thumb centered, soft green).
+   The blue mirrors --hub-model at 45% (kept as rgba; see the .panel vars). */
+.switchMixed { background: rgba(47,129,247,.45); }
+.switchMixed .switchThumb { transform: translateX(7.5px); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+
+/* Group title inner summary (count + last used) sits inline after the name. */
+.groupTitleInner { display: inline-flex; align-items: baseline; }
+
+/* Group ops row wraps on narrow widths; keep controls compact. */
+.groupOps { flex: none; display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+/* Source link inside group titles / rows. */
+.sourceLink { color: inherit; font-weight: 600; text-decoration: none; border-bottom: 1px dotted currentColor; opacity: .9; }
+.sourceLink:hover { opacity: 1; }
+
+/* Source status badges (check results). */
+.statusBadges { display: inline-flex; gap: 4px; align-items: center; flex: none; }
+.statusBadge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 0.5px solid rgba(128,128,128,.3); opacity: .8; white-space: nowrap; background: rgba(128,128,128,.1); }
+.statusOk { color: #3fb950; border-color: currentColor; background: transparent; }
+.statusUpdated { color: #d29922; border-color: currentColor; background: rgba(210,153,34,.08); }
+.statusError { color: #d1242f; border-color: currentColor; background: rgba(209,36,47,.08); }
+
+/* Clickable status badge (group-header re-check affordance). */
+.statusWrap { display: inline-flex; gap: 4px; align-items: center; border: none; background: none; padding: 0; cursor: pointer; font-family: inherit; }
+.statusWrap:hover .statusBadge { opacity: 1; }
+.statusButton { font-family: inherit; cursor: pointer; }
+.statusButton:hover { opacity: 1; }
+
+/* Danger pill (follow upstream deletion). */
+.opDanger { color: #d1242f; background: rgba(209,36,47,.1); }
+.opDanger:hover { background: rgba(209,36,47,.18); }
+
+/* Icon-only pill button (fixed size so rows never shift). */
+.iconBtn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border-radius: 999px; }
+
+/* Source card in the detail view. */
+.sourceCard { display: flex; flex-direction: column; gap: 4px; font-size: 12px; background: rgba(128,128,128,.05); border-radius: 12px; padding: 12px 14px; }
+.sourceCardTitle { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* iOS-style centered dialog (conflict / sync confirm). */
+.dialogOverlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.35); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); padding: 24px; }
+.dialog { min-width: min(320px, 100%); max-width: 380px; background: var(--dsw-surface, #f5f5f7); color: var(--dsw-text, #1d1d1f); border-radius: 14px; padding: 18px 18px 14px; box-shadow: 0 12px 40px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.16); }
+@media (prefers-color-scheme: dark) {
+  .dialog { background: #2c2c2e; color: #f5f5f7; }
+}
+.dialogTitle { margin: 0 0 8px; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+.dialogText { margin: 0 0 10px; font-size: 12.5px; opacity: .65; line-height: 1.5; }
+.dialogList { margin: 0 0 14px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 5px; max-height: 200px; overflow: auto; }
+.dialogList li { font-size: 12.5px; opacity: .85; word-break: break-all; }
+.dialogActions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* Search + filter + view control share one row (skills tab); the search
+   field stretches over the remaining width so the row never looks hollow. */
+.filterBar .search { flex: 1; min-width: 160px; }
+.filterBar .formLabel { flex: none; }
+.filterBar .select { flex: none; max-width: 150px; }
+.filterBar .segmented { flex: none; }
+
+
+/* Panel title icon (skill identity). */
+.titleIcon { display: inline-block; vertical-align: -2px; margin-right: 2px; opacity: .8; }
+
+/* ---- inline-style replacements: one class per recurring layout intent.
+   These must stay AFTER the rules they modify (e.g. .groupTime after
+   .useTime) so the later rule wins at equal specificity. ---- */
+.grow { flex: 1; }
+/* Muted one-line hint (replaces <p class="muted" style="margin:0;font-size:11.5px">). */
+.hintLine { margin: 0; font-size: 11.5px; opacity: .55; }
+.hintPadded { margin: 6px 12px 2px; }
+.hintInline { margin: 4px 2px; }
+/* Repo preview row for an already-installed skill (cursor default + dimmed). */
+.rowMuted { cursor: default; opacity: .55; }
+.actionsPadded { padding: 8px 12px; }
+.actionsTop { margin-top: 8px; }
+.actionsBottom { margin-bottom: 8px; }
+/* Group-header last-used time: inline after the count chip (overrides useTime's right-align). */
+.groupTime { margin-left: 6px; }
+.sectionHeadRow { display: flex; align-items: center; gap: 8px; }
+.sectionTitleFill { flex: 1; }
+.dialogSelect { width: 100%; margin-bottom: 12px; }
+.dialogRow { display: flex; align-items: center; gap: 8px; }

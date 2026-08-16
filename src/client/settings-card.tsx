@@ -1,13 +1,13 @@
 /**
- * Shared chrome for the plugin settings card, vendored from the dsh-web-ui
- * family bucket (packages/dsh-task-board/src/client/PluginSettingsCard.tsx):
- * a disclosure header naming the plugin and what its settings govern, the
- * controls inside, and the save that writes them. Renders nothing while the
+ * Shared chrome for the plugin settings card, aligned with the official
+ * dsh-client-ui-settings-plugins PluginCard design language: the same tokens,
+ * disclosure header, field rhythm, and copy. Renders nothing while the
  * namespace is unavailable — a deployment that does not compose the owning
  * plugin should show no trace of it.
  */
 
 import { useState, type ReactElement } from 'react'
+import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { CardShell } from './settings-form.ts'
 import css from './settings-card.module.css'
 
@@ -51,13 +51,13 @@ export function PluginSettingsCard(props: PluginSettingsCardProps): ReactElement
         <span className={css.description}>{props.t(props.descriptionKey)}</span>
       </span>
       {state.dirty ? <span className={css.pending}>{props.t('settings.unsaved')}</span> : null}
-      <span className={open ? css.chevronOpen : css.chevron}>▾</span>
+      <IconChevronDownOutline14 className={open ? css.chevronOpen : css.chevron} />
     </button>
   )
 
   if (!state.exposed) {
     return (
-      <li className={css.card}>
+      <li className={css.card + (open ? ' ' + css.cardOpen : '')}>
         {header}
         {open ? <div className={css.body}><p className={css.notExposed} role='status'>{props.t('settings.notExposed')}</p></div> : null}
       </li>
@@ -65,7 +65,7 @@ export function PluginSettingsCard(props: PluginSettingsCardProps): ReactElement
   }
 
   return (
-    <li className={css.card}>
+    <li className={css.card + (open ? ' ' + css.cardOpen : '')}>
       {header}
       {open ? (
         <div className={css.body}>
@@ -117,7 +117,7 @@ export function BooleanField(props: BooleanFieldProps): ReactElement {
           </span>
         ) : null}
       </div>
-      <select id={props.id} className={css.select} value={props.text} disabled={props.disabled} onChange={(event) => { props.onEdit(event.target.value) }}>
+      <select id={props.id} className={css.input} value={props.text} disabled={props.disabled} onChange={(event) => { props.onEdit(event.target.value) }}>
         <option value=''>{props.inheritLabel}</option>
         <option value='true'>{props.onLabel}</option>
         <option value='false'>{props.offLabel}</option>
@@ -176,6 +176,62 @@ export function SwitchField(props: SwitchFieldProps): ReactElement {
           <span className={css.switchThumb} />
         </button>
       </div>
+    </div>
+  )
+}
+
+/** One staged color field: a native color picker plus the hex draft text. */
+export interface ColorFieldProps {
+  id: string
+  label: string
+  hint: string
+  inheritLabel: string
+  overriddenLabel: string
+  resetLabel: string
+  disabled: boolean
+  /** Effective hex (#rrggbb) when overridden; empty string means inherit. */
+  text: string
+  /** The default color the picker shows while inheriting (per-field). */
+  defaultColor: string
+  overridden: boolean
+  onEdit: (text: string) => void
+  onReset: () => void
+}
+
+export function ColorField(props: ColorFieldProps): ReactElement {
+  const value = /^#[0-9a-f]{6}$/i.test(props.text) ? props.text : props.defaultColor
+  return (
+    <div className={css.field}>
+      <div className={css.head}>
+        <label className={css.label} htmlFor={props.id}>{props.label}</label>
+        {props.overridden ? (
+          <span className={css.badges}>
+            <span className={css.badge}>{props.overriddenLabel}</span>
+            <button type='button' className={css.reset} disabled={props.disabled} onClick={props.onReset}>
+              {props.resetLabel}
+            </button>
+          </span>
+        ) : null}
+      </div>
+      <div className={css.colorRow}>
+        <input
+          id={props.id}
+          type='color'
+          className={css.colorInput}
+          value={value}
+          disabled={props.disabled}
+          onChange={(event) => { props.onEdit(event.target.value) }}
+        />
+        <input
+          type='text'
+          className={css.input + ' ' + css.colorText}
+          value={props.text}
+          disabled={props.disabled}
+          placeholder={props.inheritLabel}
+          onChange={(event) => { props.onEdit(event.target.value.trim()) }}
+        />
+      </div>
+      <p className={css.hint}>{props.hint}</p>
     </div>
   )
 }

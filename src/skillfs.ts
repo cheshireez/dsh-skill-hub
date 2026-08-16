@@ -12,13 +12,13 @@
  * content is the body after the frontmatter block, trimmed.
  */
 
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import { load } from 'js-yaml'
+import { dump, load } from 'js-yaml'
 import { isSkillName } from '@deepseek-ai/dsh-skill'
 import { dshHome } from './store.ts'
-import type { DiagnosticEntry, WritableRoot } from './protocol.ts'
+import type { DiagnosticEntry, TrashEntry, WritableRoot } from './protocol.ts'
 
 /** Root ids this module may write to. */
 export const WRITABLE_ROOTS: readonly WritableRoot[] = ['user-dsh', 'user-agents']
@@ -55,10 +55,13 @@ export async function createSkill(root: WritableRoot, name: string, description:
   const dir = join(rootPath(root, home), name)
   const file = join(dir, 'SKILL.md')
   await mkdir(dir, { recursive: true })
+  const safeDescription = description.trim() === '' ? 'New dsh skill created from the skill hub.' : description.trim()
   const body = [
     '---',
-    'name: ' + name,
-    'description: ' + (description.trim() === '' ? 'New dsh skill created from the skill hub.' : description.trim()),
+    // dump() emits a quoted string when plain text would parse as a number,
+    // mapping, or other non-string YAML (the official parser requires strings).
+    'name: ' + dump(name).trim(),
+    'description: ' + dump(safeDescription).trim(),
     '---',
     '',
     '# ' + name,
@@ -95,6 +98,44 @@ export async function enableSkill(disabledPath: string): Promise<string> {
   return original
 }
 
+/**
+ * Move a skill (directory bundle or flat .md file) into the root's trash.
+ * The skill stays recoverable: the source is renamed into
+ * <root>/.trash/<name>-<timestamp>. A directory bundle is addressed by its
+ * SKILL.md path and moved as a whole directory.
+ * @returns the trashed path plus the original path that was moved.
+ */
+export async function trashSkill(sourcePath: string): Promise<{ path: string; source: string }> {
+  const source = basename(sourcePath) === 'SKILL.md' ? dirname(sourcePath) : sourcePath
+  const trashDir = join(dirname(source), '.trash')
+  await mkdir(trashDir, { recursive: true })
+  const target = join(trashDir, basename(source) + '-' + Date.now())
+  await rename(source, target)
+  return { path: target, source }
+}
+
+/** Restore a trashed skill (directory or flat file) to its original location. */
+export async function restoreSkill(entry: TrashEntry, home = dshHome()): Promise<string> {
+  if (basename(dirname(entry.path)) !== '.trash') {
+    throw new TypeError('not a trashed skill path: ' + entry.path)
+  }
+  const target = entry.sourcePath ?? join(dirname(dirname(entry.path)), entry.name)
+  if (entry.sourcePath !== undefined && rootOfPath(entry.sourcePath, home) === undefined) {
+    throw new TypeError('not a hub writable skill path: ' + entry.sourcePath)
+  }
+  await rename(entry.path, target)
+  return target
+}
+
+/** Permanently delete one trashed skill (directory or flat file). */
+export async function clearTrash(entry: TrashEntry, home = dshHome()): Promise<string> {
+  if (basename(dirname(entry.path)) !== '.trash' || rootOfPath(dirname(dirname(entry.path)), home) === undefined) {
+    throw new TypeError('not a hub trashed skill path: ' + entry.path)
+  }
+  await rm(entry.path, { recursive: true, force: true })
+  return entry.path
+}
+
 /** Classify a skill file path: 'directory' (SKILL.md), 'flat' (<name>.md), or undefined. */
 function skillFileKind(path: string): 'directory' | 'flat' | undefined {
   if (basename(path) === 'SKILL.md') return 'directory'
@@ -107,27 +148,9 @@ export interface FrontmatterValue {
   name: string
   description: string
   whenToUse?: string
-  /** Optional group names the skill declares (frontmatter `sets`). */
-  sets?: string[]
   invocation: { modelInvocable: boolean; userInvocable: boolean }
   /** Instruction body after the frontmatter block, trimmed. */
   content: string
-}
-
-/**
- * Normalize an optional frontmatter `sets` value into a clean string list.
- * Accepts a single string or a string array; trims, drops empties, and
- * ignores non-string entries. Returns undefined when absent or empty, so a
- * skill without sets stays uncategorized.
- */
-export function normalizeSets(raw: unknown): string[] | undefined {
-  const items = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : undefined
-  if (items === undefined) return undefined
-  const sets = items
-    .filter((item): item is string => typeof item === 'string')
-    .map((item) => item.trim())
-    .filter((item) => item !== '')
-  return sets.length === 0 ? undefined : sets
 }
 
 /** Parse a SKILL.md the way the official filesystem provider does. */
@@ -150,7 +173,6 @@ export function parseFrontmatter(text: string): { value: FrontmatterValue } | { 
   const description = typeof record.description === 'string' ? record.description.trim() : ''
   if (description === '') return { error: 'frontmatter requires a description field' }
   const whenToUse = typeof record.whenToUse === 'string' && record.whenToUse.trim() !== '' ? record.whenToUse.trim() : undefined
-  const sets = normalizeSets(record.sets)
   if (Object.hasOwn(record, 'disableModelInvocation')) return { error: 'frontmatter field "disableModelInvocation" is unsupported; use "disable-model-invocation"' }
   if (Object.hasOwn(record, 'modelInvocable')) return { error: 'frontmatter field "modelInvocable" is unsupported; use "disable-model-invocation"' }
   if (Object.hasOwn(record, 'userInvocable')) return { error: 'frontmatter field "userInvocable" is unsupported; use "user-invocable"' }
@@ -162,7 +184,7 @@ export function parseFrontmatter(text: string): { value: FrontmatterValue } | { 
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) }
   }
-  return { value: { name, description, ...(whenToUse !== undefined ? { whenToUse } : {}), ...(sets !== undefined ? { sets } : {}), invocation, content: (match[2] ?? '').trim() } }
+  return { value: { name, description, ...(whenToUse !== undefined ? { whenToUse } : {}), invocation, content: (match[2] ?? '').trim() } }
 }
 
 /** Official boolean grammar: true/false, 1/0, and the common string spellings. */
@@ -193,10 +215,9 @@ export interface SkillEntry {
 /**
  * Scan one skills root for discovery files: directory bundles (SKILL.md)
  * and flat <name>.md files. Hub-disabled files (.disabled) are excluded;
- * the .system subdirectory is excluded when skipSystem is set (mirrors the
- * official provider's user-dsh behavior).
+ * dot-prefixed entries (including .trash and .system) are always skipped.
  */
-export async function scanRoot(base: string, skipSystem: boolean): Promise<SkillEntry[]> {
+export async function scanRoot(base: string): Promise<SkillEntry[]> {
   const entries: SkillEntry[] = []
   let names: string[]
   try {
@@ -207,7 +228,6 @@ export async function scanRoot(base: string, skipSystem: boolean): Promise<Skill
   }
   for (const name of names) {
     if (name.startsWith('.')) continue
-    if (skipSystem && name === '.system') continue
     const absolute = join(base, name)
     let stats
     try {
@@ -224,9 +244,9 @@ export async function scanRoot(base: string, skipSystem: boolean): Promise<Skill
   return entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 }
 
-/** Scan one writable root (user-dsh skips .system, mirroring the official provider). */
+/** Scan one writable root. */
 export function listSkillEntries(root: WritableRoot, home = dshHome()): Promise<SkillEntry[]> {
-  return scanRoot(rootPath(root, home), root === 'user-dsh')
+  return scanRoot(rootPath(root, home))
 }
 
 /**
@@ -264,8 +284,23 @@ export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Pro
       continue
     }
     const parsed = parseFrontmatter(text)
-    if ('error' in parsed) diagnostics.push({ path: entry.path, root, reason: parsed.error })
+    if ('error' in parsed) {
+      diagnostics.push({ path: entry.path, root, reason: parsed.error })
+      continue
+    }
+    const { value } = parsed
+    // The provider registers a skill by its discovery path (directory name or
+    // flat file name), so a frontmatter name that diverges from the path makes
+    // the skill show up under a different identity than its metadata claims.
+    const pathName = entry.kind === 'directory' ? basename(entry.directory) : basename(entry.path, '.md')
+    if (value.name !== pathName) {
+      diagnostics.push({ path: entry.path, root, reason: `frontmatter name "${value.name}" does not match the discovery path "${pathName}" (the provider registers by path)` })
+    }
+    // Agents decide to auto-activate a skill from its one-line description, so
+    // a too-short description leaves the skill hard to discover automatically.
+    if (value.description.length < 10) {
+      diagnostics.push({ path: entry.path, root, reason: `description is only ${value.description.length} chars; write a one-line description so agents can auto-activate this skill` })
+    }
   }
   return diagnostics
 }
-

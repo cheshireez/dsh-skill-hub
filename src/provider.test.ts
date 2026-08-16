@@ -86,15 +86,13 @@ describe('SkillHubProvider', () => {
     expect(definition?.resourceBase).toEqual({ kind: 'directory', path: join(home, 'skills', 'demo-skill') })
   })
 
-  it('exposes frontmatter sets as metadata', async () => {
+  it('ignores frontmatter sets (sets grouping was removed)', async () => {
     const dirPath = join(home, 'skills', 'grouped-skill')
     await mkdir(dirPath, { recursive: true })
     await writeFile(join(dirPath, 'SKILL.md'), '---\nname: grouped-skill\ndescription: Grouped\nsets: [engineering, tooling]\n---\n\nBody', 'utf8')
     const { provider } = makeProvider(home)
     const candidate = (await provider.list({})).find((entry) => entry.name === 'grouped-skill')
-    expect(candidate?.metadata).toEqual({ sets: ['engineering', 'tooling'] })
-    const definition = await provider.get(candidate!)
-    expect(definition?.metadata).toEqual({ sets: ['engineering', 'tooling'] })
+    expect(candidate?.metadata).toBeUndefined()
   })
 
   it('invalidate() forwards to the registry control', async () => {
