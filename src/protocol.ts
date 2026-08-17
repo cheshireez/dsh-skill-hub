@@ -56,10 +56,16 @@ export interface CatalogSkill {
   provider: string
   /** Whether the hub may toggle this skill (user-level filesystem skills only). */
   writable: boolean
+  /** 技能来源标识（user-dsh/user-agents/project-dsh/project-agents/...）。 */
+  source: string
   /** SKILL.md creation time (epoch ms); used for "added" sorting. Absent when unknown. */
   addedAt?: number
   /** SKILL.md last-modified time (epoch ms); used for "updated" display. Absent when unknown. */
   updatedAt?: number
+  /** 项目技能的所属工作区路径（仅 project-dsh/project-agents 来源携带）。 */
+  workspace?: string
+  /** 工作区显示标题（来自 workspace.json；无则回退为路径）。 */
+  workspaceTitle?: string
 }
 
 /** One disabled skill tracked by the hub sidecar (SKILL.md renamed away). */
@@ -211,6 +217,24 @@ export interface HubConfig {
   showUseTime?: boolean
   /** Show group-header usage summaries (count + last used). Default true. */
   showGroupSummary?: boolean
+}
+
+/**
+ * The resolved shape of the hub's settings namespace (schema defaults, then
+ * the composition base, then the user layer). Kept as a type alias so the
+ * browser-side settings scope snapshot is index-compatible with the card
+ * form's record shape.
+ */
+export type HubSettingsValue = {
+  enabled: boolean
+  announceToAgent: boolean
+  showUseCount: boolean
+  showUseTime: boolean
+  showGroupSummary: boolean
+  /** Model-invocable dot color (#rrggbb); absent means the panel default. */
+  dotModelColor?: string
+  /** User-invocable dot color (#rrggbb); absent means the panel default. */
+  dotUserColor?: string
 }
 
 /**

@@ -141,6 +141,61 @@ describe('skill-hub routes', () => {
     expect(captured).toBe('/tmp/project')
   })
 
+  it('merges every known workspace into the default catalog with workspace fields', async () => {
+    // workspace.json 声明两个工作区；每个工作区的 snapshot 返回其项目技能 + 用户级技能。
+    await mkdir(join(home, 'storages'), { recursive: true })
+    await writeFile(join(home, 'storages', 'workspace.json'), JSON.stringify({
+      tables: {
+        workspaces: {
+          a: { title: 'Alpha', path: '/ws/a' },
+          b: { title: 'Beta', path: '/ws/b' },
+        },
+      },
+    }), 'utf8')
+    skills.snapshot = async (options?: { cwd?: string }) => {
+      const user = summary({ name: 'shared-user' })
+      if (options?.cwd === '/ws/a') {
+        return { skills: [user, summary({ name: 'ws-a-skill', source: 'project-dsh', provider: 'skill-hub' })], complete: true }
+      }
+      if (options?.cwd === '/ws/b') {
+        return { skills: [user, summary({ name: 'ws-b-skill', source: 'project-agents', provider: 'skill-hub' })], complete: false }
+      }
+      return { skills: [user], complete: true }
+    }
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.catalog).handler(fakeReq('GET', SKILL_HUB_API.catalog), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as CatalogResponse
+    expect(body.complete).toBe(false) // 任一工作区不完整则整体不完整
+    const byName = new Map(body.skills.map((skill) => [skill.name, skill]))
+    expect(byName.has('ws-a-skill')).toBe(true)
+    expect(byName.get('ws-a-skill')).toMatchObject({ workspace: '/ws/a', workspaceTitle: 'Alpha', writable: false })
+    expect(byName.get('ws-b-skill')).toMatchObject({ workspace: '/ws/b', workspaceTitle: 'Beta' })
+    // 同名用户级技能只出现一次，且不带 workspace 字段。
+    expect(byName.get('shared-user')).toMatchObject({ writable: true })
+    expect(byName.get('shared-user')?.workspace).toBeUndefined()
+  })
+
+  it('falls back across workspaces when fetching a project skill detail without cwd', async () => {
+    await mkdir(join(home, 'storages'), { recursive: true })
+    await writeFile(join(home, 'storages', 'workspace.json'), JSON.stringify({
+      tables: { workspaces: { a: { title: 'Alpha', path: '/ws/a' } } },
+    }), 'utf8')
+    const calls: Array<string | undefined> = []
+    skills.get = async (name: string, options?: { cwd?: string }) => {
+      calls.push(options?.cwd)
+      return name === 'ws-a-skill' && options?.cwd === '/ws/a' ? definition({ name, source: 'project-dsh' }) : undefined
+    }
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.skill).handler(fakeReq('GET', SKILL_HUB_API.skill + '?name=ws-a-skill'), res as never)
+    expect(res.status).toBe(200)
+    expect(calls).toEqual(['/ws/a']) // 工作区命中即停，不再回退用户根
+    const miss = new FakeResponse()
+    await routeFor(SKILL_HUB_API.skill).handler(fakeReq('GET', SKILL_HUB_API.skill + '?name=nope'), miss as never)
+    expect(miss.status).toBe(404)
+    expect(calls).toEqual(['/ws/a', '/ws/a', undefined]) // 未命中时回退用户根
+  })
+
   it('serves skill detail and 404s unknown names', async () => {
     skills.get = async (name: string) => name === 'demo-skill' ? definition({ path: '/x/demo-skill/SKILL.md' }) : undefined
     const ok = new FakeResponse()

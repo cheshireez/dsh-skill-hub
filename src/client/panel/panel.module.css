@@ -2,7 +2,7 @@
    cards, hairline separators, restrained accents. Theme-agnostic: all
    surfaces are translucent greys + currentColor, so light/dark both work. */
 
-.panel { padding: 28px 20px 44px; display: flex; flex-direction: column; gap: 14px; max-width: 720px; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; -webkit-font-smoothing: antialiased; color-scheme: light dark; /* Dot colors mirror src/client/api-config-scope.ts (DEFAULT_DOT_MODEL_COLOR / DEFAULT_DOT_USER_COLOR) — CSS cannot import TS, so keep the two in sync. */ --hub-model: #2f81f7; --hub-user: #3fb950; }
+.panel { padding: 28px 20px 44px; display: flex; flex-direction: column; gap: 14px; max-width: 720px; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; -webkit-font-smoothing: antialiased; color-scheme: light dark; /* Dot colors mirror src/client/SkillHubSettingsCard.tsx (DEFAULT_DOT_MODEL_COLOR / DEFAULT_DOT_USER_COLOR) — CSS cannot import TS, so keep the two in sync. */ --hub-model: #2f81f7; --hub-user: #3fb950; }
 .header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .title { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
 .hint { font-size: 12px; opacity: .5; }
@@ -217,3 +217,8 @@
 .sectionTitleFill { flex: 1; }
 .dialogSelect { width: 100%; margin-bottom: 12px; }
 .dialogRow { display: flex; align-items: center; gap: 8px; }
+/* Workspace (project path) picker in the subbar. */
+.workspaceBox { display: inline-flex; align-items: center; gap: 6px; }
+.workspaceInput { width: 200px; padding: 6px 10px; font-size: 12px; }
+/* Project-level three-tier tree: nested sections indent one level. */
+.projectNest { margin-left: 14px; }

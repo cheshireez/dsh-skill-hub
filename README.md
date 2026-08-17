@@ -1,21 +1,43 @@
 # dsh-skill-hub
 
+[中文版](README.zh.md) | [English](README.md)
+
 <p align="center">
   <a href="https://www.npmjs.com/package/dsh-skill-hub"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-skill-hub?color=2f81f7&label=npm"></a>
+  <img alt="downloads" src="https://img.shields.io/npm/dm/dsh-skill-hub">
   <img alt="license" src="https://img.shields.io/npm/l/dsh-skill-hub">
   <img alt="node" src="https://img.shields.io/badge/node-%3E%3D22.19-339933">
   <a href="https://github.com/cheshireez/dsh-skill-hub/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/cheshireez/dsh-skill-hub/ci.yml?branch=main"></a>
 </p>
 
-<details>
-<summary><b>English</b>（英文）— 点击在本页展开 / 收起，无需跳转</summary>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cheshireez/dsh-skill-hub/main/promo/real-skill-hub.png" alt="dsh-skill-hub panel" width="640">
+</p>
 
 **In-GUI skill hub for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh).**
 Browse the full local skill catalog from the official `ctx.skills` registry, toggle skills on/off, inspect
-their bodies, understand why a skill is missing, and scaffold new ones — all from the dsh web GUI.
+their bodies, understand why a skill is missing, install from the built-in market, and scaffold new
+ones — all from the dsh web GUI.
 
 > A skill manager beyond the read-only browser. The host half runs in the dsh process and speaks only
 > official SDKs; the browser half renders inside the GUI through official slots. No dsh source changes.
+
+> **Disclaimer** — source tracking, market sync, and the restorable trash are implemented by this
+> plugin; they are not guarantees of the dsh runtime itself. Screenshots may lag the latest UI.
+
+## Table of Contents
+
+- [Why another skill manager?](#why-another-skill-manager)
+- [Features](#features)
+- [Quick start](#quick-start)
+- [How it works](#how-it-works)
+- [Usage](#usage)
+- [Troubleshooting](#troubleshooting)
+- [HTTP API](#http-api)
+- [Development](#development)
+- [Roadmap](#roadmap)
+- [Community](#community)
+- [License](#license)
 
 ## Why another skill manager?
 
@@ -28,96 +50,157 @@ their bodies, understand why a skill is missing, and scaffold new ones — all f
 | --- | --- | --- |
 | Catalog source | self-scans disk, user roots only | official `ctx.skills` registry: project / custom / user / bundled + third-party providers |
 | Browse / search | ✅ | ✅ (group by **tags** or by **source repo**, search + filter in one row) |
+| Workspace skills | ❌ | ✅ (enter a project path → its `.dsh/skills` & `.agents/skills` appear, read-only) |
 | Enable / disable | ❌ | ✅ (renames `SKILL.md`; file never deleted, always restorable; per-group tri-state switches) |
 | Inspect skill body | ❌ | ✅ |
 | Discovery diagnostics | ❌ | ✅ (missing frontmatter / missing `name`/`description` / invalid name — each reason listed) |
 | New-skill wizard | ❌ | ✅ (writes to `~/.dsh/skills` or `~/.agents/skills`) |
 | Invocation statistics | ❌ | ✅ (per-skill call counts read from session logs; group headers summarize) |
 | Upstream source tracking | ❌ | ✅ (repo + commit snapshot; check updates, sync, follow upstream deletion into a restorable trash; delete/restore keeps source + scene membership) |
-| Codex-style market | ❌ | ✅ (built-in market catalog + custom repo sources, scan, one-click import, per-source installed/updatable badges, one-click update-all) |
+| Market | ❌ | ✅ (unified market list: built-in curated catalog + custom repos; scan, one-click import, per-source installed/updatable badges, one-click update-all) |
 | Live updates | — | filesystem-provider watcher, with a 5s panel poll as fallback |
 
 ## Features
 
+### Catalog & switches — manage local skills
+
+> **Browse everything, change anything you own.** The full registry is visible and searchable;
+> writes are confined to your user-level roots and never delete files.
+
 - **Full catalog** — every skill the official registry knows: project `.dsh/skills` & `.agents/skills`,
   custom roots, user `~/.dsh/skills` & `~/.agents/skills`, bundled, and third-party providers.
 - **Search & grouping** — one row combines search, source filter, and flat/grouped view; groups are
-  user **tags** plus **source collections** (auto-aggregated by upstream repo); uncategorized stays visible.
-- **Group switches** — every group header carries a sliding switch: enable/disable the whole group in one
-  click. Closing a group whose member is also enabled elsewhere opens a conflict dialog (close all / keep on →
-  the group falls into a half-filled mixed state). Read-only skills are skipped with per-name reports.
-- **Enable / disable** — disable renames `SKILL.md` out of discovery (tracked in a sidecar file), so the
-  change survives restarts and is trivially reversible. Files are never deleted.
-- **Source tracking** — skills imported from GitHub (market sources or direct URLs) record the repo, ref,
-  and upstream commit snapshot. Check for updates per source (1–2 GitHub API requests, 5-minute throttle),
-  sync selected skills (overwrite confirm), and follow upstream deletion into a restorable trash.
+  user **tags (scenes)** plus **source collections** (auto-aggregated by upstream repo); uncategorized
+  stays visible.
+- **Workspace discovery** — known workspaces (from dsh’s workspace registry) are merged into the
+  default view and grouped in a project-level tree (per project, optionally split into
+  `.dsh`/`.agents`); the header path field pins the view to one workspace.
+- **Group switches** — every group header carries a sliding switch: enable/disable the whole group in
+  one click. Closing a group whose member is also enabled elsewhere opens a conflict dialog (close all /
+  keep on → the group falls into a half-filled mixed state). Read-only skills are skipped with
+  per-name reports.
+- **Enable / disable** — disable renames `SKILL.md` out of discovery (tracked in a sidecar file), so
+  the change survives restarts and is trivially reversible. Files are never deleted.
+- **Skill detail** — read a skill’s body straight from disk, with its source card (repo, commit,
+  check/sync/follow-delete actions).
+- **New-skill wizard** — scaffold a valid skill into `~/.dsh/skills` or `~/.agents/skills` from the GUI.
+
+### Market & updates
+
+> **Add a repo, install in one click, stay updated forever.** Imports are tracked upstream
+> automatically; updates surface per source and can be applied all at once.
+
+- **Unified market list** — one list on the Market tab: built-in catalog entries show a description
+  and an **Add** button until added; once added (or custom sources entered by hand) the same row
+  becomes a full source row. No duplicate entries.
+- **Scan → install** — scan any repo’s `skills/` and `design-templates/` roots, tick the skills you
+  want, import with one click. Imports record the upstream repo/commit automatically.
+- **State badges** — every source row aggregates its state: installed count, updatable count, and
+  deleted-upstream count.
+- **Check all / update all** — “Check all” refreshes every source (release + skill diffs); “Update
+  all” syncs every source with pending updates in one pass (per-source failures are reported, never
+  fatal). A daily auto-check (24h, timestamped in localStorage) covers the “forgot to click” case;
+  manual buttons are never throttled.
+- **Source tracking** — per-source check (1–2 GitHub API requests, 5-minute server throttle), sync
+  selected skills (overwrite confirm), and follow upstream deletion into a restorable trash.
   Deleting and restoring a tracked skill keeps its source and scene membership (snapshotted in the
   trash entry). Personal skills (no source) are never tracked.
-- **Market** — codex-style: a built-in catalog of curated repos (one-click add) plus custom repo
-  sources (owner/repo or a GitHub URL); scan `skills/` and `design-templates/` roots and import with
-  one click. Each source row aggregates its state — installed / updatable / deleted upstream — and
-  one "update all" pass syncs every source with pending updates (per-source failures are reported,
-  never fatal).
-- **Skill detail** — read a skill’s rendered body straight from disk.
-- **Discovery diagnostics** — the catalog reports *why* a skill was ignored (missing YAML frontmatter,
-  missing `name`/`description`, illegal name), per skill.
-- **New-skill wizard** — scaffold a valid skill into `~/.dsh/skills` or `~/.agents/skills` from the GUI.
-- **Invocation statistics** — the panel shows how many times each skill was actually called, read from
-  session logs (optional; absent session-query deployments simply omit the data).
-- **Settings card** — enable the plugin, toggle the agent announcement, and adjust panel display preferences from **Settings → 插件 → Skill Hub**.
+- **Self-update check** — the panel header checks the plugin’s own latest GitHub release.
 
-## How it works
+### Stats & diagnostics
 
-```text
-src/
-├── index.ts            host entry: inject [webServer, skills, systemPrompt]; system-prompt announcement
-├── routes.ts           /api/skill-hub/{catalog,skill,toggle,toggle-batch,create,stats,config,
-│                       groups,tag*,market*,repo*,sources*,update} (loopback-only fence)
-├── store.ts            sidecar state ~/.dsh/dsh-skill-hub.json v3 (disabled, tags, sources, market
-│                       sources, trash, runtime config; versioned v1→v2→v3 migrations)
-├── repo.ts             GitHub discovery/import + source tracking (latest commit, tree diff, manifest)
-├── skillfs.ts          root resolution / toggle rename / trash & restore / scaffold / diagnostics
-├── stats.ts            invocation stats: session logs → per-skill call counts (optional sessionQuery)
-├── protocol.ts         host ↔ browser shared API contract (types + endpoint table)
-└── client/             browser half: settings card + skill hub panel (React, CSS Modules, Apple-style)
-```
+> **Know what your agents actually use.** Invocation counts come from your own session logs —
+> no telemetry leaves the machine.
 
-- **Host half** uses only official SDKs: `ctx.skills.snapshot()/get()`, `ctx.webServer.register()`,
-  `ctx.systemPrompt.section()`. No dsh source is modified.
-- **Browser half** mounts through official slots: a **Settings → 技能** section and a
-  **Settings → 插件 → Skill Hub** configuration card.
-- **Configuration** is plugin-owned. The host’s settings service refuses to expose third-party
-  namespaces to the web client, so the settings card reads/writes the plugin’s own
-  `/api/skill-hub/config` route instead of the settings transport — no namespace mounting required.
+- **Invocation statistics** — per-skill call counts and last-used times read from session logs
+  (optional; absent session-query deployments simply omit the data); group headers summarize.
+- **Discovery diagnostics** — the catalog reports *why* a skill was ignored (missing YAML
+  frontmatter, missing `name`/`description`, illegal name), per skill.
+- **Settings card** — enable the plugin, toggle the agent announcement, and adjust panel display
+  preferences from **Settings → 插件 → Skill Hub**.
 
-## Installation
-
-From the dsh web profile:
+## Quick start
 
 ```bash
 dsh plugin --profile web add dsh-skill-hub
 ```
 
-Requires Node `^22.19.0 || >=24.0.0` and a dsh web deployment (`0.1.0-rc.6` SDK family).
+Restart `dsh web`, open **Settings → 技能**, and on the **Market** tab pick a repo from the
+built-in catalog (or paste an `owner/repo`), scan it, tick the skills you want, and import. They are
+tracked upstream from then on: check for updates and sync with one click.
+
+A skill is just a directory with a `SKILL.md` — the panel can also scaffold one for you:
+
+```markdown
+---
+name: my-skill
+description: One line describing when the agent should use this skill.
+---
+# my-skill
+
+What the skill does, when to use it, and what output is expected.
+```
+
+Requires Node `^22.19.0 || >=24.0.0` and a dsh web deployment (`0.1.0-rc.7` SDK family).
+
+## How it works
+
+```text
+ GitHub repo ──scan / import──▶ ~/.dsh/skills (user level)
+      ▲                            │
+      │ check / sync / delete      ▼
+      │                ctx.skills registry ◀── skill-hub provider (registers user + project roots)
+      │                            │ snapshot / get
+      └────── daily auto-check     ▼
+                      /api/skill-hub/* routes ──▶ Browser panel (Settings → 技能)
+```
+
+| File | Responsibility |
+| --- | --- |
+| `src/index.ts` | host entry: inject `[webServer, skills, systemPrompt, settings]`; registers the `dsh-skill-hub` settings namespace; system-prompt announcement |
+| `src/routes.ts` | declarative route wrapper: `/api/skill-hub/*` (loopback / method / master-switch / JSON-body fences handled once; handlers stay business-only) |
+| `src/store.ts` | sidecar state `~/.dsh/dsh-skill-hub.json` v3 (disabled, tags, sources, market sources, trash; versioned v1→v2→v3 migrations) |
+| `src/repo.ts` | GitHub discovery/import + source tracking (latest commit, tree diff, manifest) |
+| `src/skillfs.ts` | root resolution / toggle rename / trash & restore / scaffold / diagnostics |
+| `src/stats.ts` | invocation stats: session logs → per-skill call counts (optional sessionQuery) |
+| `src/protocol.ts` | host ↔ browser shared API contract (types + endpoint table) |
+| `src/client/` | browser half: settings card + skill hub panel. State and flows live in `useSkillHub.ts`; views are thin components (`SourcesView` / `ScenesView` / `MarketView` / `SkillRow` / dialogs / …). CSS Modules, Apple-style |
+
+- **Host half** uses only official SDKs: `ctx.skills.snapshot()/get()`, `ctx.webServer.register()`,
+  `ctx.systemPrompt.section()`. No dsh source is modified.
+- **Browser half** mounts through official slots: a **Settings → 技能** section and a
+  **Settings → 插件 → Skill Hub** configuration card.
+- **Configuration** is dsh-native. Since rc.7 the host serves every registered settings namespace to
+  the web client (the old namespace allowlist is gone), so the plugin registers a `dsh-skill-hub`
+  settings namespace and the card reads/writes it through the official settings transport — the
+  configurable-plugins tab dispatches the card by that namespace, and the host consumes the same
+  resolved value (single source of truth). Installations upgraded from the older sidecar-configured
+  build migrate their saved config into the namespace once.
 
 ## Usage
 
-Open **Settings → 技能** (Skill Hub) in the dsh web GUI:
+Open **Settings → 技能** (Skill Hub) in the dsh web GUI. Three tabs:
 
-- **Browse** — the full catalog, searchable; search, source filter, and flat/grouped view share one row.
-- **Groups** — user tags and source collections (upstream repos). Group headers carry tri-state sliding
-  switches (on / off / mixed) with a conflict dialog when closing affects skills enabled elsewhere.
-- **Market** — a built-in catalog of curated repos (one-click add), plus custom sources (add a repo
-  source, scan, one-click install) or direct URLs; every import records the upstream repo/commit.
-  Each source row shows installed / updatable / deleted-upstream counts; "check all" refreshes every
-  source, and "update all" syncs every pending source in one pass.
-- **Trash** — skills removed after upstream deletion (or deleted manually) land in a restorable trash;
-  restoring brings back the skill's source and scene membership.
-- **Toggle** — enable/disable any skill from a user-writable root; disabled skills list separately and
-  can be re-enabled any time.
-- **Diagnose** — the discovery diagnostics explain why a skill is not showing up.
-- **New skill** — scaffold a new skill from the form and start writing.
-- **Statistics** — per-skill invocation counts when session-query data is available; group headers summarize.
+- **来源 (Sources)** — the skill list, flat or grouped: a project-level tree (workspaces merged by
+  default, per project optionally split into `.dsh`/`.agents`) plus source collections and
+  uncategorized. Search, source filter and sort share one row; group headers carry tri-state
+  switches; the source-group badge doubles as the re-check entry. *(see the screenshot at the top)*
+- **场景 (Scenes)** — your own enable/disable units (e.g. a “Godot” scene vs a “Java” scene): create
+  tags, assign members, and flip a whole scene on/off with one switch.
+
+  <p align="center">
+    <img src="https://raw.githubusercontent.com/cheshireez/dsh-skill-hub/main/promo/real-skill-hub-scenes.png" alt="场景 tab" width="560">
+  </p>
+- **市场 (Market)** — one unified list: built-in curated repos (Add button until added) and your
+  custom sources; scan to install, check for updates, update all in one pass.
+
+  <p align="center">
+    <img src="https://raw.githubusercontent.com/cheshireez/dsh-skill-hub/main/promo/real-skill-hub-catalog.png" alt="市场 tab" width="560">
+  </p>
+
+Everywhere: **work space field** in the header (enter a project path to see its read-only project
+skills), **trash** section (restorable, restores source + scene membership), **diagnostics** section
+(why a skill is missing), and the **new-skill** form.
 
 The plugin’s own switches live on the **Settings → 插件 → Skill Hub** card:
 
@@ -130,14 +213,28 @@ The plugin’s own switches live on the **Settings → 插件 → Skill Hub** ca
 | Show last-used time | Show relative last-used time on each skill row. |
 | Show group summaries | Show count/last-used summaries after group titles. |
 
+## Troubleshooting
+
+- **⚠️ `duplicate loader entry id: skill-hub`** — the plugin was mounted twice (for example both
+  through `dsh plugin add` and a local `file:` install). Keep exactly one installation method; on
+  upgrade, replace rather than add.
+- **A skill is not in the catalog** — open the **发现诊断** (diagnostics) section: missing
+  frontmatter, a name mismatch with the directory, or an over-short description are each listed with
+  their reason.
+- **Update check shows nothing** — the server throttles checks (5 min per source) and the panel
+  auto-checks once per day; manual buttons are never throttled.
+- **Read-only boundary** — only user-level skills (`~/.dsh/skills`, `~/.agents/skills`) are writable;
+  project, bundled, and runtime skills are displayed read-only.
+
 ## HTTP API
 
 All endpoints are **loopback-only** (`127.0.0.1`/`localhost`) and JSON.
 
 | Endpoint | Method | Purpose |
 | --- | --- | --- |
-| `/api/skill-hub/catalog` | GET | Full catalog: skills, disabled list, discovery diagnostics. |
-| `/api/skill-hub/skill?name=` | GET | One skill’s detail (path, provider, body). |
+| `/api/skill-hub/catalog?cwd=` | GET | Full catalog: skills, disabled list, discovery diagnostics (`cwd` adds project skills). |
+| `/api/skill-hub/skill?name=&cwd=` | GET | One skill’s detail (path, provider, body). |
+| `/api/skill-hub/skill/delete` | POST | Move a skill into the restorable trash (snapshots source + scenes). |
 | `/api/skill-hub/toggle` | POST | Enable/disable a writable skill (`{name, enabled}`). |
 | `/api/skill-hub/toggle-batch` | POST | Enable/disable a whole group in one write (`{names, enabled}`). |
 | `/api/skill-hub/create` | POST | Scaffold a new skill (`{name, description?, root?}`). |
@@ -150,13 +247,17 @@ All endpoints are **loopback-only** (`127.0.0.1`/`localhost`) and JSON.
 | `/api/skill-hub/market` | GET | The user’s market source repos. |
 | `/api/skill-hub/market/source` | POST | Add a market source (`{repo}`). |
 | `/api/skill-hub/market/source/delete` | POST | Remove a market source. |
+| `/api/skill-hub/market/source/ref` | POST | Pin a market source to a release/branch ref. |
+| `/api/skill-hub/market/check` | GET | Check market sources for newer releases (throttled). |
+| `/api/skill-hub/market/source/sync` | POST | Align a market source to its pinned ref; returns tracked skills. |
 | `/api/skill-hub/repo?repo=` | GET | Discover importable skills in a GitHub repo. |
-| `/api/skill-hub/repo/import` | POST | Import selected repo skills (records the source). |
+| `/api/skill-hub/repo/import` | POST | Import selected repo skills (records the source + default scene). |
 | `/api/skill-hub/sources` | GET | Source records, derived origins/collections, trash. |
 | `/api/skill-hub/sources/check` | POST | Check upstream updates (throttled, 5 min). |
 | `/api/skill-hub/sources/sync` | POST | Sync selected (or all) skills of a source. |
 | `/api/skill-hub/sources/delete` | POST | Follow upstream deletion (moves to trash). |
-| `/api/skill-hub/sources/restore` | POST | Restore a trashed skill. |
+| `/api/skill-hub/sources/restore` | POST | Restore a trashed skill (re-attaches source + scenes). |
+| `/api/skill-hub/sources/trash/clear` | POST | Permanently clear the trash. |
 | `/api/skill-hub/update` | GET | Check the plugin’s own latest release. |
 
 ## Development
@@ -164,13 +265,13 @@ All endpoints are **loopback-only** (`127.0.0.1`/`localhost`) and JSON.
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (151 tests across 9 suites)
+npm test            # vitest (152 tests across 8 suites)
 npm run build       # tsc declarations + tsdown bundles (lib/index.js + lib/client.js)
 npm pack            # build the installable tarball (dsh-skill-hub-<version>.tgz)
 ```
 
 > **Local testing:** do not run two `dsh web` instances against the same
-> `$DSH_HOME` and the same project directory at the same time. dsh rc.6 has no
+> `$DSH_HOME` and the same project directory at the same time. dsh rc releases have no
 > cross-process session-log lock, and a second instance resuming the same
 > session can write duplicate `seq` rows (`corrupt session log: seq gap in
 > committed region`). Stop the old instance first, or give the preview its own
@@ -181,189 +282,20 @@ store, skill filesystem operations, the registry provider, and invocation statis
 
 ## Roadmap
 
-- **v0.1.0** — full catalog, enable/disable, diagnostics, new-skill wizard, settings card.
-- **v0.2.0** — invocation statistics · tags/scenes + source-collection grouping with tri-state
-  switches · upstream source tracking (check / sync / follow-delete into a restorable trash) ·
-  codex-style market with built-in catalog, per-source state badges, and one-click update-all ·
-  delete/restore keeps source + scene membership.
-- **Next** — SSE realtime push to replace polling · market catalog expansion · optional auto-update.
+- **v0.1.0** *(released)* — full catalog, enable/disable, diagnostics, new-skill wizard, settings card.
+- **v0.2.0** *(released)* — invocation statistics · tags/scenes + source-collection grouping with
+  tri-state switches · upstream source tracking (check / sync / follow-delete into a restorable
+  trash) · unified market with built-in catalog, per-source state badges, and one-click
+  update-all · delete/restore keeps source + scene membership.
+- **Built, pending release** — workspace discovery (project-path field → read-only project skills).
+- **Planned** — SSE realtime push to replace polling · market catalog expansion · optional
+  auto-update.
+
+## Community
+
+- [Issues](https://github.com/cheshireez/dsh-skill-hub/issues) — bug reports and feature requests.
+- [Contributing](CONTRIBUTING.md) — development setup and contribution guidelines.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-</details>
-
-**面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的图形化技能中枢。**
-在 dsh Web GUI 里浏览官方 `ctx.skills` 注册表提供的完整本地技能目录，启用/禁用技能、查看正文、
-排查技能为什么没出现、并新建技能。
-
-> 一个不止于只读浏览器的技能管理器。宿主半边运行在 dsh 进程内，只使用官方 SDK；浏览器半边通过
-> 官方槽位渲染进 GUI。不改任何 dsh 源码。
-
-## 为什么还需要一个技能管理器？
-
-[dsh-skill-manager](https://www.npmjs.com/package/dsh-skill-manager) 是只读浏览器；
-[dsh-skill-importer](https://github.com/saitamahang/dsh-skill-importer) 和
-[dsh-find-skill](https://github.com/Moximxxx/dsh-find-skill) 专注导入与市场式安装。
-**dsh-skill-hub 补上两者之间的空白：一份你可以真正管理的完整目录。**
-
-| 能力 | dsh-skill-manager（只读版） | **dsh-skill-hub（本插件）** |
-| --- | --- | --- |
-| 目录来源 | 自扫盘，仅用户根 | 官方 `ctx.skills` 注册表：项目 / 自定义 / 用户 / 内置 + 第三方 provider |
-| 浏览 / 搜索 | ✅ | ✅（按分组或按来源仓库分组，搜索 + 筛选一行完成） |
-| 启用 / 禁用 | ❌ | ✅（重命名 `SKILL.md`；文件不删除，可随时恢复；分组/来源头部滑动开关一键整组启停） |
-| 查看技能正文 | ❌ | ✅ |
-| 发现诊断 | ❌ | ✅（缺 frontmatter / 缺 `name`/`description` / 非法名称，逐项列明原因） |
-| 新建技能向导 | ❌ | ✅（写入 `~/.dsh/skills` 或 `~/.agents/skills`） |
-| 触发统计 | ❌ | ✅（从会话日志读每技能实际调用次数；组头汇总） |
-| 来源跟踪 | ❌ | ✅（记录上游 repo + commit 快照；检查更新 / 同步 / 上游删除跟进进回收站；删除→恢复保留来源与场景归属） |
-| 市场（codex 式） | ❌ | ✅（内置市场目录 + 自定义仓库源；扫描、一键导入、每源显示已装/可更新数量、一键全部更新） |
-| 实时更新 | — | 文件系统 provider 的 watcher 驱动，面板 5s 轮询兜底 |
-
-## 功能
-
-- **完整目录** —— 官方注册表知道的每个技能：项目 `.dsh/skills` 与 `.agents/skills`、自定义根、
-  用户 `~/.dsh/skills` 与 `~/.agents/skills`、内置、以及第三方 provider。
-- **搜索与分组** —— 搜索框、来源筛选、平铺/分组视图合并为一行；分组 = 用户 tag + 来源集合（按上游
-  仓库自动聚合），未归类兜底可见。
-- **组开关（三态）** —— 每个分组头部一个滑动开关，一键启用/禁用整组；关闭时若成员在其他组开启，
-  弹窗询问（全部关闭 / 保留开启 → 该组开关进入半开混合态）。只读技能跳过并逐名报告。
-- **启用 / 禁用** —— 禁用时把 `SKILL.md` 重命名移出发现范围（记录在 sidecar 文件中），重启后仍然
-  生效且可一键恢复。文件从不删除。
-- **来源跟踪** —— 从 GitHub 导入（市场源或直接地址）的技能记录上游 repo 与 commit 快照；按来源
-  检查更新（每来源 1–2 次 GitHub API 请求，5 分钟节流）、选择同步（确认覆盖）、上游删除跟进移入
-  可恢复的回收站。删除后再恢复的技能会保留来源与场景归属（回收站条目里存有快照）。
-  个人技能（无来源记录）不跟踪。
-- **市场（codex 式）** —— 内置市场目录（精选仓库一键添加）+ 自定义仓库源（owner/repo 或 GitHub
-  链接），扫描 `skills/` 与 `design-templates/` 根目录，一键导入。每个市场源一行聚合显示
-  「已装 N / 可更新 N / 上游已删 N」，顶部支持「检查全部」与「全部更新」（逐个同步，单个来源
-  失败不影响其他，汇总报告）。
-- **技能详情** —— 直接从磁盘读取技能的渲染正文。
-- **发现诊断** —— 目录会逐项报告技能被忽略的原因（缺 YAML frontmatter、缺 `name`/`description`、
-  非法名称）。
-- **新建技能向导** —— 在 GUI 里把合法技能脚手架写入 `~/.dsh/skills` 或 `~/.agents/skills`。
-- **触发统计** —— 面板显示每个技能被实际调用的次数，数据来自会话日志（可选；没有 session-query
-  的部署直接省略该数据）。
-- **设置卡片** —— 在 **设置 → 插件 → Skill Hub** 启用插件、开关向 Agent 的公告、调整面板显示偏好。
-
-## 工作原理
-
-```text
-src/
-├── index.ts            host 入口：inject [webServer, skills, systemPrompt]；系统提示公告
-├── routes.ts           /api/skill-hub/{catalog,skill,toggle,toggle-batch,create,stats,config,
-│                       groups,tag*,market*,repo*,sources*,update}（仅回环访问）
-├── store.ts            sidecar 状态 v3 ~/.dsh/dsh-skill-hub.json（禁用、tag、sources、市场源、
-│                       回收站、运行时配置；v1→v2→v3 版本化迁移）
-├── repo.ts             GitHub 发现/导入 + 来源跟踪（最新 commit、tree 差异、manifest）
-├── skillfs.ts          根目录解析 / 开关重命名 / 回收站 & 恢复 / 脚手架 / 诊断扫描
-├── stats.ts            触发统计：会话日志 → 每技能调用次数（可选 sessionQuery）
-├── protocol.ts         host ↔ browser 共享 API 契约（类型 + 端点表）
-└── client/             browser 半边：设置卡片 + 技能中枢面板（React，CSS Modules，苹果风）
-```
-
-- **宿主半边** 只用官方 SDK：`ctx.skills.snapshot()/get()`、`ctx.webServer.register()`、
-  `ctx.systemPrompt.section()`。不修改 dsh 源码。
-- **浏览器半边** 通过官方槽位挂载：一个 **设置 → 技能** 分区，和一个
-  **设置 → 插件 → Skill Hub** 配置卡片。
-- **配置为插件自有**。宿主 settings 服务拒绝向 Web 客户端暴露第三方命名空间，因此设置卡片读写插件
-  自己的 `/api/skill-hub/config` 路由，而不走 settings 传输——无需挂载命名空间。
-
-## 安装
-
-在 dsh web profile 中：
-
-```bash
-dsh plugin --profile web add dsh-skill-hub
-```
-
-要求 Node `^22.19.0 || >=24.0.0` 与 dsh web 部署（`0.1.0-rc.6` SDK 家族）。
-
-## 使用
-
-在 dsh Web GUI 打开 **设置 → 技能**（Skill Hub）：
-
-- **浏览** —— 完整目录，可搜索；搜索框、来源筛选、平铺/分组视图合并为一行。
-- **分组** —— 用户标签分组与来源组（上游仓库）。分组头部有三态滑动开关（开 / 半开 / 关），关闭时
-  若影响在其他分组开启的技能会弹窗确认（全部关闭 / 保留开启）。
-- **市场** —— 内置市场目录（精选仓库一键添加）+ 自定义来源（添加仓库源 → 扫描 → 一键安装）或直接
-  输入仓库地址；每次导入都记录上游 repo/commit。每个市场源行显示已装 / 可更新 / 上游已删数量；
-  「检查全部」一次刷新所有来源，「全部更新」一次同步所有待更新来源。
-- **回收站** —— 上游删除跟进移除（或手动删除）的技能进入可恢复的回收站；恢复时自动挂回来源与
-  场景分组。
-- **开关** —— 启用/禁用任意用户可写根下的技能；被禁用的技能单独列出，可随时重新启用。
-- **诊断** —— 发现诊断解释某个技能为什么没有出现。
-- **新建** —— 从表单脚手架一个新技能，立即开始编写。
-- **统计** —— 有 session-query 数据时显示每个技能的调用次数；分组标题汇总。
-
-插件自身的开关在 **设置 → 插件 → Skill Hub** 卡片上：
-
-| 字段 | 含义 |
-| --- | --- |
-| Enable plugin | 总开关：路由、provider 与公告随之启用。 |
-| Announce to agent | 在系统提示中加入本插件说明，用户提到技能管理时 Agent 知道如何协作。 |
-| 模型/用户圆点颜色 | 覆盖面板中蓝色/绿色调用圆点的颜色。 |
-| 显示调用次数 | 有会话统计时显示每个技能的调用次数角标。 |
-| 显示最近调用时间 | 在技能行显示相对最近调用时间。 |
-| 显示分组汇总 | 在分组标题后汇总调用次数与最近调用时间。 |
-
-## HTTP API
-
-所有端点**仅限回环**（`127.0.0.1`/`localhost`），返回 JSON。
-
-| 端点 | 方法 | 用途 |
-| --- | --- | --- |
-| `/api/skill-hub/catalog` | GET | 完整目录：技能、禁用列表、发现诊断。 |
-| `/api/skill-hub/skill?name=` | GET | 单个技能详情（路径、provider、正文）。 |
-| `/api/skill-hub/toggle` | POST | 启用/禁用可写技能（`{name, enabled}`）。 |
-| `/api/skill-hub/toggle-batch` | POST | 一次写入整组启停（`{names, enabled}`）。 |
-| `/api/skill-hub/create` | POST | 脚手架新技能（`{name, description?, root?}`）。 |
-| `/api/skill-hub/stats` | GET | 每技能调用次数（无 session-query 时不可用）。 |
-| `/api/skill-hub/config` | GET/POST | 插件运行时配置（`{enabled, announceToAgent}` 等）；`null` 清除覆盖。 |
-| `/api/skill-hub/groups` | GET | 用户标签 + 来源组 + origin 映射。 |
-| `/api/skill-hub/tag` | POST | 新建/重命名标签分组。 |
-| `/api/skill-hub/tag/delete` | POST | 删除标签分组。 |
-| `/api/skill-hub/tag/members` | POST | 设置某标签的成员列表。 |
-| `/api/skill-hub/market` | GET | 用户的市场源仓库列表。 |
-| `/api/skill-hub/market/source` | POST | 添加市场源（`{repo}`）。 |
-| `/api/skill-hub/market/source/delete` | POST | 移除市场源。 |
-| `/api/skill-hub/repo?repo=` | GET | 发现 GitHub 仓库中可导入的技能。 |
-| `/api/skill-hub/repo/import` | POST | 导入所选仓库技能（记录来源）。 |
-| `/api/skill-hub/sources` | GET | 来源记录、派生 origin/集合、回收站。 |
-| `/api/skill-hub/sources/check` | POST | 检查上游更新（5 分钟节流）。 |
-| `/api/skill-hub/sources/sync` | POST | 同步某来源所选（或全部）技能。 |
-| `/api/skill-hub/sources/delete` | POST | 跟进上游删除（移入回收站）。 |
-| `/api/skill-hub/sources/restore` | POST | 从回收站恢复技能。 |
-| `/api/skill-hub/sources/trash/clear` | POST | 永久清空回收站。 |
-| `/api/skill-hub/update` | GET | 检查插件自身最新发布。 |
-
-## 开发
-
-```bash
-npm install
-npm run typecheck   # tsc --noEmit
-npm test            # vitest（9 个套件，151 个用例）
-npm run build       # tsc 声明 + tsdown 双半边产物（lib/index.js + lib/client.js）
-npm pack            # 生成可安装的 tgz（dsh-skill-hub-<version>.tgz）
-```
-
-> **本地联调注意：** 不要在同一 `$DSH_HOME` 和同一项目目录下同时运行两个
-> `dsh web` 实例。dsh rc.6 没有跨进程会话日志锁，第二个实例恢复同一会话时会
-> 写入重复 `seq`，导致 `corrupt session log: seq gap in committed region`。
-> 需要预览实例时先停旧实例，或使用独立的 `DSH_HOME`。
-
-测试套件覆盖路由家族（含 config 路由与禁用闸门）、sidecar 存储、技能文件系统操作、注册表
-provider 与触发统计。
-
-## 路线图
-
-- **v0.1.0** —— 完整目录、启用/禁用、诊断、新建向导、设置卡片。
-- **v0.2.0** —— 触发统计 · tag/场景与来源集合分组（三态开关）· 上游来源跟踪（检查 / 同步 /
-  跟进删除进回收站）· codex 式市场（内置目录、每源状态徽章、一键全部更新）· 删除→恢复保留
-  来源与场景归属。
-- **Next** —— SSE 实时推送替代轮询 · 内置市场扩充 · 自动更新选项。
-
-## License
-
-MIT —— 见 [LICENSE](LICENSE)。

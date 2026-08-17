@@ -2,7 +2,7 @@
  * The skill hub panel: catalog grouped by tags + source collections, search
  * and filter in one row, per-group tri-state switches with conflict dialogs,
  * upstream source tracking (check / sync / follow upstream deletion into a
- * restorable trash), codex-style market sources, disabled re-enable,
+ * restorable trash), market sources, disabled re-enable,
  * detail inspection, and the new-skill scaffold form.
  *
  * Thin shell: state and flows live in useSkillHub, the tab contents live in
@@ -12,6 +12,7 @@
  * so the detail / tag-editor early returns are safe.
  */
 
+import { useState } from 'react'
 import type { WritableRoot } from '../../protocol.ts'
 import { IconSkillOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SkillHubApi } from '../api.ts'
@@ -34,9 +35,12 @@ export interface SkillHubPanelProps {
 
 export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
   const hub = useSkillHub(props.api)
+  /** 工作区输入草稿：回车才应用，避免每次按键都触发目录重拉。 */
+  const [workspaceDraft, setWorkspaceDraft] = useState('')
   const {
     catalog, loading, loadError, successBanner, updateState, detail, detailLoading, showForm, formName, formDesc,
     formRoot, formBusy, formMessage, hubConfig, tab, skillView, sourceFilter, sortKey, search,
+    workspace, setWorkspace,
     sourcesState, tagBusy, busyNames, normalized, origins, sourceOptions, filtered,
     conflictDialog, confirmDialog, deleteSkillDialog, confirmClearTrash, branchChoice, branchBusy, marketSyncDialog,
     syncBusy, editingTag, editName, membersDraft, editSearch, uses, groupsState, sourceCheck, checkingSource, syncingSource,
@@ -135,6 +139,19 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
           <button type='button' className={css.segBtn + (tab === 'sources' ? ' ' + css.segBtnActive : '')} onClick={() => { setTab('sources') }}>{tt('view.sources')}</button>
           <button type='button' className={css.segBtn + (tab === 'scenes' ? ' ' + css.segBtnActive : '')} onClick={() => { setTab('scenes') }}>{tt('view.scenes')}</button>
           <button type='button' className={css.segBtn + (tab === 'market' ? ' ' + css.segBtnActive : '')} onClick={() => { setTab('market'); void loadMarket() }}>{tt('view.market')}</button>
+        </span>
+        <span className={css.workspaceBox}>
+          <input
+            className={css.search + ' ' + css.workspaceInput}
+            value={workspaceDraft}
+            placeholder={workspace !== '' ? workspace : tt('panel.workspacePlaceholder')}
+            title={tt('panel.workspaceHint')}
+            onChange={(event) => { setWorkspaceDraft(event.target.value) }}
+            onKeyDown={(event) => { if (event.key === 'Enter') setWorkspace((event.target as HTMLInputElement).value.trim()) }}
+          />
+          {workspace !== ''
+            ? <button type='button' className={css.opBtn} title={tt('panel.workspaceClear')} onClick={() => { setWorkspace(''); setWorkspaceDraft('') }}>✕</button>
+            : null}
         </span>
         <button type='button' className={css.legendToggle + (showLegend ? ' ' + css.legendToggleActive : '')} onClick={() => { setShowLegend((value) => !value) }} title={tt('legend.hint')}>?</button>
         <span className={css.actions}>

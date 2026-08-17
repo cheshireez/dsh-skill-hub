@@ -69,15 +69,24 @@ export function conflictsOnClose(
 /** Origin-repo filter value: skills with no source record (private skills). */
 export const PRIVATE_SOURCE = 'private'
 
+/** 项目级技能来源（它们有 workspace 归属，不属于「个人」组）。 */
+export function isProjectSource(source: string): boolean {
+  return source === 'project-dsh' || source === 'project-agents'
+}
+
 /**
  * Apply the origin filter ('all' or a specific origin repo; skills without a
  * source record count as PRIVATE_SOURCE). The origins map is the store's
  * skillName → repo derivation, so filtering follows the tracked source
  * records instead of the filesystem root a skill happens to live under.
+ * 项目级技能（有 workspace 归属）永远不算「个人」。
  */
 export function filterBySource(skills: readonly CatalogSkill[], source: string, origins: Readonly<Record<string, string>>): CatalogSkill[] {
   if (source === 'all') return [...skills]
-  return skills.filter((skill) => (origins[skill.name] ?? PRIVATE_SOURCE) === source)
+  return skills.filter((skill) => {
+    if (isProjectSource(skill.source)) return false
+    return (origins[skill.name] ?? PRIVATE_SOURCE) === source
+  })
 }
 
 /** Catalog sort keys offered by the filter bar. */

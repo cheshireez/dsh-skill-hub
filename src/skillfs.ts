@@ -267,7 +267,7 @@ export async function findProjectRoot(cwd: string): Promise<string> {
 
 /**
  * Scan one writable root for files the provider ignores, so the GUI can
- * show why a skill never appears (the zcode-style diagnostics lesson: a
+ * show why a skill never appears — a
  * missing frontmatter must be visible, not silent). .disabled files belong
  * to the hub and are skipped.
  */

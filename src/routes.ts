@@ -12,7 +12,7 @@
  * JSON body) exactly once, so a new route cannot forget them.
  */
 
-import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
@@ -293,18 +293,85 @@ async function knownSkillNames(deps: SkillHubRouteDeps): Promise<Set<string>> {
   return names
 }
 
-/** Build the full catalog response (shared by catalog/toggle/create handlers). */
+/** 已知工作区条目（dsh 的 workspace.json 表）。 */
+interface WorkspaceEntry {
+  path: string
+  title: string
+}
+
+/**
+ * 读取 dsh 的已知工作区清单（~/.dsh/storages/workspace.json 的
+ * tables.workspaces 表）。面板默认视图据此合并所有工作区的项目技能；
+ * 文件缺失/损坏时返回空清单（回退为仅用户级视图）。
+ */
+async function workspaceEntries(home: string): Promise<WorkspaceEntry[]> {
+  try {
+    const raw = await readFile(join(home, 'storages', 'workspace.json'), 'utf8')
+    const parsed: unknown = JSON.parse(raw)
+    const tables = typeof parsed === 'object' && parsed !== null
+      ? (parsed as Record<string, unknown>).tables as Record<string, unknown> | undefined
+      : undefined
+    const workspaces = tables !== undefined && typeof tables === 'object'
+      ? (tables as Record<string, unknown>).workspaces as Record<string, unknown> | undefined
+      : undefined
+    const entries: WorkspaceEntry[] = []
+    if (workspaces !== undefined && typeof workspaces === 'object') {
+      for (const record of Object.values(workspaces)) {
+        const entry = record as { path?: unknown; title?: unknown } | null
+        if (entry !== null && typeof entry === 'object' && typeof entry.path === 'string' && entry.path !== '') {
+          entries.push({
+            path: entry.path,
+            title: typeof entry.title === 'string' && entry.title !== '' ? entry.title : entry.path,
+          })
+        }
+      }
+    }
+    return entries
+  } catch {
+    return []
+  }
+}
+
+/** 项目技能来源（workspace 字段只对它们设置）。 */
+function isProjectSource(source: string): boolean {
+  return source === 'project-dsh' || source === 'project-agents'
+}
+
+/**
+ * Build the full catalog response (shared by catalog/toggle/create handlers).
+ * 显式 cwd 只看该工作区；否则合并所有已知工作区（workspace.json）的项目技能
+ * + 用户级技能，同名技能先到先得；没有任何工作区时回退为仅用户级视图。
+ */
 async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promise<CatalogResponse> {
-  const lookup = cwd !== undefined ? { cwd } : undefined
-  const snapshot = await deps.skills.snapshot(lookup)
   const home = homeOf(deps)
+  let workspaces: WorkspaceEntry[]
+  if (cwd !== undefined && cwd !== '') {
+    workspaces = [{ path: cwd, title: cwd }]
+  } else {
+    workspaces = await workspaceEntries(home)
+    if (workspaces.length === 0) workspaces = [{ path: '', title: '' }]
+  }
+  const byName = new Map<string, { skill: SkillSummary; workspace?: string; workspaceTitle?: string }>()
+  let complete = true
+  for (const ws of workspaces) {
+    const lookup = ws.path !== '' ? { cwd: ws.path } : undefined
+    const snapshot = await deps.skills.snapshot(lookup)
+    if (!snapshot.complete) complete = false
+    for (const skill of snapshot.skills) {
+      if (byName.has(skill.name)) continue
+      byName.set(skill.name, {
+        skill,
+        ...(isProjectSource(skill.source) && ws.path !== '' ? { workspace: ws.path, workspaceTitle: ws.title } : {}),
+      })
+    }
+  }
   // 添加/更新时间 = 用户级技能文件的创建/修改时间（排序与详情展示用）。
   // snapshot 只给 SkillSummary（无 path），所以按可写根推断路径；非用户级
   // 来源没有稳定路径，省略字段，客户端排序会把它放到末尾。
   // 全部技能并发收集（面板每 5 秒轮询一次，逐个串行 stat 会让响应随技能
   // 数量线性变慢）。
   const timesByName = new Map<string, { addedAt: number; updatedAt: number }>()
-  await Promise.all(snapshot.skills.map(async (skill) => {
+  await Promise.all([...byName.values()].map(async ({ skill }) => {
     if (!isWritableSource(skill.source)) return
     const base = rootPath(skill.source, home)
     for (const candidate of [join(base, skill.name, 'SKILL.md'), join(base, skill.name), join(base, skill.name + '.md')]) {
@@ -317,7 +384,7 @@ async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promise<Cata
       }
     }
   }))
-  const skills: CatalogSkill[] = snapshot.skills.map((skill) => {
+  const skills: CatalogSkill[] = [...byName.values()].map(({ skill, workspace, workspaceTitle }) => {
     const row: CatalogSkill = {
       name: skill.name,
       description: skill.description,
@@ -328,6 +395,8 @@ async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promise<Cata
       },
       provider: skill.provider,
       writable: isWritableSource(skill.source),
+      source: skill.source,
+      ...(workspace !== undefined ? { workspace, workspaceTitle: workspaceTitle ?? workspace } : {}),
     }
     const times = timesByName.get(skill.name)
     if (times !== undefined) {
@@ -341,7 +410,7 @@ async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promise<Cata
     ...(await scanDiagnostics('user-dsh', home)),
     ...(await scanDiagnostics('user-agents', home)),
   ]
-  return { ok: true, complete: snapshot.complete, skills, disabled, diagnostics }
+  return { ok: true, complete, skills, disabled, diagnostics }
 }
 
 /** Map a loaded definition onto the wire shape. */
@@ -460,7 +529,18 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
         const name = queryParam(url, 'name')
         if (name === undefined || name === '') { writeError(res, 400, 'name query parameter is required'); return }
         const cwd = queryParam(url, 'cwd')
-        const skill = await deps.skills.get(name, cwd !== undefined ? { cwd } : undefined)
+        // 显式 cwd 只看该工作区；否则按已知工作区逐个查找（与目录默认视图
+        // 一致），最后回退用户级根，保证默认视图里可见的项目技能能打开详情。
+        let skill: SkillDefinition | undefined
+        if (cwd !== undefined && cwd !== '') {
+          skill = await deps.skills.get(name, { cwd })
+        } else {
+          for (const ws of await workspaceEntries(homeOf(deps))) {
+            skill = await deps.skills.get(name, { cwd: ws.path })
+            if (skill !== undefined) break
+          }
+          if (skill === undefined) skill = await deps.skills.get(name)
+        }
         if (skill === undefined) { writeError(res, 404, 'skill not found: ' + name); return }
         const detail = toDetail(skill)
         if (skill.path !== undefined) {
@@ -683,7 +763,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
       },
     }),
     // --------------------------------------------------------------- market
-    // Codex-style market sources: the user adds repo slugs; each source can
+    // Market sources: the user adds repo slugs; each source can
     // be scanned through /repo and imported through /repo/import.
     route({
       path: SKILL_HUB_API.market,
@@ -926,7 +1006,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
       },
     }),
     // -------------------------------------------------------------- update
-    // 自身更新检查：查询 GitHub latest release（语义同 cc-switch 的检查更新）。
+    // 自身更新检查：查询 GitHub latest release。
     route({
       path: SKILL_HUB_API.update,
       methods: ['GET'],

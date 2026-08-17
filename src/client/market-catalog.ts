@@ -1,6 +1,6 @@
 /**
  * Built-in market catalog: well-known skill repos shown on the market tab so
- * users can browse and install without knowing repo URLs (cc-switch-style).
+ * users can browse and install without knowing repo URLs.
  * Only the repo slug lives here; adding goes through the normal
  * market-source route and records upstream tracking like any manual source.
  */

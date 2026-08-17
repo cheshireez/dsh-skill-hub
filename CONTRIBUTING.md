@@ -14,7 +14,7 @@ Please keep both halves on official APIs — no dsh source patches.
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (54 tests across 5 suites)
+npm test            # vitest (152 tests across 8 suites)
 npm run build       # tsc declarations + tsdown bundles (lib/index.js + lib/client.js)
 ```
 

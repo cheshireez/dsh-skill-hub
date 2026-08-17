@@ -80,13 +80,16 @@ async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ms
 
 /** The browser half's only data entry point. */
 export class SkillHubApi {
-  async catalog(): Promise<CatalogResponse> {
-    const response = await fetchWithTimeout(SKILL_HUB_API.catalog)
-    return readJson<CatalogResponse>(response)
+  /** Catalog lookup options (cwd selects a workspace's project skills). */
+  catalog(options?: { cwd?: string }): Promise<CatalogResponse> {
+    const url = options?.cwd !== undefined && options.cwd !== '' ? SKILL_HUB_API.catalog + '?cwd=' + encodeURIComponent(options.cwd) : SKILL_HUB_API.catalog
+    return fetchWithTimeout(url).then((response) => readJson<CatalogResponse>(response))
   }
 
-  async skill(name: string): Promise<SkillDetail> {
-    const url = SKILL_HUB_API.skill + '?name=' + encodeURIComponent(name)
+  /** One skill's detail (cwd selects a workspace's project skills). */
+  async skill(name: string, options?: { cwd?: string }): Promise<SkillDetail> {
+    const cwd = options?.cwd !== undefined && options.cwd !== '' ? '&cwd=' + encodeURIComponent(options.cwd) : ''
+    const url = SKILL_HUB_API.skill + '?name=' + encodeURIComponent(name) + cwd
     const response = await fetchWithTimeout(url)
     const body = await readJson<SkillDetailResponse>(response)
     return body.skill
@@ -138,7 +141,7 @@ export class SkillHubApi {
     return readJson<ToggleBatchResponse>(response)
   }
 
-  /** The user's added market sources (codex-style repo slugs). */
+  /** The user's added market sources. */
   async market(): Promise<MarketSourcesResponse> {
     const response = await fetchWithTimeout(SKILL_HUB_API.market)
     return readJson<MarketSourcesResponse>(response)

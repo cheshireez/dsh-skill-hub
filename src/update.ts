@@ -1,5 +1,5 @@
 /**
- * Self-update check for dsh-skill-hub, mirroring cc-switch's behavior:
+ * Self-update check for dsh-skill-hub
  * query GitHub's latest release and compare it to the installed version.
  *
  * This stays dependency-free: Node's global fetch is used and the version

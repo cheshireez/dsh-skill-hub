@@ -9,12 +9,14 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { SkillProviderControl } from '@deepseek-ai/dsh-skill'
+import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from 'schemastery'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-session-query'
-import { HUB_CONFIG_DEFAULTS, resolveHubConfig, type HubConfig } from './protocol.ts'
+import type {} from '@deepseek-ai/dsh-settings'
+import { HUB_CONFIG_DEFAULTS, HEX_COLOR_RE, type HubConfig, type HubSettingsValue } from './protocol.ts'
 import { SkillHubProvider } from './provider.ts'
 import { makeRoutes } from './routes.ts'
 import { createSkillStatsReader, type SkillStatsReader } from './stats.ts'
@@ -24,7 +26,7 @@ import { SkillHubStore } from './store.ts'
 export const name = 'skill-hub'
 
 /** Services required before the skill-hub surfaces can mount. */
-export const inject = ['webServer', 'skills', 'systemPrompt']
+export const inject = ['webServer', 'skills', 'systemPrompt', 'settings']
 
 /** Plugin config, validated by the same-named schemastery schema. */
 export interface Config {
@@ -48,6 +50,26 @@ export const Config: z<Config> = z.object({
   showGroupSummary: z.boolean().default(HUB_CONFIG_DEFAULTS.showGroupSummary),
 })
 
+/**
+ * Settings namespace hosting the hub's runtime config. Since dsh rc.7 the
+ * host serves every registered settings namespace to the web client (the
+ * dsh-host-apiproxy allowlist is gone), so the browser card and the settings
+ * page edit this namespace through the official settings transport, and the
+ * plugin consumes the same resolved value — one source of truth.
+ */
+export const CONFIG_NAMESPACE = settingsNamespace('dsh-skill-hub')
+
+/** Schema of the hub's settings namespace: the card's fields (booleans + optional dot colors). */
+export const HubSettingsSchema: z<HubSettingsValue> = z.object({
+  enabled: z.boolean().default(HUB_CONFIG_DEFAULTS.enabled),
+  announceToAgent: z.boolean().default(HUB_CONFIG_DEFAULTS.announceToAgent),
+  showUseCount: z.boolean().default(HUB_CONFIG_DEFAULTS.showUseCount),
+  showUseTime: z.boolean().default(HUB_CONFIG_DEFAULTS.showUseTime),
+  showGroupSummary: z.boolean().default(HUB_CONFIG_DEFAULTS.showGroupSummary),
+  dotModelColor: z.string().pattern(HEX_COLOR_RE),
+  dotUserColor: z.string().pattern(HEX_COLOR_RE),
+})
+
 /** Order of the announcement section within the tool-guidance band. */
 const SECTION_ORDER = 152
 
@@ -59,23 +81,22 @@ export const SKILL_HUB_GUIDANCE = [
 
 /**
  * Mount the skill hub routes and announcement.
- * @param ctx - host plugin context carrying webServer/skills/systemPrompt.
+ * @param ctx - host plugin context carrying webServer/skills/systemPrompt/settings.
  * @param config - resolved plugin config (schema defaults applied by the loader).
  */
 export function apply(ctx: Context, config?: Config): void {
-  // The hub owns its runtime configuration: the cordis composition entry
-  // seeds the defaults, and the web settings card persists edits into the
-  // sidecar store (~/.dsh/dsh-skill-hub.json). The host's settings service
-  // deliberately refuses to expose third-party namespaces to the web client
-  // (dsh-host-apiproxy's allowlist), so the card talks to /api/skill-hub/config
-  // instead of the settings transport.
+  // The hub's runtime configuration lives in dsh's own settings service:
+  // since rc.7 the host serves every registered settings namespace to the
+  // web client (dsh-host-apiproxy's allowlist is gone), so the browser card
+  // and the config route edit this namespace through the official settings
+  // transport, and the host consumes the very same resolved value — one
+  // source of truth. The cordis composition entry seeds the base layer; the
+  // sidecar config survives only as a one-time migration source below.
   const base = config ?? {}
-  // Saved sidecar overrides win over the cordis entry; the shared resolver
-  // fills the rest from HUB_CONFIG_DEFAULTS (single source, see protocol.ts).
-  let current: () => HubConfig = () => resolveHubConfig({}, base)
-  // The raw saved config layer (fields the user explicitly overrode); the
-  // config route reports it so the web card can mark overridden fields.
-  let savedState: Partial<HubConfig> = {}
+  const settingsScope = ctx.settings.register(CONFIG_NAMESPACE, HubSettingsSchema, { base })
+  // The effective resolved config, read live from the settings namespace
+  // (schema defaults, then the composition base, then the user layer).
+  const current = (): HubConfig => settingsScope.get()
 
   const store = new SkillHubStore()
   let disposeRoutes: (() => void) | undefined
@@ -90,16 +111,27 @@ export function apply(ctx: Context, config?: Config): void {
   // stats route's data rather than failing to load.
   let stats: SkillStatsReader | undefined
 
+  // The raw saved config layer (fields the user explicitly overrode); the
+  // config route reports it so callers can mark overridden fields.
+  const saved = (): Partial<HubConfig> => {
+    const descriptor = ctx.settings.describe().find((entry) => entry.ns === CONFIG_NAMESPACE)
+    return (descriptor?.user as Partial<HubConfig> | undefined) ?? {}
+  }
+
   // Persist a config patch, re-point the live config, and re-sync every
-  // surface. Runs inside the config route handler; the response is written
-  // after sync() has settled the new registration set.
+  // surface through the settings transport. A patch value of undefined clears
+  // the saved override (the key leaves the user section, so the field
+  // re-inherits the base/default) — the old sidecar's reset semantics.
+  // Runs inside the config route handler; the watcher below re-syncs the
+  // surfaces once the namespace commits.
   const updateConfig = async (patch: Partial<HubConfig>): Promise<HubConfig> => {
-    await store.setConfig(patch)
-    savedState = await store.getConfig()
-    const next = resolveHubConfig(savedState, base)
-    current = () => next
-    sync()
-    return next
+    const user: Record<string, unknown> = { ...saved() }
+    for (const [key, value] of Object.entries(patch) as Array<[keyof HubConfig, boolean | string | undefined]>) {
+      if (value === undefined) delete user[key]
+      else user[key] = value
+    }
+    await settingsScope.replace(user)
+    return settingsScope.get()
   }
 
   // Register (or drop) every surface to match the current config. Each
@@ -149,7 +181,7 @@ export function apply(ctx: Context, config?: Config): void {
           invalidate: () => { providerControl?.invalidate() },
           stats,
           config: current,
-          saved: () => savedState,
+          saved,
           updateConfig,
         }).map((route) => ctx.webServer.register(route))
         return () => {
@@ -160,14 +192,29 @@ export function apply(ctx: Context, config?: Config): void {
     )
   }
 
-  // Initial registration from the composition entry, then adopt the saved
-  // sidecar config once the store has read it (re-sync re-points surfaces).
+  // Initial registration from the composition entry, then re-sync whenever
+  // the settings namespace commits (any writer — the card, the config route,
+  // or the Host document editor).
   sync()
-  void store.getConfig().then((saved) => {
-    savedState = saved
-    current = () => resolveHubConfig(saved, base)
-    sync()
-  })
+  ctx.effect(
+    () => settingsScope.watch(() => { sync() }),
+    'dsh-skill-hub: settings config watch',
+  )
+
+  // One-time migration: an install upgraded from the sidecar-configured
+  // build seeds the settings namespace from the saved sidecar config when the
+  // namespace has no user section yet. Later edits live only in the settings
+  // document; the sidecar keeps its (now-stale) copy untouched.
+  void (async () => {
+    const legacy = await store.getConfig()
+    if (Object.keys(legacy).length > 0 && Object.keys(saved()).length === 0) {
+      try {
+        await settingsScope.update(legacy as Record<string, unknown>)
+      } catch (error) {
+        ctx.logger.warn('[dsh-skill-hub] sidecar config migration into the settings namespace failed', error)
+      }
+    }
+  })()
 
   // Optional trigger statistics: while a session-query service exists, wire a
   // cached invocation-count reader into the stats route. Re-running sync()

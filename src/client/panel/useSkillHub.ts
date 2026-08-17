@@ -26,7 +26,7 @@ import type {
 } from '../../protocol.ts'
 import type { SkillHubApi } from '../api.ts'
 import { errorMessage, tt } from '../helpers.ts'
-import { conflictsOnClose, PRIVATE_SOURCE, sortSkills, type SortKey, type GroupSwitchState } from '../grouping.ts'
+import { conflictsOnClose, isProjectSource, PRIVATE_SOURCE, sortSkills, type SortKey, type GroupSwitchState } from '../grouping.ts'
 import type { BranchChoiceState, ConfirmDialogState, ConflictDialogState, MarketSyncDialogState } from './dialogs.tsx'
 
 /** Catalog poll interval while the panel is mounted (the provider watcher feeds this). */
@@ -98,6 +98,8 @@ export function useSkillHub(api: SkillHubApi) {
   const [repoImporting, setRepoImporting] = useState(false)
   const [repoResult, setRepoResult] = useState<RepoImportResponse | null>(null)
   const [search, setSearch] = useState('')
+  /** 工作区（项目）路径；空 = 只看用户级技能。 */
+  const [workspace, setWorkspace] = useState('')
   const [detail, setDetail] = useState<SkillDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [busyNames, setBusyNames] = useState<ReadonlySet<string>>(new Set())
@@ -139,8 +141,10 @@ export function useSkillHub(api: SkillHubApi) {
   const [newTagName, setNewTagName] = useState('')
   const [tagBusy, setTagBusy] = useState(false)
   const [editSearch, setEditSearch] = useState('')
-  /** 分组视图里收起的分组（key 为 tag:<id> 或 col:<name>）。 */
+  /** 分组视图里收起的分组（key 为 tag:<id>、col:<name> 或 project 树键）。 */
   const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(new Set())
+  /** 项目级三级树里已细分（按 .dsh/.agents）的项目键。 */
+  const [subdividedProjects, setSubdividedProjects] = useState<ReadonlySet<string>>(new Set())
   const [showLegend, setShowLegend] = useState(false)
 
   const toggleGroupCollapse = useCallback((key: string): void => {
@@ -152,9 +156,18 @@ export function useSkillHub(api: SkillHubApi) {
     })
   }, [])
 
+  const toggleSubdivide = useCallback((key: string): void => {
+    setSubdividedProjects((previous) => {
+      const next = new Set(previous)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
+
   const load = useCallback(async (): Promise<void> => {
     try {
-      const next = await api.catalog()
+      const next = await api.catalog(workspace !== '' ? { cwd: workspace } : undefined)
       setCatalog(next)
       setLoadError(null)
     } catch (error) {
@@ -162,7 +175,7 @@ export function useSkillHub(api: SkillHubApi) {
     } finally {
       setLoading(false)
     }
-  }, [api])
+  }, [api, workspace])
 
   const loadUses = useCallback(async (): Promise<void> => {
     try {
@@ -246,13 +259,13 @@ export function useSkillHub(api: SkillHubApi) {
     setDetailLoading(true)
     setLoadError(null)
     try {
-      setDetail(await api.skill(name))
+      setDetail(await api.skill(name, workspace !== '' ? { cwd: workspace } : undefined))
     } catch (error) {
       setLoadError(errorMessage(error))
     } finally {
       setDetailLoading(false)
     }
-  }, [api])
+  }, [api, workspace])
 
   const toggle = useCallback(async (skill: CatalogSkill, enabled: boolean): Promise<void> => {
     setBusyNames((previous) => new Set(previous).add(skill.name))
@@ -765,7 +778,8 @@ export function useSkillHub(api: SkillHubApi) {
   const sourceOptions = useMemo(() => {
     const skills = catalog?.skills ?? []
     const repos = [...new Set(skills.map((skill) => origins[skill.name]).filter((repo): repo is string => repo !== undefined))].sort()
-    const hasPrivate = skills.some((skill) => origins[skill.name] === undefined)
+    // 项目级技能（有 workspace 归属）不算「个人」。
+    const hasPrivate = skills.some((skill) => origins[skill.name] === undefined && !isProjectSource(skill.source))
     return [...repos, ...(hasPrivate ? [PRIVATE_SOURCE] : [])]
   }, [catalog, origins])
   const filtered = useMemo(() => (catalog?.skills ?? []).filter((skill) =>
@@ -777,19 +791,19 @@ export function useSkillHub(api: SkillHubApi) {
   return {
     // state
     catalog, loading, loadError, successBanner, updateState, repoDiscoverState, scanningRepo, repoSelected, repoImporting, repoResult,
-    search, detail, detailLoading, busyNames, batchBusy, showForm, formName, formDesc, formRoot, formBusy, formMessage,
+    search, workspace, detail, detailLoading, busyNames, batchBusy, showForm, formName, formDesc, formRoot, formBusy, formMessage,
     uses, hubConfig, tab, skillView, sourceFilter, sortKey, marketState, marketCheck, branchChoice, branchBusy,
     marketSyncDialog, syncingMarket, syncBusy, newSourceName, groupsState, sourcesState, sourceCheck, checkingSource, syncingSource,
     conflictDialog, confirmDialog, deleteSkillDialog, confirmClearTrash, updateAllDialog, editingTag, editName, membersDraft, newTagName, tagBusy,
-    editSearch, collapsedGroups, showLegend,
+    editSearch, collapsedGroups, subdividedProjects, showLegend,
     // derived
     actionNames, viewNames, normalized, origins, sourceOptions, filtered, sorted,
     // actions + setters
-    setLoadError, setSuccessBanner, setSearch, setDetail, setShowForm, setFormName, setFormDesc, setFormRoot, setFormMessage,
+    setLoadError, setSuccessBanner, setSearch, setWorkspace, setDetail, setShowForm, setFormName, setFormDesc, setFormRoot, setFormMessage,
     setRepoSelected, setTab, setSkillView,
     setSourceFilter, setSortKey, setBranchChoice, setMarketSyncDialog, setNewSourceName, setConflictDialog, setConfirmDialog,
     setDeleteSkillDialog, setConfirmClearTrash, setUpdateAllDialog, setEditingTag, setEditName, setMembersDraft, setNewTagName, setEditSearch, setShowLegend,
-    toggleGroupCollapse, checkUpdate, loadMarket, openDetail, toggle, enableDisabled, batchToggleNames, toggleGroup, resolveConflict,
+    toggleGroupCollapse, toggleSubdivide, checkUpdate, loadMarket, openDetail, toggle, enableDisabled, batchToggleNames, toggleGroup, resolveConflict,
     runConfirmed, checkSources, requestSync, requestDelete, restoreTrash, clearTrash, requestDeleteSkill, runDeleteSkill, createTag,
     deleteTag, saveTag, addSource, addMarketSource, removeMarketSource, scanRepo, confirmBranchChoice, toggleRepoSelected, importRepo,
     checkMarket, syncMarketSource, confirmMarketSync, updateAll, create,

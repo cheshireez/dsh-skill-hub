@@ -8,6 +8,7 @@ function skill(name: string, writable = true): CatalogSkill {
     description: '',
     invocation: { modelInvocable: true, userInvocable: true },
     provider: 'filesystem',
+    source: 'user-dsh',
     writable,
   }
 }
@@ -59,6 +60,17 @@ describe('filterBySource', () => {
     const skills = [skill('a'), skill('b'), skill('c')]
     expect(filterBySource(skills, 'repo/x', origins).map((s) => s.name)).toEqual(['a'])
     expect(filterBySource(skills, PRIVATE_SOURCE, origins).map((s) => s.name)).toEqual(['c'])
+    expect(filterBySource(skills, 'all', origins)).toHaveLength(3)
+  })
+
+  it('never buckets project skills as private (they belong to the project tree)', () => {
+    const origins = {}
+    const proj = skill('proj')
+    proj.source = 'project-dsh'
+    const projAgents = skill('proj-agents')
+    projAgents.source = 'project-agents'
+    const skills = [skill('personal'), proj, projAgents]
+    expect(filterBySource(skills, PRIVATE_SOURCE, origins).map((s) => s.name)).toEqual(['personal'])
     expect(filterBySource(skills, 'all', origins)).toHaveLength(3)
   })
 })

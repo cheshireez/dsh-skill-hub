@@ -8,17 +8,18 @@
 
 import { useState, type ReactElement } from 'react'
 import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { HubKey } from './locales.ts'
 import type { CardShell } from './settings-form.ts'
 import css from './settings-card.module.css'
 
 /** Card-level chrome props. */
 export interface PluginSettingsCardProps {
-  /** Locale translator for the owning plugin's namespace. */
-  t: (key: string) => string
+  /** Locale translator for the owning plugin's namespace (its own key domain). */
+  t: (key: HubKey) => string
   /** Locale key of the card title. */
-  titleKey: string
+  titleKey: HubKey
   /** Locale key of the card description. */
-  descriptionKey: string
+  descriptionKey: HubKey
   /** The form shell state. */
   state: CardShell
   onSave: () => void

@@ -5,11 +5,11 @@
  * Registers the dsh-skill-hub locale dictionaries and mounts two Settings
  * surfaces, both through official slots (no DOM injection):
  *  - a plugin-management card in the `settings.plugin.item` slot (Settings →
- *    插件 → 可配置插件列表), bound to the hub's own /api/skill-hub/config
- *    route via ApiConfigScope — the family-bucket card pattern
- *    (PluginSettingsCard + CardForm vendored from dsh-task-board). The host's
- *    settings service refuses third-party namespaces, so the card never
- *    touches the settings transport;
+ *    插件 → 可配置插件列表), keyed by the hub's settings namespace and bound
+ *    through the official settings transport (dsh rc.7 serves every
+ *    registered namespace to the web client, and the tab dispatches cards by
+ *    namespace) — the family-bucket card pattern (PluginSettingsCard +
+ *    CardForm vendored from dsh-task-board);
  *  - a top-level Settings section (Settings → 技能) hosting the skill hub
  *    panel: catalog, search, enable/disable, diagnostics, new-skill form.
  *
@@ -31,8 +31,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls the settings-plugins SlotMap merge (settings.plugin.item).
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
+import type { HubSettingsValue } from '../protocol.ts'
 import { SkillHubApi } from './api.ts'
-import { ApiConfigScope } from './api-config-scope.ts'
 import { en, zh, type HubKey } from './locales.ts'
 import { applySettingsNavIcon } from './settings-nav-icon.ts'
 import { SkillHubSettingsCard, SkillHubSettingsCardController } from './SkillHubSettingsCard.tsx'
@@ -48,8 +48,14 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-/** Required services (fiber inject waiting — the runtime must be up first). */
-export const inject = ['slots', 'locale']
+/**
+ * Required services (fiber inject waiting — the runtime must be up first).
+ * `connection`/`remote` are the settings transport's own prerequisites
+ * (`ctx.settingsScope.bind` resolves them on the caller's fiber), and
+ * `settingsScope` is the namespace-scope binder itself; mirror the official
+ * settings-plugins inject list.
+ */
+export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope']
 
 /** Type-only surface (export discipline: no value exports beyond the plugin contract). */
 export type { SkillHubPanelProps } from './panel/SkillHubPanel.tsx'
@@ -65,24 +71,24 @@ export function apply(ctx: ClientContext): void {
   const t = ctx.locale.bind(NS)
   const api = new SkillHubApi()
 
-  // The card edits the hub's own config route (ApiConfigScope), never the
-  // settings service: the host refuses third-party settings namespaces, which
-  // is what previously surfaced as "命名空间未挂载" on this card.
-  const settingsCard = new SkillHubSettingsCardController(new ApiConfigScope(api))
+  // The card edits the hub's settings namespace through the official
+  // settings transport — the configurable-plugins tab only dispatches cards
+  // whose key the Host serves, and the Host serves every registered namespace
+  // since rc.7, so this is what makes the card appear (and stay in sync).
+  const settingsCard = new SkillHubSettingsCardController(
+    ctx.settingsScope.bind<HubSettingsValue>({ namespace: NS }),
+  )
 
   // Plugin-management card: Settings → 插件 → 可配置插件列表.
-  // Runtime note: the official settings-plugins package registers cards with
-  // an 'inject' face at runtime, but its published slot contract does not
-  // declare it, so the typed register overload rejects the option. Cast the
-  // call (runtime-identical to the official cards) and keep the card fully typed.
+  // rc.7's slot contract declares this keyed slot with options `key`
+  // (the settings namespace the card edits), so registration is fully typed.
   ctx.effect(
     () => ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
       name: 'settings.plugin.item',
-      id: 'dsh-skill-hub',
-      order: 115,
+      key: NS,
       locale: NS,
       inject: () => settingsCard.inject(),
-    } as never, SkillHubSettingsCard as never)),
+    }, SkillHubSettingsCard)),
     'dsh-skill-hub: settings card',
   )
 

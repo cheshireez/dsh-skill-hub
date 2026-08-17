@@ -1,17 +1,23 @@
 /**
- * The dsh-skill-hub plugin settings card: bridges the hub's own config route
- * (ApiConfigScope → /api/skill-hub/config) onto the family-style staged card
- * form (enabled master switch + agent announcement). Registered into the
- * official `settings.plugin.item` slot so the plugin shows up in Settings →
- * 插件. The scope is a FormScope, so the card never touches the settings
- * service (the host refuses third-party namespaces).
+ * The dsh-skill-hub plugin settings card: bridges the hub's settings
+ * namespace (bound through the official settings transport) onto the
+ * family-style staged card form (enabled master switch + agent announcement).
+ * Registered into the official `settings.plugin.item` slot keyed by that
+ * namespace, so the plugin shows up in Settings → 插件 on dsh rc.7+.
  */
 
 import type { ReactElement } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { ColorField, PluginSettingsCard, SwitchField } from './settings-card.tsx'
 import { booleanField, CardForm, colorField, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
-import { DEFAULT_DOT_MODEL_COLOR, DEFAULT_DOT_USER_COLOR } from './api-config-scope.ts'
+
+/** Model-invocable dot color default. Single source for the TS side; the
+ *  panel's CSS mirrors it via --hub-model (panel.module.css). */
+export const DEFAULT_DOT_MODEL_COLOR = '#2f81f7'
+/** User-invocable dot color default. Single source for the TS side; the
+ *  panel's CSS mirrors it via --hub-user (panel.module.css). */
+export const DEFAULT_DOT_USER_COLOR = '#3fb950'
 
 /** The card's projected state. */
 export interface SkillHubSettingsState extends CardShell {
@@ -24,22 +30,28 @@ export interface SkillHubSettingsState extends CardShell {
   showGroupSummary: FieldState
 }
 
-/** Props the slot renderer receives (locale copy + injected form actions). */
-export interface SkillHubSettingsCardProps {
-  t: (key: string) => string
-  useSkillHubSettingsCard: <T>(selector: (snapshot: SkillHubSettingsState) => T) => T
+/** The business face the card's slot registration injects. */
+export interface SkillHubSettingsCardFace {
+  hooks: {
+    /** The card's snapshot store (projected form state). */
+    skillHubSettingsCard: SnapshotStore<SkillHubSettingsState>
+  }
   save: () => void
   discard: () => void
   edit: (field: string, text: string) => void
   resetField: (field: string) => void
 }
 
+/** Props the slot renderer binds (locale copy + injected form actions). */
+export type SkillHubSettingsCardProps =
+  PropsRuntime<'settings.plugin.item'> & PropsLocale<'dsh-skill-hub'> & InjectFace<SkillHubSettingsCardFace>
+
 /** Bridges the hub's config scope onto the card's staged form. */
 export class SkillHubSettingsCardController {
   private readonly form: CardForm
   private readonly store: SnapshotStore<SkillHubSettingsState>
 
-  /** @param scope - the hub config scope the card edits (ApiConfigScope). */
+  /** @param scope - the hub settings scope the card edits (FormScope-compatible). */
   constructor(scope: FormScope) {
     this.form = new CardForm(scope, [booleanField('enabled'), booleanField('announceToAgent'), colorField('dotModelColor'), colorField('dotUserColor'), booleanField('showUseCount'), booleanField('showUseTime'), booleanField('showGroupSummary')])
     this.store = this.form.bind(() => this.projection())
@@ -62,7 +74,7 @@ export class SkillHubSettingsCardController {
    * Build the face the card's slot registration injects.
    * @returns the card's snapshot hook and its form actions.
    */
-  inject(): { hooks: { skillHubSettingsCard: SnapshotStore<SkillHubSettingsState> } } & ReturnType<CardForm['actions']> {
+  inject(): SkillHubSettingsCardFace {
     return {
       hooks: { skillHubSettingsCard: this.store },
       ...this.form.actions(),
@@ -158,4 +170,3 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
     </PluginSettingsCard>
   )
 }
-
