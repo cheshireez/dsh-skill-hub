@@ -294,6 +294,10 @@ store, skill filesystem operations, the registry provider, and invocation statis
 ## Community
 
 - [Issues](https://github.com/cheshireez/dsh-skill-hub/issues) — bug reports and feature requests.
+- [Discussions](https://github.com/cheshireez/dsh-skill-hub/discussions) — Q&A, feedback, and ideas.
+- [Showcase @ deepseek-harness](https://github.com/deepseek-ai/deepseek-harness/discussions/3161) — announcement posted in the official repository.
+- [Plugin market listing](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/1746) — PR to the community market; once merged, install from **Settings → Plugin Market**.
+- [DeepSeek Harness Discord](https://discord.gg/Ycq5dCaS4) — official community (primarily Chinese).
 - [Contributing](CONTRIBUTING.md) — development setup and contribution guidelines.
 
 ## License

@@ -268,6 +268,10 @@ provider 与触发统计。
 ## 社区
 
 - [Issues](https://github.com/cheshireez/dsh-skill-hub/issues) —— 提交 bug 与功能建议。
+- [讨论区](https://github.com/cheshireez/dsh-skill-hub/discussions) —— 提问、反馈与想法。
+- [官方仓库展示帖](https://github.com/deepseek-ai/deepseek-harness/discussions/3161) —— 已发布在 deepseek-harness 官方 Discussion。
+- [社区插件市场收录](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/1746) —— 已提交待合并；合并后可在「设置 → Plugin Market」一键安装。
+- [DeepSeek Harness 官方 Discord](https://discord.gg/Ycq5dCaS4) —— 官方社区（以中文为主）。
 - [贡献指南](CONTRIBUTING.md) —— 开发环境与贡献规范。
 
 ## License
