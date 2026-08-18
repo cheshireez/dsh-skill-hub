@@ -35,7 +35,6 @@ ones — all from the dsh web GUI.
 - [Troubleshooting](#troubleshooting)
 - [HTTP API](#http-api)
 - [Development](#development)
-- [Roadmap](#roadmap)
 - [Community](#community)
 - [License](#license)
 
@@ -279,17 +278,6 @@ npm pack            # build the installable tarball (dsh-skill-hub-<version>.tgz
 
 The test suites cover the route family (including the config route and the disabled gate), the sidecar
 store, skill filesystem operations, the registry provider, and invocation statistics.
-
-## Roadmap
-
-- **v0.1.0** *(released)* — full catalog, enable/disable, diagnostics, new-skill wizard, settings card.
-- **v0.2.0** *(released)* — invocation statistics · tags/scenes + source-collection grouping with
-  tri-state switches · upstream source tracking (check / sync / follow-delete into a restorable
-  trash) · unified market with built-in catalog, per-source state badges, and one-click
-  update-all · delete/restore keeps source + scene membership.
-- **Built, pending release** — workspace discovery (project-path field → read-only project skills).
-- **Planned** — SSE realtime push to replace polling · market catalog expansion · optional
-  auto-update.
 
 ## Community
 
