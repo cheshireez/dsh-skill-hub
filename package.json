@@ -37,6 +37,51 @@
       "platform": "web"
     }
   },
+  "dshWorkshop": {
+    "schema": "omdsh-workshop-package/v1",
+    "type": "plugin",
+    "integration": {
+      "protocol": "harness-cordis",
+      "artifact": "cordis.patch.yml"
+    },
+    "install": {
+      "mode": "guided",
+      "adapter": "harness-cordis",
+      "failurePolicy": "manual",
+      "touchesCurrentBeforeActivation": false
+    },
+    "lifecycle": {
+      "activation": "hot-reload",
+      "dispose": "supported"
+    },
+    "permissions": [
+      "fs:read:skill-directories",
+      "fs:write:user-skill-directories",
+      "net:loopback:routes",
+      "net:https:github"
+    ],
+    "compatibility": {
+      "dshVersions": [
+        "0.1.0-rc.7"
+      ]
+    },
+    "testing": {
+      "entry": "npm test",
+      "failureTool": "vitest"
+    },
+    "capability": {
+      "id": "skill-hub-settings-panel",
+      "kind": "ui",
+      "invocation": "Open Settings → Skills panel; GET /api/skill-hub/catalog",
+      "expected": "The full local skill catalog (all roots) renders as groups and toggles persist an enabled/disabled row without a restart."
+    },
+    "evidence": {
+      "install": null,
+      "failureIsolation": null,
+      "hotReload": null,
+      "remove": null
+    }
+  },
   "dependencies": {
     "js-yaml": "^4.1.0",
     "schemastery": "^3.18.0"
