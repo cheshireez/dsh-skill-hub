@@ -52,7 +52,7 @@ function ProjectTree(props: { hub: SkillHubState }): JSX.Element | null {
         const projCollapsed = collapsedGroups.has(projKey)
         const subdivided = subdividedProjects.has(key)
         return (
-          <div key={projKey} className={css.section + ' ' + css.projectNest}>
+          <div key={projKey} className={css.projectNest}>
             <div className={css.groupHead}>
               <button type='button' className={css.disclosure} aria-expanded={!projCollapsed} onClick={() => { toggleGroupCollapse(projKey) }}>
                 <span className={css.chevron + (projCollapsed ? ' ' + css.chevronCollapsed : '')} />
@@ -76,7 +76,7 @@ function ProjectTree(props: { hub: SkillHubState }): JSX.Element | null {
                     const srcKey = projKey + ':' + source
                     const srcCollapsed = collapsedGroups.has(srcKey)
                     return (
-                      <div key={srcKey} className={css.section + ' ' + css.projectNest}>
+                      <div key={srcKey} className={css.projectNest}>
                         <div className={css.groupHead}>
                           <button type='button' className={css.disclosure} aria-expanded={!srcCollapsed} onClick={() => { toggleGroupCollapse(srcKey) }}>
                             <span className={css.chevron + (srcCollapsed ? ' ' + css.chevronCollapsed : '')} />

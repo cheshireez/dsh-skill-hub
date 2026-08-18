@@ -3,7 +3,7 @@
  * disable actions. Shared by the flat list and both grouped views.
  */
 
-import type { JSX } from 'react'
+import type { JSX, KeyboardEvent } from 'react'
 import type { CatalogSkill } from '../../protocol.ts'
 import { IconTrashOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { tt } from '../helpers.ts'
@@ -16,8 +16,23 @@ export function SkillRow(props: { skill: CatalogSkill; hub: SkillHubState }): JS
   const stat = hub.uses.get(skill.name)
   const count = stat?.count ?? 0
   const lastUsed = stat?.lastUsed
+  /** 键盘打开详情：Enter 或空格。仅当焦点在行本身（而非行内按钮）时生效。 */
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (event.target !== event.currentTarget) return
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      void hub.openDetail(skill.name)
+    }
+  }
   return (
-    <div className={css.row} onClick={() => { void hub.openDetail(skill.name) }}>
+    <div
+      className={css.row}
+      role='button'
+      tabIndex={0}
+      aria-label={tt('row.open', { name: skill.name })}
+      onClick={() => { void hub.openDetail(skill.name) }}
+      onKeyDown={onKeyDown}
+    >
       <div className={css.rowMain}>
         <div className={css.rowName}>
           <span className={css.rowNameText}>{skill.name}</span>
