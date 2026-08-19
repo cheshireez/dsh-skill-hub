@@ -207,7 +207,7 @@ The plugin’s own switches live on the **Settings → 插件 → Skill Hub** ca
 | --- | --- |
 | Enable plugin | Master switch: routes, provider, and announcement all go live with this. |
 | Announce to agent | Adds a system-prompt section so agents know how to collaborate when users mention skill management. |
-| Model / user dot colors | Override the blue/green invocation dot colors used in the panel. |
+| Model / user dot colors | Override the single status-dot colors shown in the skill panel and the chat `/` menu (blue = model-callable, green = user-only). |
 | Show invocation count | Show per-skill call-count chips when session stats are available. |
 | Show last-used time | Show relative last-used time on each skill row. |
 | Show group summaries | Show count/last-used summaries after group titles. |
@@ -224,6 +224,10 @@ The plugin’s own switches live on the **Settings → 插件 → Skill Hub** ca
   auto-checks once per day; manual buttons are never throttled.
 - **Read-only boundary** — only user-level skills (`~/.dsh/skills`, `~/.agents/skills`) are writable;
   project, bundled, and runtime skills are displayed read-only.
+- **Chat `/` menu status dots depend on a dsh-internal registry** — the dots render by wrapping the
+  core `/skill` trigger source's candidates. If a dsh upgrade reshapes that internals, the dots
+  silently disappear but the skill list and `/` menu keep working. A known, deliberate trade-off for
+  portability — it never affects skill management itself.
 
 ## HTTP API
 

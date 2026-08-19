@@ -11,13 +11,10 @@ import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { ColorField, PluginSettingsCard, SwitchField } from './settings-card.tsx'
 import { booleanField, CardForm, colorField, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
-
-/** Model-invocable dot color default. Single source for the TS side; the
- *  panel's CSS mirrors it via --hub-model (panel.module.css). */
-export const DEFAULT_DOT_MODEL_COLOR = '#2f81f7'
-/** User-invocable dot color default. Single source for the TS side; the
- *  panel's CSS mirrors it via --hub-user (panel.module.css). */
-export const DEFAULT_DOT_USER_COLOR = '#3fb950'
+// Single source for the TS-side dot defaults (the panel CSS mirrors these).
+import { DEFAULT_DOT_MODEL_COLOR, DEFAULT_DOT_USER_COLOR } from './panel/format.ts'
+// Re-export for any consumer that imported them from the card before the move.
+export { DEFAULT_DOT_MODEL_COLOR, DEFAULT_DOT_USER_COLOR }
 
 /** The card's projected state. */
 export interface SkillHubSettingsState extends CardShell {

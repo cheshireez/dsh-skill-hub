@@ -16,6 +16,12 @@ export function SkillRow(props: { skill: CatalogSkill; hub: SkillHubState }): JS
   const stat = hub.uses.get(skill.name)
   const count = stat?.count ?? 0
   const lastUsed = stat?.lastUsed
+  /** 单一状态圆点：模型可调 → 蓝；否则用户可调 → 绿。与聊天 / 菜单同规则。 */
+  const dot = skill.invocation.modelInvocable
+    ? <span className={css.dot + ' ' + css.dotModel} style={dotStyle(hub.hubConfig?.dotModelColor)} title={tt('legend.model')} />
+    : skill.invocation.userInvocable
+      ? <span className={css.dot + ' ' + css.dotUser} style={dotStyle(hub.hubConfig?.dotUserColor)} title={tt('legend.user')} />
+      : null
   /** 键盘打开详情：Enter 或空格。仅当焦点在行本身（而非行内按钮）时生效。 */
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
     if (event.target !== event.currentTarget) return
@@ -37,8 +43,7 @@ export function SkillRow(props: { skill: CatalogSkill; hub: SkillHubState }): JS
         <div className={css.rowName}>
           <span className={css.rowNameText}>{skill.name}</span>
           {count > 0 && hub.hubConfig?.showUseCount !== false ? <span className={css.useCount}>{count}</span> : null}
-          {skill.invocation.modelInvocable ? <span className={css.dot + ' ' + css.dotModel} style={dotStyle(hub.hubConfig?.dotModelColor)} title={tt('legend.model')} /> : null}
-          {skill.invocation.userInvocable ? <span className={css.dot + ' ' + css.dotUser} style={dotStyle(hub.hubConfig?.dotUserColor)} title={tt('legend.user')} /> : null}
+          {dot}
           {lastUsed !== undefined && hub.hubConfig?.showUseTime !== false ? <span className={css.useTime}>{relativeTimeText(lastUsed)}</span> : null}
         </div>
         <div className={css.rowDesc}>{skill.description}</div>

@@ -42,8 +42,12 @@ export function SkillDetailView(props: SkillDetailViewProps): JSX.Element {
         <button type='button' className={css.back} onClick={onBack}>{tt('detail.back')}</button>
         <span className={css.detailName}>
           {detail.name}
-          {detail.invocation.modelInvocable ? <span className={css.dot + ' ' + css.dotModel} style={dotStyle(hubConfig?.dotModelColor)} title={tt('legend.model')} /> : null}
-          {detail.invocation.userInvocable ? <span className={css.dot + ' ' + css.dotUser} style={dotStyle(hubConfig?.dotUserColor)} title={tt('legend.user')} /> : null}
+          {/* 单一状态圆点：模型可调 → 蓝；否则用户可调 → 绿。与聊天 / 菜单同规则。 */}
+          {detail.invocation.modelInvocable
+            ? <span className={css.dot + ' ' + css.dotModel} style={dotStyle(hubConfig?.dotModelColor)} title={tt('legend.model')} />
+            : detail.invocation.userInvocable
+              ? <span className={css.dot + ' ' + css.dotUser} style={dotStyle(hubConfig?.dotUserColor)} title={tt('legend.user')} />
+              : null}
         </span>
       </div>
       <div className={css.detailMeta}>

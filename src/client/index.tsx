@@ -31,10 +31,13 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls the settings-plugins SlotMap merge (settings.plugin.item).
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
+// Type-only: pulls the Context merge for ctx.inputTriggers (slash-dots wiring).
+import type {} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { HubSettingsValue } from '../protocol.ts'
 import { SkillHubApi } from './api.ts'
 import { en, zh, type HubKey } from './locales.ts'
 import { applySettingsNavIcon } from './settings-nav-icon.ts'
+import { setupSkillSlashDots } from './slash-dots.tsx'
 import { SkillHubSettingsCard, SkillHubSettingsCardController } from './SkillHubSettingsCard.tsx'
 import { SkillHubPanel } from './panel/SkillHubPanel.tsx'
 
@@ -55,7 +58,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
  * `settingsScope` is the namespace-scope binder itself; mirror the official
  * settings-plugins inject list.
  */
-export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope']
+export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope', 'inputTriggers']
 
 /** Type-only surface (export discipline: no value exports beyond the plugin contract). */
 export type { SkillHubPanelProps } from './panel/SkillHubPanel.tsx'
@@ -77,6 +80,15 @@ export function apply(ctx: ClientContext): void {
   // since rc.7, so this is what makes the card appear (and stay in sync).
   const settingsCard = new SkillHubSettingsCardController(
     ctx.settingsScope.bind<HubSettingsValue>({ namespace: NS }),
+  )
+
+  // Chat `/` menu skill dots: wrap the core skill source so every candidate
+  // row carries the invocation dot, colored from the same settings the panel
+  // legend uses (dotModelColor / dotUserColor). Own scope = independent reader;
+  // fails silent, never takes the GUI down.
+  ctx.effect(
+    () => setupSkillSlashDots(ctx, api, ctx.settingsScope.bind<HubSettingsValue>({ namespace: NS })),
+    'dsh-skill-hub: slash dots',
   )
 
   // Plugin-management card: Settings → 插件 → 可配置插件列表.
