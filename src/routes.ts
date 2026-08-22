@@ -85,7 +85,7 @@ import {
   resolveHubConfig,
 } from './protocol.ts'
 import { clearTrash, createSkill, disableSkill, enableSkill, restoreSkill, rootOfPath, rootPath, scanDiagnostics, trashSkill } from './skillfs.ts'
-import { checkLatestRelease } from './update.ts'
+import { checkLatestRelease, CURRENT_VERSION } from './update.ts'
 import { dshHome, StoreError, type SkillHubStore } from './store.ts'
 import type { SkillStatsReader } from './stats.ts'
 
@@ -410,7 +410,7 @@ async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promise<Cata
     ...(await scanDiagnostics('user-dsh', home)),
     ...(await scanDiagnostics('user-agents', home)),
   ]
-  return { ok: true, complete, skills, disabled, diagnostics }
+  return { ok: true, pluginVersion: CURRENT_VERSION, complete, skills, disabled, diagnostics }
 }
 
 /** Map a loaded definition onto the wire shape. */

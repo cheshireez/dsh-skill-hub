@@ -120,6 +120,7 @@
 
 /* Reduced header: title + quiet count on one line, controls on the next. */
 .headerCount { font-size: 12px; opacity: .5; margin-left: 2px; white-space: nowrap; }
+.pluginVersion { font-size: 12px; font-weight: 500; opacity: .45; margin-left: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .subbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .legendToggle { flex: none; width: 22px; height: 22px; border-radius: 50%; border: none; background: rgba(128,128,128,.14); color: inherit; font-size: 12px; line-height: 1; cursor: pointer; opacity: .55; transition: opacity .15s ease, background .15s ease; }
 .legendToggle:hover { opacity: 1; }

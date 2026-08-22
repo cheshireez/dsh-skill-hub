@@ -127,6 +127,8 @@ describe('skill-hub routes', () => {
     expect(body.skills[1].writable).toBe(false)
     expect(body.diagnostics).toHaveLength(1)
     expect(body.diagnostics[0].reason).toBe('missing YAML frontmatter (--- block)')
+    // 面板标题旁的插件版本徽标数据源：随 catalog 附带当前安装版本。
+    expect(body.pluginVersion).toMatch(/^\d+\.\d+\.\d+$/)
   })
 
   it('forwards the cwd query to the registry snapshot', async () => {

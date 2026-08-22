@@ -88,6 +88,8 @@ export interface DiagnosticEntry {
 /** GET /api/skill-hub/catalog */
 export interface CatalogResponse {
   ok: true
+  /** 已安装插件自身的版本号（package.json version），面板标题旁显示。 */
+  pluginVersion: string
   /** Whether discovery completed within a stable catalog revision. */
   complete: boolean
   /** Sorted winning summaries of every enabled skill (all roots + providers). */
