@@ -250,4 +250,36 @@ describe('SkillHubStore', () => {
     expect(await fresh.listDisabled()).toEqual([])
   })
 
+  it('migrates a v3 file (no skillStats) and persists a checkpoint round-trip at v4', async () => {
+    // v3 旧文件：无 skillStats 字段 → 装载后检查点为空，写盘时版本升到当前。
+    await writeFile(file, JSON.stringify({
+      version: 3,
+      disabled: [],
+      tags: [{ id: 't1', name: '通用', skillNames: [], default: true }],
+    }), 'utf8')
+    expect(await store.getSkillStatsState()).toBeUndefined()
+    const checkpoint = {
+      windowDays: 0,
+      frozenBefore: 1000,
+      frozenSessions: { 'session-a': { createdAt: 900, counts: { tdd: { count: 7, lastUsed: 900 }, 'code-review': { count: 2, lastUsed: 800 } } } },
+      lastFullReconcile: 1234,
+    }
+    await store.saveSkillStatsState(checkpoint)
+    // 新实例读回一致（含深拷贝的 frozenTotals）。
+    const reloaded = new SkillHubStore(file)
+    expect(await reloaded.getSkillStatsState()).toEqual(checkpoint)
+    const raw = JSON.parse(await readFile(file, 'utf8')) as { version: number; skillStats?: unknown }
+    expect(raw.version).toBe(4)
+    expect(raw.skillStats).toEqual(checkpoint)
+  })
+
+  it('drops a corrupt skillStats bucket instead of trusting bad counts', async () => {
+    await writeFile(file, JSON.stringify({
+      version: 4,
+      disabled: [],
+      skillStats: { windowDays: 'x', frozenBefore: true, lastFullReconcile: false, frozenSessions: { bad: { createdAt: 'y', counts: [] } } },
+    }), 'utf8')
+    expect(await store.getSkillStatsState()).toBeUndefined()
+  })
+
 })

@@ -49,6 +49,27 @@ export function colorField(field: string): FieldSpec {
   }
 }
 
+/**
+ * A numeric field with range clamping. Integer by default: a fractional draft
+ * is truncated so "5.5 分钟" cannot sneak past an integer-only schema.
+ */
+export function numberField(field: string, options: { min?: number; max?: number; integer?: boolean } = {}): FieldSpec {
+  const min = options.min ?? Number.NEGATIVE_INFINITY
+  const max = options.max ?? Number.POSITIVE_INFINITY
+  const integer = options.integer ?? true
+  return {
+    field,
+    format: (value) => (typeof value === 'number' && Number.isFinite(value) ? String(value) : ''),
+    parse: (text) => {
+      const trimmed = text.trim()
+      if (!/^-?\d+(\.\d+)?$/.test(trimmed)) return undefined
+      const parsed = integer ? Math.trunc(Number(trimmed)) : Number(trimmed)
+      if (!Number.isFinite(parsed) || parsed < min || parsed > max) return undefined
+      return { kind: 'set', value: parsed }
+    },
+  }
+}
+
 /** Card-level state the chrome renders. */
 export interface CardShell {
   available: boolean

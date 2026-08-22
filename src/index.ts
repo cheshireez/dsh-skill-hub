@@ -40,6 +40,10 @@ export interface Config {
   showUseTime?: boolean
   /** Show group-header usage summaries (count + last used). Default true. */
   showGroupSummary?: boolean
+  /** 统计滚动窗口天数：只统计最近 N 天的使用；0 = 全部历史。默认 0。 */
+  statsWindowDays?: number
+  /** 自动统计扫描间隔（分钟，最小 1）。默认 5。 */
+  statsScanMinutes?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -48,6 +52,8 @@ export const Config: z<Config> = z.object({
   showUseCount: z.boolean().default(HUB_CONFIG_DEFAULTS.showUseCount),
   showUseTime: z.boolean().default(HUB_CONFIG_DEFAULTS.showUseTime),
   showGroupSummary: z.boolean().default(HUB_CONFIG_DEFAULTS.showGroupSummary),
+  statsWindowDays: z.number().min(0).max(3650).default(HUB_CONFIG_DEFAULTS.statsWindowDays),
+  statsScanMinutes: z.number().min(1).max(1440).default(HUB_CONFIG_DEFAULTS.statsScanMinutes),
 })
 
 /**
@@ -68,6 +74,8 @@ export const HubSettingsSchema: z<HubSettingsValue> = z.object({
   showGroupSummary: z.boolean().default(HUB_CONFIG_DEFAULTS.showGroupSummary),
   dotModelColor: z.string().pattern(HEX_COLOR_RE),
   dotUserColor: z.string().pattern(HEX_COLOR_RE),
+  statsWindowDays: z.number().min(0).max(3650).default(HUB_CONFIG_DEFAULTS.statsWindowDays),
+  statsScanMinutes: z.number().min(1).max(1440).default(HUB_CONFIG_DEFAULTS.statsScanMinutes),
 })
 
 /** Order of the announcement section within the tool-guidance band. */
@@ -126,7 +134,7 @@ export function apply(ctx: Context, config?: Config): void {
   // surfaces once the namespace commits.
   const updateConfig = async (patch: Partial<HubConfig>): Promise<HubConfig> => {
     const user: Record<string, unknown> = { ...saved() }
-    for (const [key, value] of Object.entries(patch) as Array<[keyof HubConfig, boolean | string | undefined]>) {
+    for (const [key, value] of Object.entries(patch) as Array<[keyof HubConfig, boolean | string | number | undefined]>) {
       if (value === undefined) delete user[key]
       else user[key] = value
     }
@@ -222,7 +230,30 @@ export function apply(ctx: Context, config?: Config): void {
   // stats wiring — no sessionQuery service ever mounted means none of this
   // runs).
   ctx.inject(['sessionQuery'], (sctx) => {
-    stats = createSkillStatsReader(sctx.sessionQuery)
-    sync()
+    // 恢复 sidecar 里的增量扫描检查点后再建 reader（异步、不阻塞注入回调）：
+    // 重启后无需重新解压全部历史日志；检查点只在全量对账后落盘（约每天一次，
+    // 或统计窗口配置变化后的下一次扫描）。扫描间隔与滚动窗口都从设置命名空间
+    // 实时读取——卡片里改完即生效，无需重启。
+    void (async () => {
+      const saved = await store.getSkillStatsState().catch(() => undefined)
+      const scanMinutes = (): number => {
+        const value = current().statsScanMinutes
+        return typeof value === 'number' && value >= 1 ? Math.floor(value) : HUB_CONFIG_DEFAULTS.statsScanMinutes
+      }
+      const windowDays = (): number => {
+        const value = current().statsWindowDays
+        return typeof value === 'number' && value >= 0 ? Math.floor(value) : HUB_CONFIG_DEFAULTS.statsWindowDays
+      }
+      stats = createSkillStatsReader(sctx.sessionQuery, () => scanMinutes() * 60_000, {
+        checkpoint: saved,
+        windowDays,
+        onCheckpoint: (next) => {
+          void store.saveSkillStatsState(next).catch((error) => {
+            ctx.logger.warn('[dsh-skill-hub] persisting skill-stats checkpoint failed', error)
+          })
+        },
+      })
+      sync()
+    })()
   })
 }

@@ -12,16 +12,44 @@
  *
  * Counting is per-skill-name, not per-source: a name may resolve to different
  * files across projects, but the model-facing identity is the kebab-case name.
+ *
+ * Scaling (per-session checkpoint + incremental scans): a full scan
+ * decompresses every session log, which grows linearly with total history.
+ * Sessions older than the effective watermark are therefore treated as
+ * finalized — their per-session counts live in the checkpoint (persisted by
+ * the host via the sidecar) and are skipped on incremental scans; only the
+ * recent window is re-read. A daily full reconciliation rebuilds the cache
+ * and advances the watermark, so a resumed old session is eventually
+ * re-counted. On top of that, the reader's TTL adapts to the measured scan
+ * duration (STATS_TTL_SCAN_FACTOR), so a heavy scan also lowers its own
+ * frequency.
+ *
+ * Rolling window (statsWindowDays > 0): totals only include sessions created
+ * within the last N days. The watermark then equals the window edge, so
+ * sessions outside the window are neither re-read nor counted, and the
+ * reconciliation prunes their cache entries. Changing the configured window
+ * forces one full reconciliation immediately (the checkpoint records the
+ * window it was built for), so the new semantics take effect on the next scan
+ * instead of up to a day later.
  */
 
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 // Type-only: pulls the 'skill-invocation' MessageSourceMap augmentation.
 import type {} from '@deepseek-ai/dsh-skill'
-import type { SkillStat } from './protocol.ts'
+import type { SkillStat, SkillStatsCheckpoint } from './protocol.ts'
+
+/** Fallback freeze horizon when no rolling window is configured (14 days). */
+export const STATS_FREEZE_AFTER_MS = 14 * 24 * 60 * 60 * 1000
+/** Cadence of the full reconciliation that rebuilds the checkpoint (24 h). */
+export const STATS_FULL_RECONCILE_MS = 24 * 60 * 60 * 1000
+/** Adaptive TTL factor: effective TTL ≥ this multiple of the last scan duration. */
+export const STATS_TTL_SCAN_FACTOR = 3
+
+const DAY_MS = 24 * 60 * 60 * 1000
 
 /** Narrow structural view of the session-query service (kept loose for tests). */
 export interface SessionQueryLike {
-  listSessions(signal?: AbortSignal): Promise<Array<{ header: { id: SessionId } }>>
+  listSessions(signal?: AbortSignal): Promise<Array<{ header: { id: SessionId; createdAt?: number } }>>
   readSession(id: SessionId): Promise<{ events: SessionEvent[] }>
 }
 
@@ -65,33 +93,133 @@ export function countSkillInvocations(events: readonly SessionEvent[]): Map<stri
   return stats
 }
 
-/** Scan every session and total per-skill counts, keeping the latest lastUsed. */
-export async function readSkillStats(query: SessionQueryLike): Promise<SkillStat[]> {
-  const totals = new Map<string, InvocationStat>()
+/** Aggregated totals bucket keyed by skill name. */
+type Totals = Record<string, InvocationStat>
+
+function isFrozen(record: { header: { createdAt?: number } }, watermark: number): boolean {
+  const created = record.header.createdAt
+  // Missing or non-positive timestamps never freeze: the session stays on the
+  // re-read path, which is merely slower — never wrong.
+  return typeof created === 'number' && created > 0 && created < watermark
+}
+
+function mergeInto(totals: Totals, counted: Map<string, InvocationStat>): void {
+  for (const [name, stat] of counted) {
+    const total = totals[name]
+    if (total === undefined) totals[name] = { ...stat }
+    else {
+      total.count += stat.count
+      if (stat.lastUsed > total.lastUsed) total.lastUsed = stat.lastUsed
+    }
+  }
+}
+
+function toSorted(totals: Totals): SkillStat[] {
+  return Object.entries(totals)
+    .map(([name, stat]) => ({ name, count: stat.count, lastUsed: stat.lastUsed }))
+    .sort((x, y) => x.name.localeCompare(y.name))
+}
+
+/** Effective freeze watermark for the configured rolling window (0 = all history → freeze horizon). */
+function watermarkFor(windowDays: number, nowMs: number): number {
+  return windowDays > 0 ? nowMs - windowDays * DAY_MS : nowMs - STATS_FREEZE_AFTER_MS
+}
+
+/**
+ * Whether a session's usage counts toward the configured window. With no
+ * window (0) everything counts — full history; with a window, only sessions
+ * created inside it do. Distinct from the freeze watermark, which is purely a
+ * re-read optimization.
+ */
+function inWindow(createdAt: number | undefined, windowDays: number, nowMs: number): boolean {
+  if (windowDays <= 0) return true
+  return typeof createdAt === 'number' && createdAt > 0 && createdAt >= nowMs - windowDays * DAY_MS
+}
+
+/**
+ * One pass over the corpus. Runs either a full reconciliation (rebuilds the
+ * per-session cache and advances the watermark — mutates the checkpoint) or a
+ * cheap incremental scan (re-reads everything at or after the watermark and
+ * merges over the cached sessions — leaves the checkpoint untouched). Totals
+ * always apply the CURRENT window filter over the cached sessions, so a
+ * window shrink takes effect immediately even before the next reconciliation.
+ */
+async function scan(query: SessionQueryLike, checkpoint: SkillStatsCheckpoint, nowMs: number, windowDays: number): Promise<{ stats: SkillStat[]; mutated: boolean }> {
   const sessions = await query.listSessions()
+  const cutoff = watermarkFor(windowDays, nowMs)
+  const dueFullScan = nowMs - checkpoint.lastFullReconcile >= STATS_FULL_RECONCILE_MS
+    || checkpoint.windowDays !== windowDays
+
+  if (dueFullScan) {
+    const cache: SkillStatsCheckpoint['frozenSessions'] = {}
+    const totals: Totals = {}
+    for (const record of sessions) {
+      let counted: Map<string, InvocationStat>
+      try {
+        counted = countSkillInvocations((await query.readSession(record.header.id)).events)
+      } catch {
+        continue // unreadable sessions are skipped, never fatal
+      }
+      const created = record.header.createdAt
+      if (isFrozen(record, cutoff) && counted.size > 0 && typeof created === 'number') {
+        cache[record.header.id as unknown as string] = { createdAt: created, counts: Object.fromEntries(counted) }
+      }
+      if (inWindow(created, windowDays, nowMs)) mergeInto(totals, counted)
+    }
+    checkpoint.frozenSessions = cache
+    checkpoint.frozenBefore = cutoff
+    checkpoint.windowDays = windowDays
+    checkpoint.lastFullReconcile = nowMs
+    return { stats: toSorted(totals), mutated: true }
+  }
+
+  const recent: Totals = {}
   for (const record of sessions) {
-    let snapshot: { events: SessionEvent[] }
+    if (isFrozen(record, checkpoint.frozenBefore)) continue
     try {
-      snapshot = await query.readSession(record.header.id)
+      mergeInto(recent, countSkillInvocations((await query.readSession(record.header.id)).events))
     } catch {
       continue // unreadable sessions are skipped, never fatal
     }
-    for (const [name, stat] of countSkillInvocations(snapshot.events)) {
-      const total = totals.get(name)
-      if (total === undefined) totals.set(name, { ...stat })
-      else {
-        total.count += stat.count
-        if (stat.lastUsed > total.lastUsed) total.lastUsed = stat.lastUsed
-      }
-    }
   }
-  return [...totals.entries()]
-    .map(([name, stat]) => ({ name, count: stat.count, lastUsed: stat.lastUsed }))
-    .sort((a, b) => a.name.localeCompare(b.name))
+  const totals: Totals = {}
+  for (const [id, entry] of Object.entries(checkpoint.frozenSessions)) {
+    if (!inWindow(entry.createdAt, windowDays, nowMs)) {
+      delete checkpoint.frozenSessions[id] // lazily prune entries outside the window
+      continue
+    }
+    mergeInto(totals, new Map(Object.entries(entry.counts)))
+  }
+  mergeInto(totals, new Map(Object.entries(recent)))
+  return { stats: toSorted(totals), mutated: false }
+}
+
+/**
+ * Full-corpus totals in one shot (no checkpoint reuse). Kept as the
+ * reference implementation for tests and one-off callers.
+ */
+export async function readSkillStats(query: SessionQueryLike, windowDays = 0): Promise<SkillStat[]> {
+  const checkpoint: SkillStatsCheckpoint = { windowDays, frozenBefore: 0, frozenSessions: {}, lastFullReconcile: 0 }
+  return (await scan(query, checkpoint, Date.now(), windowDays)).stats
 }
 
 /** A memoized stats reader (the panel polls, but logs change slowly). */
 export type SkillStatsReader = () => Promise<SkillStat[]>
+
+/** Optional wiring for {@link createSkillStatsReader}. */
+export interface SkillStatsReaderOptions {
+  /** Checkpoint restored from the sidecar; absent means "start from zero". */
+  checkpoint?: SkillStatsCheckpoint
+  /** Injectable clock (epoch ms); defaults to Date.now. Tests drive time with it. */
+  now?: () => number
+  /** Base rescan interval in ms; a getter reads the live config each check. */
+  ttlMs?: number | (() => number)
+  /** Rolling window in days; a getter reads the live config each scan. 0 = all history. */
+  windowDays?: () => number
+  /** Called after a full reconciliation mutated the checkpoint (never after an
+   *  incremental scan) so the host can persist it to the sidecar. */
+  onCheckpoint?: (checkpoint: SkillStatsCheckpoint) => void
+}
 
 /**
  * Wrap a query in a stale-while-revalidate cache: responses never wait for a
@@ -100,21 +228,36 @@ export type SkillStatsReader = () => Promise<SkillStat[]>
  * single background rescan refreshes them — the panel's next poll picks the
  * fresh numbers. A full scan decompresses every session log and can take
  * seconds, so it must never sit on the request path.
+ *
+ * Two scaling mechanisms keep this sane as history grows:
+ *  - the rescan is incremental (per-session checkpoint, see module doc);
+ *  - the effective TTL adapts to the measured scan duration, so a heavier
+ *    corpus automatically lowers the rescan cadence instead of burning CPU
+ *    on every poll interval.
  */
-export function createSkillStatsReader(query: SessionQueryLike, ttlMs = 300_000): SkillStatsReader {
+export function createSkillStatsReader(query: SessionQueryLike, ttlMs: number | (() => number) = 300_000, options: SkillStatsReaderOptions = {}): SkillStatsReader {
+  const checkpoint: SkillStatsCheckpoint = options.checkpoint ?? { windowDays: 0, frozenBefore: 0, frozenSessions: {}, lastFullReconcile: 0 }
+  const now = options.now ?? (() => Date.now())
   let cached: SkillStat[] | undefined
   let cachedAt = 0
   let refreshing: Promise<void> | null = null
+  let lastScanDurationMs = 0
+
   return async () => {
-    const now = Date.now()
-    if (cached !== undefined && now - cachedAt < ttlMs) return cached
+    const startedAt = now()
+    const base = typeof ttlMs === 'function' ? ttlMs() : ttlMs
+    const ttl = Math.max(base, lastScanDurationMs * STATS_TTL_SCAN_FACTOR)
+    if (cached !== undefined && startedAt - cachedAt < ttl) return cached
     // Expired (or first call): hand back the stale totals (empty on first
     // call) and kick off one background rescan.
     if (refreshing === null) {
-      refreshing = readSkillStats(query)
-        .then((stats) => {
+      const windowDays = options.windowDays?.() ?? 0
+      refreshing = scan(query, checkpoint, startedAt, windowDays)
+        .then(({ stats, mutated }) => {
           cached = stats
-          cachedAt = Date.now()
+          cachedAt = now()
+          lastScanDurationMs = Math.max(0, cachedAt - startedAt)
+          if (mutated) options.onCheckpoint?.({ ...checkpoint, frozenSessions: { ...checkpoint.frozenSessions } })
         })
         .catch(() => { /* keep the previous totals on scan failure */ })
         .finally(() => { refreshing = null })

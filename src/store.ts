@@ -15,7 +15,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { DisabledSkill, HubConfig, MarketSourceRecord, RepoRoot, SkillTag, SourceRecord, TrashEntry } from './protocol.ts'
+import type { DisabledSkill, HubConfig, MarketSourceRecord, RepoRoot, SkillStatsCheckpoint, SkillTag, SourceRecord, TrashEntry } from './protocol.ts'
 
 /** 默认场景名（系统预置的兜底场景，新技能自动归入）。 */
 export const DEFAULT_SCENE_NAME = '通用'
@@ -34,6 +34,8 @@ interface StoreFile {
   marketSources?: MarketSourceRecord[]
   /** Trashed skills (removed after upstream deletion, restorable). */
   trash?: TrashEntry[]
+  /** Usage-statistics incremental-scan checkpoint (frozen watermark + totals). */
+  skillStats?: SkillStatsCheckpoint
 }
 
 /** Resolve the DSH home directory (the filesystem provider's user-dsh root base). */
@@ -47,7 +49,7 @@ export function statePath(home = dshHome()): string {
 }
 
 /** Current sidecar schema version. Bump on breaking shape changes and add a migration below. */
-export const STORE_VERSION = 3
+export const STORE_VERSION = 4
 
 /**
  * Business-rule failure the routes layer can map onto a 4xx status instead
@@ -74,7 +76,7 @@ export class StoreError extends Error {
  * Returns null when the file claims a newer schema than this plugin
  * understands, so the caller starts empty instead of risking data loss.
  */
-function migrateStore(parsed: unknown): { version: number; disabled: unknown; config?: unknown; tags?: unknown; sources?: unknown; marketSources?: unknown; trash?: unknown } | null {
+function migrateStore(parsed: unknown): { version: number; disabled: unknown; config?: unknown; tags?: unknown; sources?: unknown; marketSources?: unknown; trash?: unknown; skillStats?: unknown } | null {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
   const record = parsed as Record<string, unknown>
   const version = typeof record.version === 'number' ? record.version : 0
@@ -120,6 +122,9 @@ function migrateStore(parsed: unknown): { version: number; disabled: unknown; co
     ...(sources !== undefined ? { sources } : {}),
     ...(marketSources !== undefined ? { marketSources } : {}),
     ...(trash !== undefined ? { trash } : {}),
+    // v4 (skillStats) is a pure addition — older files simply lack the field,
+    // and the loader validates its shape, so pass it through untouched.
+    ...(record.skillStats !== undefined ? { skillStats: record.skillStats } : {}),
   }
 }
 
@@ -131,6 +136,7 @@ export class SkillHubStore {
   private sourcesByRepo = new Map<string, SourceRecord>()
   private marketSources: MarketSourceRecord[] = []
   private trashByName = new Map<string, TrashEntry>()
+  private skillStats: SkillStatsCheckpoint | undefined = undefined
   private loaded = false
   /** Serializes persist runs: concurrent mutators must not let an earlier
    *  snapshot overwrite a later one (rename is atomic, ordering is not). */
@@ -232,6 +238,34 @@ export class SkillHubStore {
                 ...(Array.isArray(tagIds) ? { tagIds: tagIds.filter((id): id is string => typeof id === 'string') } : {}),
               })
             }
+          }
+        }
+        const savedStats = migrated.skillStats as Partial<SkillStatsCheckpoint> | null | undefined
+        if (savedStats !== null && typeof savedStats === 'object'
+          && typeof savedStats.frozenBefore === 'number' && typeof savedStats.lastFullReconcile === 'number'
+          && typeof savedStats.windowDays === 'number'
+          && typeof savedStats.frozenSessions === 'object' && savedStats.frozenSessions !== null) {
+          // Validate entry shapes too: a corrupt bucket degrades to a fresh
+          // checkpoint (one extra full reconciliation), never to bad counts.
+          const sessions: SkillStatsCheckpoint['frozenSessions'] = {}
+          for (const [id, entry] of Object.entries(savedStats.frozenSessions)) {
+            if (entry === null || typeof entry !== 'object' || typeof entry.createdAt !== 'number'
+              || typeof entry.counts !== 'object' || entry.counts === null) continue
+            const counts: Record<string, { count: number; lastUsed: number }> = {}
+            for (const [name, stat] of Object.entries(entry.counts)) {
+              if (stat !== null && typeof stat === 'object'
+                && typeof (stat as { count?: unknown }).count === 'number'
+                && typeof (stat as { lastUsed?: unknown }).lastUsed === 'number') {
+                counts[name] = { count: (stat as { count: number }).count, lastUsed: (stat as { lastUsed: number }).lastUsed }
+              }
+            }
+            sessions[id] = { createdAt: entry.createdAt, counts }
+          }
+          this.skillStats = {
+            windowDays: savedStats.windowDays,
+            frozenBefore: savedStats.frozenBefore,
+            frozenSessions: sessions,
+            lastFullReconcile: savedStats.lastFullReconcile,
           }
         }
       }
@@ -602,6 +636,26 @@ export class SkillHubStore {
     await this.persist()
   }
 
+  /** The persisted usage-statistics checkpoint (undefined until first saved). */
+  async getSkillStatsState(): Promise<SkillStatsCheckpoint | undefined> {
+    await this.ensureLoaded()
+    return this.skillStats !== undefined
+      ? { ...this.skillStats, frozenSessions: { ...this.skillStats.frozenSessions } }
+      : undefined
+  }
+
+  /** Persist a usage-statistics checkpoint (written at most ~once a day, on full reconciliations). */
+  async saveSkillStatsState(state: SkillStatsCheckpoint): Promise<void> {
+    await this.ensureLoaded()
+    this.skillStats = {
+      windowDays: state.windowDays,
+      frozenBefore: state.frozenBefore,
+      frozenSessions: { ...state.frozenSessions },
+      lastFullReconcile: state.lastFullReconcile,
+    }
+    await this.persist()
+  }
+
   private persist(): Promise<void> {
     // The payload is built inside the queued step (not here), so every
     // concurrent mutation made before a write actually lands is included in
@@ -615,6 +669,7 @@ export class SkillHubStore {
         ...(this.sourcesByRepo.size > 0 ? { sources: [...this.sourcesByRepo.values()] } : {}),
         ...(this.marketSources.length > 0 ? { marketSources: [...this.marketSources] } : {}),
         ...(this.trashByName.size > 0 ? { trash: [...this.trashByName.values()] } : {}),
+        ...(this.skillStats !== undefined ? { skillStats: this.skillStats } : {}),
       }
       const tmp = this.file + '.tmp'
       await mkdir(dirname(this.file), { recursive: true })

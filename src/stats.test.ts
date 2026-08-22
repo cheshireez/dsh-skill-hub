@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { countSkillInvocations, createSkillStatsReader, readSkillStats, type SessionQueryLike } from './stats.ts'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { countSkillInvocations, createSkillStatsReader, readSkillStats, STATS_FREEZE_AFTER_MS, type SessionQueryLike } from './stats.ts'
+import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 
 /** Minimal user/message event carrying a skill-invocation source. */
 function invocationEvent(name: string, seq = 1, time = 0): SessionEvent {
@@ -164,5 +164,276 @@ describe('createSkillStatsReader', () => {
     expect(await reader()).toEqual([{ name: 'tdd', count: 1, lastUsed: 0 }])
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(reads).toBe(2)
+  })
+})
+
+// ------------------------------------------------ 增量扫描与自适应 TTL
+
+const NOW = 1_000_000_000_000
+const DAY = 24 * 60 * 60 * 1000
+
+/** One fake corpus record (createdAt omitted → never freezes). */
+function record(id: string, createdAt?: number): { header: { id: SessionId; createdAt?: number } } {
+  return { header: { id: id as never, ...(createdAt !== undefined ? { createdAt } : {}) } }
+}
+
+/** Fake session-query that records which sessions were actually read. */
+function fakeQuery(
+  records: ReturnType<typeof record>[],
+  eventsById: Record<string, SessionEvent[] | 'corrupt'>,
+  reads: string[],
+): SessionQueryLike {
+  return {
+    listSessions: async () => records,
+    readSession: async (id) => {
+      reads.push(String(id))
+      const events = eventsById[String(id)]
+      if (events === 'corrupt') throw new Error('corrupt')
+      return { events: events ?? [] }
+    },
+  }
+}
+
+/** Let the background scan's promise chain settle. */
+async function flush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 20))
+}
+
+describe('frozen-bucket incremental scans', () => {
+  it('skips frozen sessions and merges checkpoint totals with the recent window', async () => {
+    const reads: string[] = []
+    const query = fakeQuery(
+      [record('frozen-skill', NOW - 30 * DAY), record('fresh', NOW - 1 * DAY)],
+      {
+        'frozen-skill': [invocationEvent('oldskill', 1, NOW - 20 * DAY)],
+        fresh: [invocationEvent('tdd', 1), invocationEvent('tdd', 2)],
+      },
+      reads,
+    )
+    let checkpoints = 0
+    const reader = createSkillStatsReader(query, 60_000, {
+      now: () => NOW,
+      checkpoint: {
+        windowDays: 0,
+        frozenBefore: NOW - 10 * DAY,
+        frozenSessions: { 'frozen-skill': { createdAt: NOW - 30 * DAY, counts: { oldskill: { count: 5, lastUsed: NOW - 20 * DAY } } } },
+        lastFullReconcile: NOW - 3_600_000, // 1h ago → incremental path
+      },
+      onCheckpoint: () => { checkpoints += 1 },
+    })
+    expect(await reader()).toEqual([]) // 首次调用不等待扫描
+    await flush()
+    expect(await reader()).toEqual([
+      { name: 'oldskill', count: 5, lastUsed: NOW - 20 * DAY },
+      { name: 'tdd', count: 2, lastUsed: 0 },
+    ])
+    // 冻结会话没有被重读；增量扫描不改检查点 → 不触发持久化回调。
+    expect(reads).toEqual(['fresh'])
+    expect(checkpoints).toBe(0)
+  })
+
+  it('runs a full reconciliation when due: rebuilds the frozen bucket and advances the watermark', async () => {
+    const reads: string[] = []
+    const query = fakeQuery(
+      [record('ancient', NOW - 30 * DAY), record('recent', NOW - 1 * DAY)],
+      {
+        ancient: [invocationEvent('a', 1, 5)],
+        recent: [invocationEvent('b', 1), invocationEvent('b', 2)],
+      },
+      reads,
+    )
+    const saved: Array<Record<string, unknown>> = []
+    const reader = createSkillStatsReader(query, 60_000, {
+      now: () => NOW,
+      // lastFullReconcile = 0 → 对账到期（全量路径）
+      checkpoint: { windowDays: 0, frozenBefore: 0, frozenSessions: {}, lastFullReconcile: 0 },
+      onCheckpoint: (cp) => { saved.push(cp as unknown as Record<string, unknown>) },
+    })
+    expect(await reader()).toEqual([])
+    await flush()
+    expect(await reader()).toEqual([
+      { name: 'a', count: 1, lastUsed: 5 },
+      { name: 'b', count: 2, lastUsed: 0 },
+    ])
+    expect(reads).toEqual(['ancient', 'recent']) // 全量：两个都读
+    expect(saved).toHaveLength(1)
+    expect(saved[0]).toEqual({
+      windowDays: 0,
+      frozenBefore: NOW - STATS_FREEZE_AFTER_MS,
+      // 全历史模式（windowDays=0）：冻结会话进缓存且仍计入总数。
+      frozenSessions: { ancient: { createdAt: NOW - 30 * DAY, counts: { a: { count: 1, lastUsed: 5 } } } },
+      lastFullReconcile: NOW,
+    })
+  })
+
+  it('re-reads sessions without createdAt on incremental scans (never freezes)', async () => {
+    const reads: string[] = []
+    const query = fakeQuery(
+      [record('no-stamp'), record('fresh', NOW - 1 * DAY)],
+      { 'no-stamp': [invocationEvent('x', 1)], fresh: [invocationEvent('y', 1)] },
+      reads,
+    )
+    const reader = createSkillStatsReader(query, 60_000, {
+      now: () => NOW,
+      checkpoint: {
+        windowDays: 0,
+        frozenBefore: NOW - 10 * DAY,
+        frozenSessions: {},
+        lastFullReconcile: NOW - 3_600_000,
+      },
+    })
+    expect(await reader()).toEqual([])
+    await flush()
+    expect(await reader().then((s) => s.map((stat) => stat.name))).toEqual(['x', 'y'])
+    expect(reads).toEqual(['no-stamp', 'fresh'])
+  })
+
+  it('skips unreadable recent sessions on incremental scans without failing', async () => {
+    const reads: string[] = []
+    const query = fakeQuery(
+      [record('bad', NOW - 2 * DAY), record('good', NOW - 1 * DAY)],
+      { bad: 'corrupt', good: [invocationEvent('tdd', 1)] },
+      reads,
+    )
+    const reader = createSkillStatsReader(query, 60_000, {
+      now: () => NOW,
+      checkpoint: {
+        windowDays: 0,
+        frozenBefore: NOW - 10 * DAY,
+        frozenSessions: { cached: { createdAt: NOW - 30 * DAY, counts: { oldskill: { count: 3, lastUsed: 0 } } } },
+        lastFullReconcile: NOW - 3_600_000,
+      },
+    })
+    expect(await reader()).toEqual([])
+    await flush()
+    expect(await reader()).toEqual([
+      { name: 'oldskill', count: 3, lastUsed: 0 },
+      { name: 'tdd', count: 1, lastUsed: 0 },
+    ])
+  })
+})
+
+describe('adaptive rescan TTL', () => {
+  it('extends the effective TTL to three times the measured scan duration', async () => {
+    let clock = 0
+    let scans = 0
+    const query: SessionQueryLike = {
+      listSessions: async () => [{ header: { id: 'a' as never } }, { header: { id: 'b' as never } }],
+      readSession: async () => {
+        clock += 60_000 // 每个会话耗时 60s → 扫描总耗时 120s
+        scans += 1
+        return { events: [invocationEvent('tdd')] }
+      },
+    }
+    const reader = createSkillStatsReader(query, 300_000, { now: () => clock })
+    expect(await reader()).toEqual([])
+    await flush() // 扫描完成：cachedAt=120_000，lastScanDuration=120s
+    expect(scans).toBe(2)
+
+    // 自适应 TTL = max(300s, 3×120s) = 360s。固定 TTL 在 310s 时就该重扫了，
+    // 这里必须仍然命中缓存 —— 证明自适应生效。
+    clock += 310_000
+    await reader()
+    expect(scans).toBe(2)
+
+    clock += 60_000 // 距上次缓存 370s ≥ 360s → 触发后台重扫
+    await reader()
+    await flush()
+    expect(scans).toBe(4)
+  })
+})
+
+describe('rolling stats window (configurable days)', () => {
+  it('counts only sessions inside the window when windowDays > 0', async () => {
+    const reads: string[] = []
+    const query = fakeQuery(
+      [record('old', NOW - 10 * DAY), record('fresh', NOW - 1 * DAY)],
+      {
+        old: [invocationEvent('oldskill', 1)],
+        fresh: [invocationEvent('tdd', 1)],
+      },
+      reads,
+    )
+    const reader = createSkillStatsReader(query, 60_000, {
+      now: () => NOW,
+      windowDays: () => 7, // 只统计最近 7 天
+    })
+    expect(await reader()).toEqual([])
+    await flush()
+    // 10 天前的会话超出窗口：不计入，也不进缓存。
+    expect(await reader()).toEqual([{ name: 'tdd', count: 1, lastUsed: 0 }])
+  })
+
+  it('keeps full history when the window is 0 (default)', async () => {
+    const query = fakeQuery(
+      [record('old', NOW - 400 * DAY), record('fresh', NOW - 1 * DAY)],
+      {
+        old: [invocationEvent('oldskill', 1)],
+        fresh: [invocationEvent('tdd', 1)],
+      },
+      [],
+    )
+    const reader = createSkillStatsReader(query, 60_000, { now: () => NOW })
+    expect(await reader()).toEqual([])
+    await flush()
+    expect(await reader().then((s) => s.map((stat) => stat.name))).toEqual(['oldskill', 'tdd'])
+  })
+
+  it('forces a full reconciliation when the configured window changes', async () => {
+    let window = 0
+    const reads: string[] = []
+    const query = fakeQuery(
+      [record('ancient', NOW - 30 * DAY), record('mid', NOW - 20 * DAY), record('fresh', NOW - 1 * DAY)],
+      {
+        ancient: [invocationEvent('a', 1)],
+        mid: [invocationEvent('b', 1)],
+        fresh: [invocationEvent('c', 1)],
+      },
+      reads,
+    )
+    let clock = NOW
+    const reader = createSkillStatsReader(query, 3_600_000, {
+      now: () => clock,
+      windowDays: () => window,
+      checkpoint: { windowDays: 0, frozenBefore: NOW - STATS_FREEZE_AFTER_MS, frozenSessions: {}, lastFullReconcile: NOW - 1000 },
+    })
+    // 全历史首轮：增量水位（NOW-14d）之后的只有 fresh；mid/ancient 被冻结跳过。
+    expect(await reader()).toEqual([])
+    await flush()
+    expect(await reader()).toEqual([{ name: 'c', count: 1, lastUsed: 0 }])
+    const afterFirst = reads.length
+
+    // 窗口切到 7 天：检查点记录的 windowDays 不一致 → 强制全量对账，
+    // 老会话也会被重读一次，随后合计只含窗内的 c。（推进时钟使 TTL 过期）
+    window = 7
+    clock += 2 * 3_600_000
+    expect(await reader()).toEqual([{ name: 'c', count: 1, lastUsed: 0 }]) // 先回 stale 缓存并触发重扫
+    await flush()
+    await reader()
+    expect(reads.length).toBeGreaterThan(afterFirst)
+    const names = (await reader()).map((stat) => stat.name)
+    expect(names).not.toContain('a')
+    expect(names).not.toContain('b')
+    expect(names).toContain('c')
+  })
+
+  it('filters and prunes over-window cache entries on incremental reads', async () => {
+    // 防御行为：检查点里残留了超出当前窗口的缓存条目时（例如窗口曾收窄），
+    // 增量读取直接把它过滤掉并顺手清除，而不是计入总数。
+    const query = fakeQuery([], {}, [])
+    const checkpoint = {
+      windowDays: 7,
+      frozenBefore: NOW - 7 * DAY,
+      frozenSessions: {
+        'stale-entry': { createdAt: NOW - 10 * DAY, counts: { oldskill: { count: 9, lastUsed: NOW - 10 * DAY } } },
+      },
+      lastFullReconcile: NOW - 1000, // 对账未到期 → 增量路径
+    }
+    const reader = createSkillStatsReader(query, 3_600_000, { now: () => NOW, checkpoint, windowDays: () => 7 })
+    expect(await reader()).toEqual([])
+    await flush()
+    const stats = await reader()
+    expect(stats).toEqual([])
+    expect(checkpoint.frozenSessions['stale-entry']).toBeUndefined() // 已被懒清理
   })
 })

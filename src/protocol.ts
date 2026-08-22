@@ -198,6 +198,25 @@ export interface StatsResponse {
   stats: SkillStat[]
 }
 
+/**
+ * Persisted incremental-scan checkpoint for the usage statistics (sidecar
+ * `skillStats` field). Sessions created before `frozenBefore` are treated as
+ * finalized: their per-session counts live in `frozenSessions` (only sessions
+ * with at least one invocation are kept) and they are not re-read on
+ * incremental scans. A daily full reconciliation rebuilds the cache and
+ * advances the watermark, so a resumed old session is eventually re-counted.
+ */
+export interface SkillStatsCheckpoint {
+  /** The rolling-window configuration this checkpoint was built for (0 = all history). */
+  windowDays: number
+  /** Watermark: every session with header.createdAt < this value is frozen. */
+  frozenBefore: number
+  /** Per-session counts of finalized sessions, keyed by session id. */
+  frozenSessions: Record<string, { createdAt: number; counts: Record<string, { count: number; lastUsed: number }> }>
+  /** Epoch ms of the last full reconciliation (drives the daily cadence). */
+  lastFullReconcile: number
+}
+
 /** JSON error body shared by every route. */
 export interface ErrorResponse {
   error: string
@@ -219,6 +238,10 @@ export interface HubConfig {
   showUseTime?: boolean
   /** Show group-header usage summaries (count + last used). Default true. */
   showGroupSummary?: boolean
+  /** 统计滚动窗口天数：只统计最近 N 天的使用；0 = 全部历史。默认 0。 */
+  statsWindowDays?: number
+  /** 自动统计扫描间隔（分钟，最小 1）。默认 5。 */
+  statsScanMinutes?: number
 }
 
 /**
@@ -237,6 +260,10 @@ export type HubSettingsValue = {
   dotModelColor?: string
   /** User-invocable dot color (#rrggbb); absent means the panel default. */
   dotUserColor?: string
+  /** 统计滚动窗口天数（0 = 全部历史）。 */
+  statsWindowDays?: number
+  /** 自动统计扫描间隔（分钟）。 */
+  statsScanMinutes?: number
 }
 
 /**
@@ -250,26 +277,39 @@ export const HUB_CONFIG_DEFAULTS = {
   showUseCount: true,
   showUseTime: true,
   showGroupSummary: true,
+  statsWindowDays: 14,
+  statsScanMinutes: 5,
 } as const
 
 /**
  * Resolve the effective hub config: saved sidecar overrides win over the
  * cordis composition entry (the web card owns runtime config), missing
  * booleans fall back to HUB_CONFIG_DEFAULTS, and dot colors pass through
- * (saved first, then base) only when set.
+ * (saved first, then base) only when set. Numeric stats knobs are clamped to
+ * their sane ranges (window ≥ 0, scan interval ≥ 1 minute).
  */
 export function resolveHubConfig(saved: Partial<HubConfig>, base: Partial<HubConfig> = {}): HubConfig {
   const dotModelColor = saved.dotModelColor !== undefined ? saved.dotModelColor : base.dotModelColor
   const dotUserColor = saved.dotUserColor !== undefined ? saved.dotUserColor : base.dotUserColor
+  const windowDays = clampNumber(saved.statsWindowDays ?? base.statsWindowDays, 0) ?? HUB_CONFIG_DEFAULTS.statsWindowDays
+  const scanMinutes = clampNumber(saved.statsScanMinutes ?? base.statsScanMinutes, 1) ?? HUB_CONFIG_DEFAULTS.statsScanMinutes
   return {
     enabled: saved.enabled ?? base.enabled ?? HUB_CONFIG_DEFAULTS.enabled,
     announceToAgent: saved.announceToAgent ?? base.announceToAgent ?? HUB_CONFIG_DEFAULTS.announceToAgent,
     showUseCount: saved.showUseCount ?? base.showUseCount ?? HUB_CONFIG_DEFAULTS.showUseCount,
     showUseTime: saved.showUseTime ?? base.showUseTime ?? HUB_CONFIG_DEFAULTS.showUseTime,
     showGroupSummary: saved.showGroupSummary ?? base.showGroupSummary ?? HUB_CONFIG_DEFAULTS.showGroupSummary,
+    statsWindowDays: windowDays,
+    statsScanMinutes: scanMinutes,
     ...(dotModelColor !== undefined ? { dotModelColor } : {}),
     ...(dotUserColor !== undefined ? { dotUserColor } : {}),
   }
+}
+
+/** Clamp a numeric override into a valid value; undefined/invalid stays undefined. */
+function clampNumber(value: unknown, min: number): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min) return undefined
+  return Math.floor(value)
 }
 
 /** HEX color validation shared by host routes and the settings card. */
@@ -300,6 +340,10 @@ export interface ConfigRequest {
   dotModelColor?: string | null
   /** Set the dot color; null clears the saved override so it re-inherits the default. */
   dotUserColor?: string | null
+  /** 统计滚动窗口天数（0 = 全部历史）；null 清除覆盖回默认。 */
+  statsWindowDays?: number | null
+  /** 自动统计扫描间隔（分钟）；null 清除覆盖回默认。 */
+  statsScanMinutes?: number | null
 }
 
 /** One market source: a tracked upstream repo plus its pinned version. */

@@ -396,7 +396,7 @@ describe('skill-hub routes', () => {
     expect(res.status).toBe(200)
     const body = res.json() as ConfigResponse
     expect(body.ok).toBe(true)
-    expect(body.config).toEqual({ enabled: false, announceToAgent: true, showUseCount: true, showUseTime: true, showGroupSummary: true })
+    expect(body.config).toEqual({ enabled: false, announceToAgent: true, showUseCount: true, showUseTime: true, showGroupSummary: true, statsWindowDays: 14, statsScanMinutes: 5 })
     expect(body.saved).toEqual({ enabled: false })
   })
 

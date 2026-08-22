@@ -236,3 +236,51 @@ export function ColorField(props: ColorFieldProps): ReactElement {
     </div>
   )
 }
+
+/** One staged numeric field: a numeric draft text input with inherit/reset semantics. */
+export interface NumberFieldProps {
+  id: string
+  label: string
+  hint: string
+  /** Placeholder shown while the field inherits its default. */
+  inheritLabel: string
+  overriddenLabel: string
+  resetLabel: string
+  disabled: boolean
+  /** Effective number when overridden; empty string means inherit. */
+  text: string
+  overridden: boolean
+  invalid?: boolean
+  onEdit: (text: string) => void
+  onReset: () => void
+}
+
+export function NumberField(props: NumberFieldProps): ReactElement {
+  return (
+    <div className={css.field}>
+      <div className={css.head}>
+        <label className={css.label} htmlFor={props.id}>{props.label}</label>
+        {props.overridden ? (
+          <span className={css.badges}>
+            <span className={css.badge}>{props.overriddenLabel}</span>
+            <button type='button' className={css.reset} disabled={props.disabled} onClick={props.onReset}>
+              {props.resetLabel}
+            </button>
+          </span>
+        ) : null}
+      </div>
+      <input
+        id={props.id}
+        type='text'
+        inputMode='numeric'
+        className={css.input}
+        value={props.text}
+        disabled={props.disabled}
+        placeholder={props.inheritLabel}
+        aria-invalid={props.invalid === true}
+        onChange={(event) => { props.onEdit(event.target.value) }}
+      />
+      <p className={css.hint}>{props.hint}</p>
+    </div>
+  )
+}

@@ -9,8 +9,8 @@
 import type { ReactElement } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { ColorField, PluginSettingsCard, SwitchField } from './settings-card.tsx'
-import { booleanField, CardForm, colorField, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
+import { ColorField, NumberField, PluginSettingsCard, SwitchField } from './settings-card.tsx'
+import { booleanField, CardForm, colorField, numberField, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
 // Single source for the TS-side dot defaults (the panel CSS mirrors these).
 import { DEFAULT_DOT_MODEL_COLOR, DEFAULT_DOT_USER_COLOR } from './panel/format.ts'
 // Re-export for any consumer that imported them from the card before the move.
@@ -25,6 +25,8 @@ export interface SkillHubSettingsState extends CardShell {
   showUseCount: FieldState
   showUseTime: FieldState
   showGroupSummary: FieldState
+  statsWindowDays: FieldState
+  statsScanMinutes: FieldState
 }
 
 /** The business face the card's slot registration injects. */
@@ -50,7 +52,7 @@ export class SkillHubSettingsCardController {
 
   /** @param scope - the hub settings scope the card edits (FormScope-compatible). */
   constructor(scope: FormScope) {
-    this.form = new CardForm(scope, [booleanField('enabled'), booleanField('announceToAgent'), colorField('dotModelColor'), colorField('dotUserColor'), booleanField('showUseCount'), booleanField('showUseTime'), booleanField('showGroupSummary')])
+    this.form = new CardForm(scope, [booleanField('enabled'), booleanField('announceToAgent'), colorField('dotModelColor'), colorField('dotUserColor'), booleanField('showUseCount'), booleanField('showUseTime'), booleanField('showGroupSummary'), numberField('statsWindowDays', { min: 0, max: 3650 }), numberField('statsScanMinutes', { min: 1, max: 1440 })])
     this.store = this.form.bind(() => this.projection())
   }
 
@@ -64,6 +66,8 @@ export class SkillHubSettingsCardController {
       showUseCount: this.form.field('showUseCount'),
       showUseTime: this.form.field('showUseTime'),
       showGroupSummary: this.form.field('showGroupSummary'),
+      statsWindowDays: this.form.field('statsWindowDays'),
+      statsScanMinutes: this.form.field('statsScanMinutes'),
     }
   }
 
@@ -163,6 +167,30 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
         {...state.showGroupSummary}
         onEdit={(text) => { props.edit('showGroupSummary', text) }}
         onReset={() => { props.resetField('showGroupSummary') }}
+      />
+      <NumberField
+        id='skill-hub-stats-window-days'
+        label={t('settings.statsWindowDays')}
+        hint={t('settings.statsWindowDaysHint')}
+        inheritLabel={t('settings.inherit')}
+        {...fieldProps}
+        text={state.statsWindowDays.text}
+        overridden={state.statsWindowDays.overridden}
+        invalid={state.statsWindowDays.invalid}
+        onEdit={(text) => { props.edit('statsWindowDays', text) }}
+        onReset={() => { props.resetField('statsWindowDays') }}
+      />
+      <NumberField
+        id='skill-hub-stats-scan-minutes'
+        label={t('settings.statsScanMinutes')}
+        hint={t('settings.statsScanMinutesHint')}
+        inheritLabel={t('settings.inherit')}
+        {...fieldProps}
+        text={state.statsScanMinutes.text}
+        overridden={state.statsScanMinutes.overridden}
+        invalid={state.statsScanMinutes.invalid}
+        onEdit={(text) => { props.edit('statsScanMinutes', text) }}
+        onReset={() => { props.resetField('statsScanMinutes') }}
       />
     </PluginSettingsCard>
   )
