@@ -7,7 +7,7 @@
  */
 
 import { useState, type ReactElement } from 'react'
-import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconChevronDownOutline14 } from './icons.tsx'
 import type { HubKey } from './locales.ts'
 import type { CardShell } from './settings-form.ts'
 import css from './settings-card.module.css'

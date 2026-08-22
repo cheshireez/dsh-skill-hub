@@ -14,7 +14,7 @@
 
 import { useState } from 'react'
 import type { WritableRoot } from '../../protocol.ts'
-import { IconSkillOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconSkillOutline16 } from '../icons.tsx'
 import type { SkillHubApi } from '../api.ts'
 import { tt } from '../helpers.ts'
 import { PRIVATE_SOURCE, type SortKey } from '../grouping.ts'

@@ -140,7 +140,7 @@ description: One line describing when the agent should use this skill.
 What the skill does, when to use it, and what output is expected.
 ```
 
-Requires Node `^22.19.0 || >=24.0.0` and a dsh web deployment (`0.1.0-rc.7` SDK family).
+Requires Node `^22.19.0 || >=24.0.0` and a dsh web deployment (compatible with the `0.1.0-rc.7` and `0.1.1-rc.2` SDK families; peer ranges cover both and forward `0.1.x` lines).
 
 ## How it works
 

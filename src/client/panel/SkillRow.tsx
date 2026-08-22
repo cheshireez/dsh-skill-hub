@@ -5,7 +5,7 @@
 
 import type { JSX, KeyboardEvent } from 'react'
 import type { CatalogSkill } from '../../protocol.ts'
-import { IconTrashOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconTrashOutline16 } from '../icons.tsx'
 import { tt } from '../helpers.ts'
 import { dotStyle, relativeTimeText } from './format.ts'
 import type { SkillHubState } from './useSkillHub.ts'
