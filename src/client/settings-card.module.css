@@ -8,6 +8,7 @@
 .headText { flex-direction: column; flex: 1; gap: 4px; min-width: 0; display: flex; }
 .name { color: var(--dsw-alias-label-primary); font-size: 15px; font-weight: 600; line-height: 1.4; }
 .description { color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 1.5; }
+.versionTag { font-size: 12px; font-weight: 500; opacity: .45; margin-left: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; vertical-align: 1px; }
 .pending { white-space: nowrap; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); border-radius: 999px; flex: none; padding: 1px 8px; font-size: 11px; font-weight: 500; line-height: 17px; }
 .chevron, .chevronOpen { color: var(--dsw-alias-label-tertiary); flex: none; transition: transform .16s; }
 .chevronOpen { transform: rotate(180deg); }

@@ -719,7 +719,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
       skipGate: true,
       handler: async ({ req, res, body }) => {
         if (req.method === 'GET') {
-          writeJson(res, 200, { ok: true, config: configOf(deps), saved: savedOf(deps) } satisfies ConfigResponse)
+          writeJson(res, 200, { ok: true, pluginVersion: CURRENT_VERSION, config: configOf(deps), saved: savedOf(deps) } satisfies ConfigResponse)
           return
         }
         const raw = body
@@ -759,7 +759,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
         } else {
           config = await deps.updateConfig(patch)
         }
-        writeJson(res, 200, { ok: true, config, saved: savedOf(deps) } satisfies ConfigResponse)
+        writeJson(res, 200, { ok: true, pluginVersion: CURRENT_VERSION, config, saved: savedOf(deps) } satisfies ConfigResponse)
       },
     }),
     // --------------------------------------------------------------- market

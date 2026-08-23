@@ -20,6 +20,8 @@ export interface PluginSettingsCardProps {
   titleKey: HubKey
   /** Locale key of the card description. */
   descriptionKey: HubKey
+  /** 插件自身版本（可选）：显示在标题旁的小徽标；缺省不渲染。 */
+  version?: string
   /** The form shell state. */
   state: CardShell
   onSave: () => void
@@ -48,7 +50,7 @@ export function PluginSettingsCard(props: PluginSettingsCardProps): ReactElement
       onClick={() => { setOpen(!open) }}
     >
       <span className={css.headText}>
-        <span className={css.name}>{title}</span>
+        <span className={css.name}>{title}{props.version !== undefined ? <span className={css.versionTag}>v{props.version}</span> : null}</span>
         <span className={css.description}>{props.t(props.descriptionKey)}</span>
       </span>
       {state.dirty ? <span className={css.pending}>{props.t('settings.unsaved')}</span> : null}

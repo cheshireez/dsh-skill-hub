@@ -6,9 +6,10 @@
  * namespace, so the plugin shows up in Settings → 插件 on dsh rc.7+.
  */
 
-import type { ReactElement } from 'react'
+import { useEffect, useState, type ReactElement } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import { SkillHubApi } from './api.ts'
 import { ColorField, NumberField, PluginSettingsCard, SwitchField } from './settings-card.tsx'
 import { booleanField, CardForm, colorField, numberField, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
 // Single source for the TS-side dot defaults (the panel CSS mirrors these).
@@ -91,6 +92,15 @@ export class SkillHubSettingsCardController {
 export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactElement {
   const { t } = props
   const state = props.useSkillHubSettingsCard((snapshot) => snapshot)
+  // 插件自身版本：挂载时从 config 路由取一次（与面板标题徽标同源），失败静默不显示。
+  const [version, setVersion] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    let cancelled = false
+    void new SkillHubApi().config()
+      .then((res) => { if (!cancelled && res.ok) setVersion(res.pluginVersion) })
+      .catch(() => { /* 版本徽标是装饰性的，失败不提示 */ })
+    return () => { cancelled = true }
+  }, [])
   const disabled = !state.writable
   const fieldProps = {
     overriddenLabel: t('settings.overridden'),
@@ -102,6 +112,7 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
       t={t}
       titleKey='settings.title'
       descriptionKey='settings.description'
+      version={version}
       state={state}
       onSave={props.save}
       onDiscard={props.discard}

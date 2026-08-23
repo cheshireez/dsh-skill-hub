@@ -181,7 +181,7 @@ export const zh = {
   'form.success': '已创建：',
   'form.error': '创建失败：',
   'err.dismiss': '知道了',
-  'settings.title': 'Skill Hub',
+  'settings.title': '技能中枢',
   'settings.description': '管理 dsh 本地技能目录：浏览、分组、来源同步与新建。',
   'settings.enabled': '启用插件',
   'settings.enabledHint': '关闭后技能中枢的路由、入口与公告全部下线。',

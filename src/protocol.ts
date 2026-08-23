@@ -318,6 +318,8 @@ export const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i
 /** GET /api/skill-hub/config */
 export interface ConfigResponse {
   ok: true
+  /** 已安装插件自身的版本号（package.json version），设置卡标题旁显示。 */
+  pluginVersion: string
   /** Effective configuration (saved overrides merged over the defaults). */
   config: HubConfig
   /** Raw user overrides persisted in the sidecar (absent fields inherit defaults). */
