@@ -18,13 +18,16 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { SkillDefinition, SkillSummary } from '@deepseek-ai/dsh-skill'
 import { isSkillName } from '@deepseek-ai/dsh-skill'
+import { randomUUID } from 'node:crypto'
 import {
+  cleanupLeftoverImportDirs,
   collectRepoSkillFiles,
   diffRemoteSkills,
   discoverRepoEntries,
   downloadRepoSkill,
   getLatestCommit,
   getLatestReleaseTag,
+  isAbortError,
   listRepoBranches,
   loadRepoTree,
   loadRepoTreeAt,
@@ -38,13 +41,16 @@ import {
 import {
   SKILL_HUB_API,
   type CatalogResponse,
+  type RepoImportCancelRequest,
+  type RepoImportCancelResponse,
+  type RepoImportProgressResponse,
+  type RepoImportRequest,
+  type RepoImportResponse,
   type CatalogSkill,
   type CollectionGroup,
   type ConfigResponse,
   type CreateResponse,
   type RepoDiscoverResponse,
-  type RepoImportRequest,
-  type RepoImportResponse,
   type CreateRequest,
   type ErrorResponse,
   type GroupsResponse,
@@ -74,6 +80,12 @@ import {
   type TagDeleteResponse,
   type TagMembersRequest,
   type TagMembersResponse,
+  type TagReorderRequest,
+  type TagReorderResponse,
+  type CollectionReorderRequest,
+  type CollectionReorderResponse,
+  type SourceGroupReorderRequest,
+  type SourceGroupReorderResponse,
   type TagSaveRequest,
   type TagSaveResponse,
   type ToggleBatchRequest,
@@ -272,17 +284,23 @@ async function resolveWritableSkill(deps: SkillHubRouteDeps, name: string, cwd?:
 
 /** 系统集合组 + 用户 tag + origin 映射（groups 路由的数据源）。 */
 async function buildGroups(deps: SkillHubRouteDeps): Promise<GroupsResponse> {
-  const [tags, origins] = await Promise.all([deps.store.listTags(), deps.store.listOrigins()])
+  const [tags, origins, collectionOrder, sourceGroupOrder] = await Promise.all([deps.store.listTags(), deps.store.listOrigins(), deps.store.getCollectionOrder(), deps.store.getSourceGroupOrder()])
   const byCollection = new Map<string, string[]>()
   for (const [skillName, origin] of Object.entries(origins)) {
     const list = byCollection.get(origin)
     if (list === undefined) byCollection.set(origin, [skillName])
     else list.push(skillName)
   }
+  const orderIndex = new Map(collectionOrder.map((name, i) => [name, i] as const))
   const collections: CollectionGroup[] = [...byCollection.entries()]
     .map(([name, skillNames]) => ({ name, skillNames: [...skillNames].sort((a, b) => a.localeCompare(b)) }))
-    .sort((a, b) => a.name.localeCompare(b.name))
-  return { ok: true, tags, collections, origins }
+    .sort((a, b) => {
+      const ai = orderIndex.has(a.name) ? orderIndex.get(a.name)! : Infinity
+      const bi = orderIndex.has(b.name) ? orderIndex.get(b.name)! : Infinity
+      if (ai !== bi) return ai - bi
+      return a.name.localeCompare(b.name)
+    })
+  return { ok: true, tags, collections, origins, ...(sourceGroupOrder.length > 0 ? { sourceGroupOrder } : {}), ...(collectionOrder.length > 0 ? { collectionOrder } : {}) }
 }
 
 /** 目录中存在的技能名集合（tag 成员校验用）：启用目录 ∪ 已禁用名单，避免成员因禁用而丢失。 */
@@ -434,6 +452,41 @@ const lastSourceCheck = new Map<string, number>()
 /** Last successful market update check per repo (same throttle). */
 const lastMarketCheck = new Map<string, number>()
 
+/** Async import job (B方案：jobId + 轮询，选项2后台继续) */
+interface ImportJob {
+  jobId: string
+  repo: string
+  ref: string
+  total: number
+  done: number
+  current?: string
+  currentFile?: string
+  totalBytes: number
+  downloadedBytes: number
+  startTime: number
+  imported: Array<{ name: string; origin: string; path: string }>
+  skipped: Array<{ name: string; reason: 'exists' }>
+  failed: Array<{ name: string; error: string }>
+  status: 'running' | 'done' | 'cancelled' | 'error'
+  error?: string
+  controller: AbortController
+  createdAt: number
+}
+const importJobs = new Map<string, ImportJob>()
+const IMPORT_JOB_TTL_MS = 5 * 60_000
+const IMPORT_JOB_MAX = 100
+function gcImportJobs(): void {
+  if (importJobs.size > 500) importJobs.clear()
+  const now = Date.now()
+  for (const [id, job] of importJobs) {
+    if (job.status !== 'running' && now - job.createdAt > IMPORT_JOB_TTL_MS) importJobs.delete(id)
+  }
+  if (importJobs.size > IMPORT_JOB_MAX) {
+    const sorted = [...importJobs.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)
+    for (let i = 0; i < sorted.length - IMPORT_JOB_MAX; i++) importJobs.delete(sorted[i][0])
+  }
+}
+
 /** Replace one skill directory with a fresh download; restores the old dir on failure. */
 async function replaceSkillDir(targetDir: string, download: () => Promise<void>): Promise<void> {
   // 点前缀：发现扫描跳过点开头的目录（与导入临时目录 .<name>.import- 同一
@@ -566,12 +619,28 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
         const name = typeof request.name === 'string' ? request.name : ''
         if (name === '') { writeError(res, 400, 'name is required'); return }
         const resolved = await resolveWritableSkill(deps, name, typeof request.cwd === 'string' ? request.cwd : undefined)
-        if (!resolved.ok) { writeError(res, resolved.status, resolved.error); return }
+        // 已禁用的技能不在 registry 中，resolve 会 404，这里单独处理：允许整组删除未开启的技能
+        let trashResult: { path: string; source: string } | null = null
+        if (!resolved.ok) {
+          const disabled = await deps.store.getDisabled(name)
+          if (disabled !== undefined) {
+            // 禁用态：SKILL.md.disabled 或 *.md.disabled，直接将其所在技能整体移入回收站
+            const isBundleDisabled = disabled.path.endsWith('SKILL.md.disabled')
+            const sourceToTrash = isBundleDisabled ? dirname(disabled.path) : disabled.path
+            const trashDir = join(dirname(sourceToTrash), '.trash')
+            await mkdir(trashDir, { recursive: true })
+            const target = join(trashDir, basename(sourceToTrash) + '-' + Date.now())
+            await rename(sourceToTrash, target)
+            trashResult = { path: target, source: sourceToTrash }
+          } else {
+            writeError(res, resolved.status, resolved.error); return
+          }
+        }
         // 入回收站前快照来源归属与场景成员：恢复时把它们加回来，否则恢复
         // 后的技能会丢失来源（变成「个人技能」）和场景分组。
         const tracked = await deps.store.getSourceForSkill(name)
         const tagIds = (await deps.store.listTags()).filter((tag) => tag.skillNames.includes(name)).map((tag) => tag.id)
-        const { path, source } = await trashSkill(resolved.path)
+        const { path, source } = trashResult ?? await trashSkill((resolved as { ok: true; path: string }).path)
         await deps.store.addTrash({
           name,
           path,
@@ -897,7 +966,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
       },
     }),
     // ---------------------------------------------------------------- repo
-    // Discover importable skills in a public GitHub repo (skills/ + design-templates/).
+    // Discover importable skills in a public GitHub repo (any top-level root containing SKILL.md).
     route({
       path: SKILL_HUB_API.repo,
       methods: ['GET'],
@@ -934,10 +1003,9 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
         writeJson(res, 200, { ok: true, repo, ref: resolvedRef, entries } satisfies RepoDiscoverResponse)
       },
     }),
-    // ----------------------------------------------------------- repo/import
-    // Install selected repo skills, preserving full skill directories and
-    // recording the upstream source (repo + commit snapshot + manifest) so
-    // they form one tracked collection group.
+    // ----------------------------------------------------------- repo/import  B方案 Job
+    // Install selected repo skills — now async job (B方案：轮询 + 选项2后台继续)
+    // POST returns jobId instantly (<500ms), GET /progress polls for done.
     route({
       path: SKILL_HUB_API.repoImport,
       methods: ['POST'],
@@ -950,59 +1018,162 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
         const parsed = normalizeRepoInput(input)
         if (parsed === null) { writeError(res, 400, 'repo must be owner/repo or a github.com URL'); return }
         const repo = repoSlug(parsed)
-        // The ref the discovery ran against must drive this import too, so
-        // the tree, commit snapshot, and recorded source ref all agree
-        // (falls back to the input's own @ref when the client omitted it).
         const ref = typeof request.ref === 'string' && request.ref !== '' ? request.ref : parsed.ref
         const { ref: resolvedRef, tree } = await loadRepoTree(repo, ref)
         const existing = await knownSkillNames(deps)
         const entries = discoverRepoEntries(tree, repo, existing)
         const byPath = new Map(entries.map((entry) => [entry.path, entry]))
         const selected = paths.map((path) => byPath.get(path)).filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
+        if (selected.length === 0) { writeError(res, 400, 'no matching skills for selected paths'); return }
         if (selected.length > 500) { writeError(res, 400, 'select at most 500 skills per import'); return }
         const totalBytes = selected.reduce((sum, entry) => sum + entry.totalBytes, 0)
         if (totalBytes > 200 * 1024 * 1024) { writeError(res, 400, 'selected skills exceed the 200MB import limit'); return }
 
-        // Snapshot the upstream commit for the source record (best-effort:
-        // a failure still imports, just with an unverified snapshot).
         let commitSha = ''
         try {
           const latest = await getLatestCommit(repo, resolvedRef)
           commitSha = latest.commitSha
         } catch {
-          // source record keeps an empty snapshot; first check backfills it
+          // empty snapshot ok
         }
 
-        const imported: RepoImportResponse['imported'] = []
-        const skipped: RepoImportResponse['skipped'] = []
-        const failed: RepoImportResponse['failed'] = []
-        const targetRoot = rootPath('user-dsh', homeOf(deps))
-        await mkdir(targetRoot, { recursive: true })
-        // 导入的技能与新建技能一样自动归入默认场景「通用」，否则它们在
-        // 场景 tab 里不可见（来源集合只出现在来源 tab）。
-        const defaultTag = await deps.store.getDefaultTag()
-        for (const entry of selected) {
-          if (entry.existing) {
-            skipped.push({ name: entry.name, reason: 'exists' })
-            continue
-          }
-          if (await pathExists(join(targetRoot, entry.name))) {
-            skipped.push({ name: entry.name, reason: 'exists' })
-            continue
-          }
-          const files = collectRepoSkillFiles(tree, entry.dir)
-          try {
-            const result = await downloadRepoSkill(repo, resolvedRef, entry, files, targetRoot)
-            await deps.store.addSourceSkill(repo, entry.root, commitSha, resolvedRef, entry.name)
-            await deps.store.mergeSourceManifest(repo, skillManifest(tree, entry.dir), entry.dir)
-            if (defaultTag !== undefined) await deps.store.addSkillToTag(defaultTag.id, entry.name)
-            imported.push({ name: entry.name, origin: entry.origin, path: result.skillPath })
-          } catch (error) {
-            failed.push({ name: entry.name, error: error instanceof Error ? error.message : String(error) })
-          }
+        const jobId = 'imp_' + randomUUID().slice(0, 8)
+        const controller = new AbortController()
+        const now = Date.now()
+        const job: ImportJob = {
+          jobId,
+          repo,
+          ref: resolvedRef,
+          total: selected.length,
+          done: 0,
+          totalBytes,
+          downloadedBytes: 0,
+          startTime: now,
+          imported: [],
+          skipped: [],
+          failed: [],
+          status: 'running',
+          controller,
+          createdAt: now,
         }
-        deps.invalidate?.()
-        writeJson(res, 200, { ok: true, imported, skipped, failed } satisfies RepoImportResponse)
+        gcImportJobs()
+        importJobs.set(jobId, job)
+
+        // 启动时顺手清理一次残留临时目录（best-effort，不阻塞响应）
+        const targetRootEarly = rootPath('user-dsh', homeOf(deps))
+        void cleanupLeftoverImportDirs(targetRootEarly).catch(() => {})
+
+        // 后台执行，不阻塞响应（选项2：关面板也继续跑，唯有 /cancel 才 abort）
+        void (async () => {
+          const targetRoot = rootPath('user-dsh', homeOf(deps))
+          await mkdir(targetRoot, { recursive: true })
+          const defaultTag = await deps.store.getDefaultTag()
+          let needInvalidate = false
+          for (const entry of selected) {
+            if (controller.signal.aborted) break
+            job.current = entry.name
+            job.currentFile = entry.dir + '/SKILL.md'
+            if (entry.existing) {
+              job.skipped.push({ name: entry.name, reason: 'exists' })
+              job.downloadedBytes += entry.totalBytes
+              job.done += 1
+              continue
+            }
+            if (await pathExists(join(targetRoot, entry.name))) {
+              job.skipped.push({ name: entry.name, reason: 'exists' })
+              job.downloadedBytes += entry.totalBytes
+              job.done += 1
+              continue
+            }
+            if (controller.signal.aborted) break
+            const files = collectRepoSkillFiles(tree, entry.dir)
+            try {
+              const result = await downloadRepoSkill(repo, resolvedRef, entry, files, targetRoot, fetch, controller.signal, (bytes, file) => {
+                job.downloadedBytes += bytes
+                job.currentFile = entry.dir + '/' + file
+              })
+              await deps.store.addSourceSkill(repo, entry.root, commitSha, resolvedRef, entry.name)
+              await deps.store.mergeSourceManifest(repo, skillManifest(tree, entry.dir), entry.dir)
+              if (defaultTag !== undefined) await deps.store.addSkillToTag(defaultTag.id, entry.name)
+              job.imported.push({ name: entry.name, origin: entry.origin, path: result.skillPath })
+              needInvalidate = true
+            } catch (error) {
+              if (isAbortError(error) || controller.signal.aborted) {
+                // 取消时不记为 failed，保留已完成的 imported/skipped，直接跳出
+                break
+              }
+              job.failed.push({ name: entry.name, error: error instanceof Error ? error.message : String(error) })
+            } finally {
+              job.done += 1
+            }
+          }
+          if (controller.signal.aborted) {
+            job.status = 'cancelled'
+            job.current = undefined
+            job.currentFile = undefined
+          } else {
+            job.status = 'done'
+            job.current = undefined
+            job.currentFile = undefined
+            // 确保字节进度最终对齐（避免浮点/并发尾差）
+            job.downloadedBytes = job.totalBytes
+          }
+          if (needInvalidate) deps.invalidate?.()
+        })().catch((error) => {
+          job.status = 'error'
+          job.error = error instanceof Error ? error.message : String(error)
+          job.current = undefined
+          job.currentFile = undefined
+        })
+
+        writeJson(res, 200, { ok: true, jobId, total: selected.length, totalBytes } satisfies RepoImportResponse)
+      },
+    }),
+    // 进度轮询（含字节级进度和速度）
+    route({
+      path: SKILL_HUB_API.repoImportProgress,
+      methods: ['GET'],
+      handler: async ({ res, url }) => {
+        const jobId = queryParam(url, 'jobId') ?? ''
+        if (jobId === '') { writeError(res, 400, 'jobId is required'); return }
+        const job = importJobs.get(jobId)
+        if (job === undefined) { writeError(res, 404, 'import job not found: ' + jobId); return }
+        const elapsedSec = Math.max(0.5, (Date.now() - job.startTime) / 1000)
+        const bytesPerSecond = job.status === 'running' ? Math.round(job.downloadedBytes / elapsedSec) : undefined
+        writeJson(res, 200, {
+          ok: true,
+          jobId: job.jobId,
+          status: job.status,
+          total: job.total,
+          done: job.done,
+          ...(job.current !== undefined ? { current: job.current } : {}),
+          ...(job.currentFile !== undefined ? { currentFile: job.currentFile } : {}),
+          totalBytes: job.totalBytes,
+          downloadedBytes: job.downloadedBytes,
+          ...(bytesPerSecond !== undefined ? { bytesPerSecond } : {}),
+          imported: [...job.imported],
+          skipped: [...job.skipped],
+          failed: [...job.failed],
+          ...(job.error !== undefined ? { error: job.error } : {}),
+        } satisfies RepoImportProgressResponse)
+      },
+    }),
+    // 取消任务（选项2：唯有点取消才停）
+    route({
+      path: SKILL_HUB_API.repoImportCancel,
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as RepoImportCancelRequest
+        const jobId = typeof request.jobId === 'string' ? request.jobId : ''
+        if (jobId === '') { writeError(res, 400, 'jobId is required'); return }
+        const job = importJobs.get(jobId)
+        if (job === undefined) { writeError(res, 404, 'import job not found: ' + jobId); return }
+        if (job.status === 'running') {
+          job.controller.abort()
+          job.status = 'cancelled'
+        }
+        writeJson(res, 200, { ok: true, jobId: job.jobId, status: job.status as 'cancelled' | 'done' } satisfies RepoImportCancelResponse)
       },
     }),
     // -------------------------------------------------------------- update
@@ -1068,22 +1239,73 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
         writeJson(res, 200, { ok: true, tags: await deps.store.listTags() } satisfies TagMembersResponse)
       },
     }),
+    // ---------------------------------------------------------- tag/reorder
+    // 拖拽重排场景分组顺序
+    route({
+      path: SKILL_HUB_API.tagReorder,
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as TagReorderRequest
+        const orderedIds = Array.isArray(request.orderedIds) ? request.orderedIds.filter((id): id is string => typeof id === 'string' && id !== '') : []
+        try {
+          const tags = await deps.store.reorderTags(orderedIds)
+          writeJson(res, 200, { ok: true, tags } satisfies TagReorderResponse)
+        } catch (error) {
+          if (error instanceof StoreError) { writeError(res, error.kind === 'validation' ? 400 : error.kind === 'not-found' ? 404 : 409, error.message); return }
+          throw error
+        }
+      },
+    }),
+    // ------------------------------------------------- collection/reorder
+    // 拖拽重排来源集合顺序
+    route({
+      path: SKILL_HUB_API.collectionReorder,
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as CollectionReorderRequest
+        const orderedNames = Array.isArray(request.orderedNames) ? request.orderedNames.filter((n): n is string => typeof n === 'string' && n !== '') : []
+        const order = await deps.store.reorderCollections(orderedNames)
+        const groups = await buildGroups(deps)
+        writeJson(res, 200, { ok: true, collections: groups.collections, order } satisfies CollectionReorderResponse)
+      },
+    }),
+    // ------------------------------------------------ source-group/reorder
+    // 拖拽重排来源顶层分组（project / collections / personal 统一顺序）
+    route({
+      path: SKILL_HUB_API.sourceGroupReorder,
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as SourceGroupReorderRequest
+        const orderedKeys = Array.isArray(request.orderedKeys) ? request.orderedKeys.filter((k): k is string => typeof k === 'string' && k !== '') : []
+        const order = await deps.store.reorderSourceGroups(orderedKeys)
+        writeJson(res, 200, { ok: true, order } satisfies SourceGroupReorderResponse)
+      },
+    }),
     // ------------------------------------------------------------- sources
     // 来源列表 + 派生 origin 映射 + 集合组 + 回收站。
     route({
       path: SKILL_HUB_API.sources,
       methods: ['GET'],
       handler: async ({ res }) => {
-        const [sources, origins, trash] = await Promise.all([deps.store.listSources(), deps.store.listOrigins(), deps.store.listTrash()])
+        const [sources, origins, trash, collectionOrder] = await Promise.all([deps.store.listSources(), deps.store.listOrigins(), deps.store.listTrash(), deps.store.getCollectionOrder()])
         const byCollection = new Map<string, string[]>()
         for (const [skillName, origin] of Object.entries(origins)) {
           const list = byCollection.get(origin)
           if (list === undefined) byCollection.set(origin, [skillName])
           else list.push(skillName)
         }
+        const orderIndex = new Map(collectionOrder.map((name, i) => [name, i] as const))
         const collections: CollectionGroup[] = [...byCollection.entries()]
           .map(([name, skillNames]) => ({ name, skillNames: [...skillNames].sort((a, b) => a.localeCompare(b)) }))
-          .sort((a, b) => a.name.localeCompare(b.name))
+          .sort((a, b) => {
+            const ai = orderIndex.has(a.name) ? orderIndex.get(a.name)! : Infinity
+            const bi = orderIndex.has(b.name) ? orderIndex.get(b.name)! : Infinity
+            if (ai !== bi) return ai - bi
+            return a.name.localeCompare(b.name)
+          })
         writeJson(res, 200, { ok: true, sources, origins, collections, trash } satisfies SourcesResponse)
       },
     }),

@@ -6,7 +6,7 @@
  * and tag-editor views without violating the rules of hooks.
  */
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import type {
   CatalogResponse,
   CatalogSkill,
@@ -16,6 +16,7 @@ import type {
   MarketCheckResponse,
   MarketSourceRecord,
   RepoDiscoverResponse,
+  RepoImportProgressResponse,
   RepoImportResponse,
   SkillDetail,
   SkillTag,
@@ -96,7 +97,9 @@ export function useSkillHub(api: SkillHubApi) {
   const [scanningRepo, setScanningRepo] = useState<string | null>(null)
   const [repoSelected, setRepoSelected] = useState<ReadonlySet<string>>(new Set())
   const [repoImporting, setRepoImporting] = useState(false)
-  const [repoResult, setRepoResult] = useState<RepoImportResponse | null>(null)
+  const [repoResult, setRepoResult] = useState<RepoImportProgressResponse | null>(null)
+  const [importJobId, setImportJobId] = useState<string | null>(null)
+  const pollAbortRef = useRef<AbortController | null>(null)
   const [search, setSearch] = useState('')
   /** 工作区（项目）路径；空 = 只看用户级技能。 */
   const [workspace, setWorkspace] = useState('')
@@ -132,6 +135,7 @@ export function useSkillHub(api: SkillHubApi) {
   const [conflictDialog, setConflictDialog] = useState<ConflictDialogState | null>(null)
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null)
   const [deleteSkillDialog, setDeleteSkillDialog] = useState<string | null>(null)
+  const [deleteGroupDialog, setDeleteGroupDialog] = useState<{ name: string; skillNames: string[] } | null>(null)
   const [confirmClearTrash, setConfirmClearTrash] = useState(false)
   /** 「全部更新」确认对话框（市场 tab）。 */
   const [updateAllDialog, setUpdateAllDialog] = useState(false)
@@ -146,6 +150,7 @@ export function useSkillHub(api: SkillHubApi) {
   /** 项目级三级树里已细分（按 .dsh/.agents）的项目键。 */
   const [subdividedProjects, setSubdividedProjects] = useState<ReadonlySet<string>>(new Set())
   const [showLegend, setShowLegend] = useState(false)
+  const [editMode, setEditMode] = useState(false)
 
   const toggleGroupCollapse = useCallback((key: string): void => {
     setCollapsedGroups((previous) => {
@@ -483,7 +488,37 @@ export function useSkillHub(api: SkillHubApi) {
     }
   }, [api, deleteSkillDialog, load, loadGroups, loadSources])
 
-  // ----------------------------------------------------------- tag editing
+  /** 打开整组删除确认（来源分组一键删除）。 */
+  const requestDeleteGroup = useCallback((name: string, skillNames: string[]): void => {
+    setDeleteGroupDialog({ name, skillNames })
+  }, [])
+
+  /** 执行整组删除（逐个移入回收站，跳过只读）。 */
+  const runDeleteGroup = useCallback(async (): Promise<void> => {
+    const dialog = deleteGroupDialog
+    if (dialog === null) return
+    setDeleteGroupDialog(null)
+    setTagBusy(true)
+    setLoadError(null)
+    const failures: string[] = []
+    let done = 0
+    for (const name of dialog.skillNames) {
+      try {
+        await api.deleteSkill(name)
+        done += 1
+      } catch (error) {
+        // 只读/不存在的跳过并记录
+        failures.push(name + ': ' + errorMessage(error))
+      }
+    }
+    await Promise.all([load(), loadGroups(), loadSources()])
+    setTagBusy(false)
+    if (failures.length > 0) {
+      setLoadError(`删除整组 "${dialog.name}"：成功 ${done} 个，失败 ${failures.length} 个：` + failures.join('; '))
+    } else if (done > 0) {
+      setSuccessBanner(`已删除整组 "${dialog.name}"：${done} 个技能已移入回收站`)
+    }
+  }, [api, deleteGroupDialog, load, loadGroups, loadSources])
 
   /** 新建一个空 tag 分组。 */
   const createTag = useCallback(async (event: FormEvent): Promise<void> => {
@@ -534,6 +569,91 @@ export function useSkillHub(api: SkillHubApi) {
       setTagBusy(false)
     }
   }, [api, applyTags])
+
+  /** 拖拽重排场景分组 */
+  const reorderTags = useCallback(async (orderedIds: string[]): Promise<void> => {
+    setTagBusy(true)
+    setLoadError(null)
+    try {
+      const tags = await api.reorderTags(orderedIds)
+      applyTags(tags)
+    } catch (error) {
+      const msg = errorMessage(error)
+      if (msg.includes('404') || msg.toLowerCase().includes('not found')) {
+        // 旧宿主无此路由：本地重排
+        const byId = new Map(groupsState?.tags.map((t) => [t.id, t] as const) ?? [])
+        const reordered = orderedIds.map((id) => byId.get(id)).filter((t): t is NonNullable<typeof t> => t !== undefined)
+        if (reordered.length === orderedIds.length) {
+          applyTags(reordered as typeof groupsState extends { tags: infer T } ? T : never)
+          setSuccessBanner('已临时调整顺序（本地生效，重启宿主后持久化）')
+        } else {
+          setLoadError(msg)
+        }
+      } else {
+        setLoadError(msg)
+      }
+    } finally {
+      setTagBusy(false)
+    }
+  }, [api, applyTags, groupsState])
+
+  /** 拖拽重排来源集合 */
+  const reorderCollections = useCallback(async (orderedNames: string[]): Promise<void> => {
+    setTagBusy(true)
+    setLoadError(null)
+    try {
+      const collections = await api.reorderCollections(orderedNames)
+      setGroupsState((prev) => prev === null ? prev : { ...prev, collections })
+      void loadGroups()
+    } catch (error) {
+      const msg = errorMessage(error)
+      // 404 说明宿主仍在跑旧版（需重启后才有新路由），降级为本地即时生效
+      if (msg.includes('404') || msg.toLowerCase().includes('not found')) {
+        setGroupsState((prev) => {
+          if (prev === null) return prev
+          const map = new Map(prev.collections.map((c) => [c.name, c] as const))
+          const reordered = orderedNames.map((n) => map.get(n)).filter((c): c is NonNullable<typeof c> => c !== undefined)
+          // 补上未在 orderedNames 中的集合（新出现的）
+          for (const c of prev.collections) if (!reordered.some((r) => r.name === c.name)) reordered.push(c)
+          return { ...prev, collections: reordered }
+        })
+        setSuccessBanner('已临时调整顺序（本地生效，重启宿主后持久化）')
+      } else {
+        setLoadError(msg)
+      }
+    } finally {
+      setTagBusy(false)
+    }
+  }, [api, loadGroups])
+
+  /** 拖拽重排来源顶层分组（project / col:xxx / personal 全量可拖） */
+  const reorderSourceGroups = useCallback(async (orderedKeys: string[]): Promise<void> => {
+    setTagBusy(true)
+    setLoadError(null)
+    try {
+      await api.reorderSourceGroups(orderedKeys)
+      await loadGroups()
+    } catch (error) {
+      const msg = errorMessage(error)
+      if (msg.includes('404') || msg.toLowerCase().includes('not found')) {
+        // 旧宿主无此路由：本地重排顶层顺序，提示重启后持久化
+        setGroupsState((prev) => {
+          if (prev === null) return prev
+          // 本地重排 collections 以匹配 topOrderedKeys 中的 col:xxx 顺序
+          const colOrder = orderedKeys.filter((k) => k.startsWith('col:')).map((k) => k.slice(4))
+          const map = new Map(prev.collections.map((c) => [c.name, c] as const))
+          const reordered = colOrder.map((n) => map.get(n)).filter((c): c is NonNullable<typeof c> => c !== undefined)
+          for (const c of prev.collections) if (!reordered.some((r) => r.name === c.name)) reordered.push(c)
+          return { ...prev, collections: reordered, sourceGroupOrder: orderedKeys }
+        })
+        setSuccessBanner('已临时调整顺序（本地生效，重启宿主后持久化）')
+      } else {
+        setLoadError(msg)
+      }
+    } finally {
+      setTagBusy(false)
+    }
+  }, [api, loadGroups])
 
   // -------------------------------------------------------------- market
 
@@ -635,22 +755,109 @@ export function useSkillHub(api: SkillHubApi) {
     })
   }, [])
 
-  /** Import every checked, non-existing repo skill, then refresh the hub. */
+  /** Import every checked, non-existing repo skill (B方案：job+轮询+进度). */
   const importRepo = useCallback(async (): Promise<void> => {
     if (repoDiscoverState.status !== 'ready') return
     setRepoImporting(true)
     setRepoResult(null)
+    setImportJobId(null)
     setLoadError(null)
+    let finalProgress: RepoImportProgressResponse | null = null
     try {
-      const result = await api.repoImport(repoDiscoverState.data.repo, [...repoSelected], repoDiscoverState.data.ref ?? undefined)
-      setRepoResult(result)
+      const created = await api.repoImport(repoDiscoverState.data.repo, [...repoSelected], repoDiscoverState.data.ref ?? undefined)
+      setImportJobId(created.jobId)
+      // 初始占位，让进度卡片立刻出现（带真实 totalBytes）
+      setRepoResult({ ok: true, jobId: created.jobId, status: 'running', total: created.total, done: 0, totalBytes: created.totalBytes, downloadedBytes: 0, imported: [], skipped: [], failed: [] })
+      // 轮询直到 done/cancelled/error（800ms 起步 + 退避，避免 276 技能 900 次请求）
+      pollAbortRef.current?.abort()
+      pollAbortRef.current = new AbortController()
+      const signal = pollAbortRef.current.signal
+      let attempt = 0
+      for (;;) {
+        if (signal.aborted) break
+        const delay = Math.min(2000, 800 + attempt * 200)
+        await new Promise((r) => setTimeout(r, delay))
+        if (signal.aborted) break
+        try {
+          const progress = await api.repoImportProgress(created.jobId)
+          setRepoResult(progress)
+          finalProgress = progress
+          if (progress.status !== 'running') {
+            break
+          }
+          attempt = 0
+        } catch (pollError) {
+          // 轮询失败退避重试
+          const msg = errorMessage(pollError)
+          if (msg.includes('not found')) break
+          attempt += 1
+          if (attempt > 8) break
+        }
+      }
       await Promise.all([load(), loadMarket(), loadGroups(), loadSources()])
+    } catch (error) {
+      setLoadError(errorMessage(error))
+    } finally {
+      // 导入完成后把已导入/已跳过的项从勾选中移除，并把扫描快照里的 existing 置为 true，避免“仍可勾选已导入”的错觉
+      if (finalProgress !== null && (finalProgress.imported.length > 0 || finalProgress.skipped.length > 0)) {
+        const doneNames = new Set([...finalProgress.imported.map((r) => r.name), ...finalProgress.skipped.map((r) => r.name)])
+        const donePaths = new Set(
+          repoDiscoverState.data.entries.filter((e) => doneNames.has(e.name)).map((e) => e.path),
+        )
+        setRepoSelected((prev) => {
+          const next = new Set(prev)
+          for (const p of donePaths) next.delete(p)
+          return next
+        })
+        setRepoDiscoverState((prev) => {
+          if (prev.status !== 'ready') return prev
+          return {
+            ...prev,
+            data: {
+              ...prev.data,
+              entries: prev.data.entries.map((e) => doneNames.has(e.name) ? { ...e, existing: true } : e),
+            },
+          }
+        })
+      }
+      setRepoImporting(false)
+    }
+  }, [api, repoDiscoverState, repoSelected, load, loadMarket, loadGroups, loadSources])
+
+  // 卸载时中断轮询，避免泄露
+  useEffect(() => {
+    return () => { pollAbortRef.current?.abort() }
+  }, [])
+
+  /** 取消正在进行的导入（选项2：唯有取消才停） */
+  const cancelImport = useCallback(async (): Promise<void> => {
+    if (importJobId === null) return
+    pollAbortRef.current?.abort()
+    try {
+      const res = await api.repoImportCancel(importJobId)
+      // 立刻刷新一次进度
+      try {
+        const progress = await api.repoImportProgress(importJobId)
+        setRepoResult(progress)
+      } catch {
+        setRepoResult((prev) => prev !== null ? { ...prev, status: res.status as 'cancelled' } : prev)
+      }
     } catch (error) {
       setLoadError(errorMessage(error))
     } finally {
       setRepoImporting(false)
     }
-  }, [api, repoDiscoverState, repoSelected, load, loadMarket, loadGroups, loadSources])
+  }, [api, importJobId])
+
+  /** 清空扫描结果（关闭归属卡片） */
+  const clearScan = useCallback((): void => {
+    setRepoDiscoverState({ status: 'idle' })
+    setScanningRepo(null)
+    setRepoResult(null)
+    setRepoSelected(new Set())
+    setImportJobId(null)
+    pollAbortRef.current?.abort()
+  }, [])
 
   /** 检查所有市场源的上游更新（服务端节流）。 */
   const checkMarket = useCallback(async (): Promise<void> => {
@@ -790,22 +997,22 @@ export function useSkillHub(api: SkillHubApi) {
 
   return {
     // state
-    catalog, loading, loadError, successBanner, updateState, repoDiscoverState, scanningRepo, repoSelected, repoImporting, repoResult,
+    catalog, loading, loadError, successBanner, updateState, repoDiscoverState, scanningRepo, repoSelected, repoImporting, repoResult, importJobId,
     search, workspace, detail, detailLoading, busyNames, batchBusy, showForm, formName, formDesc, formRoot, formBusy, formMessage,
     uses, hubConfig, tab, skillView, sourceFilter, sortKey, marketState, marketCheck, branchChoice, branchBusy,
     marketSyncDialog, syncingMarket, syncBusy, newSourceName, groupsState, sourcesState, sourceCheck, checkingSource, syncingSource,
-    conflictDialog, confirmDialog, deleteSkillDialog, confirmClearTrash, updateAllDialog, editingTag, editName, membersDraft, newTagName, tagBusy,
-    editSearch, collapsedGroups, subdividedProjects, showLegend,
+    conflictDialog, confirmDialog, deleteSkillDialog, deleteGroupDialog, confirmClearTrash, updateAllDialog, editingTag, editName, membersDraft, newTagName, tagBusy,
+    editSearch, collapsedGroups, subdividedProjects, showLegend, editMode,
     // derived
     actionNames, viewNames, normalized, origins, sourceOptions, filtered, sorted,
     // actions + setters
     setLoadError, setSuccessBanner, setSearch, setWorkspace, setDetail, setShowForm, setFormName, setFormDesc, setFormRoot, setFormMessage,
     setRepoSelected, setTab, setSkillView,
     setSourceFilter, setSortKey, setBranchChoice, setMarketSyncDialog, setNewSourceName, setConflictDialog, setConfirmDialog,
-    setDeleteSkillDialog, setConfirmClearTrash, setUpdateAllDialog, setEditingTag, setEditName, setMembersDraft, setNewTagName, setEditSearch, setShowLegend,
+    setDeleteSkillDialog, setDeleteGroupDialog, setConfirmClearTrash, setUpdateAllDialog, setEditingTag, setEditName, setMembersDraft, setNewTagName, setEditSearch, setShowLegend, setEditMode,
     toggleGroupCollapse, toggleSubdivide, checkUpdate, loadMarket, openDetail, toggle, enableDisabled, batchToggleNames, toggleGroup, resolveConflict,
-    runConfirmed, checkSources, requestSync, requestDelete, restoreTrash, clearTrash, requestDeleteSkill, runDeleteSkill, createTag,
-    deleteTag, saveTag, addSource, addMarketSource, removeMarketSource, scanRepo, confirmBranchChoice, toggleRepoSelected, importRepo,
+    runConfirmed, checkSources, requestSync, requestDelete, restoreTrash, clearTrash, requestDeleteSkill, runDeleteSkill, requestDeleteGroup, runDeleteGroup, createTag,
+    deleteTag, saveTag, reorderTags, reorderCollections, reorderSourceGroups, addSource, addMarketSource, removeMarketSource, scanRepo, confirmBranchChoice, toggleRepoSelected, importRepo, cancelImport, clearScan,
     checkMarket, syncMarketSource, confirmMarketSync, updateAll, create,
   }
 }

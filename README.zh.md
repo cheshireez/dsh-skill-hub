@@ -231,7 +231,9 @@ description: 一句话说明什么时候该用这个技能。
 | `/api/skill-hub/market/check` | GET | 检查市场源是否有新版本（节流）。 |
 | `/api/skill-hub/market/source/sync` | POST | 市场源版本对齐，返回该源跟踪的技能。 |
 | `/api/skill-hub/repo?repo=` | GET | 发现 GitHub 仓库中可导入的技能。 |
-| `/api/skill-hub/repo/import` | POST | 导入所选仓库技能（记录来源 + 归入默认场景）。 |
+| `/api/skill-hub/repo/import` | POST | 创建异步导入任务（返回 `{jobId, total, totalBytes}`，轮询进度见下）。 |
+| `/api/skill-hub/repo/import/progress?jobId=` | GET | 轮询导入任务进度（`{status, done, total, downloadedBytes, totalBytes, bytesPerSecond, current, imported, skipped, failed}`）。 |
+| `/api/skill-hub/repo/import/cancel` | POST | 取消进行中的导入任务（`{jobId}`）。 |
 | `/api/skill-hub/sources` | GET | 来源记录、派生 origin/集合、回收站。 |
 | `/api/skill-hub/sources/check` | POST | 检查上游更新（5 分钟节流）。 |
 | `/api/skill-hub/sources/sync` | POST | 同步某来源所选（或全部）技能。 |

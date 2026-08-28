@@ -23,11 +23,16 @@ export const SKILL_HUB_API = {
   marketSync: '/api/skill-hub/market/source/sync',
   repo: '/api/skill-hub/repo',
   repoImport: '/api/skill-hub/repo/import',
+  repoImportProgress: '/api/skill-hub/repo/import/progress',
+  repoImportCancel: '/api/skill-hub/repo/import/cancel',
   update: '/api/skill-hub/update',
   groups: '/api/skill-hub/groups',
   tag: '/api/skill-hub/tag',
   tagDelete: '/api/skill-hub/tag/delete',
   tagMembers: '/api/skill-hub/tag/members',
+  tagReorder: '/api/skill-hub/tag/reorder',
+  collectionReorder: '/api/skill-hub/collections/reorder',
+  sourceGroupReorder: '/api/skill-hub/source-groups/reorder',
   sources: '/api/skill-hub/sources',
   sourceCheck: '/api/skill-hub/sources/check',
   sourceSync: '/api/skill-hub/sources/sync',
@@ -414,7 +419,7 @@ export interface MarketSyncResponse {
   skills: string[]
 }
 
-/** A skill discovered in a GitHub repo under skills/ or design-templates/. */
+/** A skill discovered in a GitHub repo under any top-level root (e.g. skills/, templates/). */
 export interface RepoSkillEntry {
   /** Kebab-case skill name (directory basename). */
   name: string
@@ -434,8 +439,8 @@ export interface RepoSkillEntry {
   existing: boolean
 }
 
-/** Supported skill roots in a GitHub repo. */
-export type RepoRoot = 'skills' | 'design-templates'
+/** Skill root in a GitHub repo: the top-level directory that contains skills (e.g. skills, design-templates, templates). Auto-derived from SKILL.md locations, not hard-coded. */
+export type RepoRoot = string
 
 /** GET /api/skill-hub/repo — discover importable skills in a GitHub repo. */
 export interface RepoDiscoverResponse {
@@ -461,8 +466,49 @@ export interface RepoImportRequest {
   ref?: string
 }
 
-/** POST /api/skill-hub/repo/import */
+/** POST /api/skill-hub/repo/import — now creates an async job (B方案) */
 export interface RepoImportResponse {
+  ok: true
+  jobId: string
+  total: number
+  totalBytes: number
+}
+
+/** GET /api/skill-hub/repo/import/progress?jobId=xxx */
+export interface RepoImportProgressResponse {
+  ok: true
+  jobId: string
+  status: 'running' | 'done' | 'cancelled' | 'error'
+  total: number
+  done: number
+  /** 当前正在下载的 skill 名，done < total 时有效 */
+  current?: string
+  /** 当前正在下载的文件路径（相对 skill dir） */
+  currentFile?: string
+  /** 字节级进度 */
+  totalBytes: number
+  downloadedBytes: number
+  /** 下载速度 bytes/sec，running 时有效 */
+  bytesPerSecond?: number
+  imported: Array<{ name: string; origin: string; path: string }>
+  skipped: Array<{ name: string; reason: 'exists' }>
+  failed: Array<{ name: string; error: string }>
+  /** error 状态时的原因 */
+  error?: string
+}
+
+/** POST /api/skill-hub/repo/import/cancel */
+export interface RepoImportCancelRequest {
+  jobId: string
+}
+export interface RepoImportCancelResponse {
+  ok: true
+  jobId: string
+  status: 'cancelled' | 'done'
+}
+
+/** @deprecated 旧同步响应，保留供类型兼容，实际已由 Progress 代替 */
+export interface RepoImportLegacyResponse {
   ok: true
   imported: Array<{ name: string; origin: string; path: string }>
   skipped: Array<{ name: string; reason: 'exists' }>
@@ -507,12 +553,16 @@ export interface CollectionGroup {
 /** GET /api/skill-hub/groups */
 export interface GroupsResponse {
   ok: true
-  /** 用户自定义 tag 分组（按创建顺序）。 */
+  /** 用户自定义 tag 分组（按拖拽顺序）。 */
   tags: SkillTag[]
-  /** 系统集合组（按 origin 聚合，名称排序）。 */
+  /** 系统集合组（按拖拽顺序，兜底按名称）。 */
   collections: CollectionGroup[]
   /** skillName → 集合名 的完整映射。 */
   origins: Record<string, string>
+  /** 来源分组整体顺序（project / col:xxx / uncategorized-source），用于 SourcesView 顶层排序 */
+  sourceGroupOrder?: string[]
+  /** 兼容旧 collectionOrder 字段 */
+  collectionOrder?: string[]
 }
 
 /** POST /api/skill-hub/tag — 新建（缺省 id）或重命名（带 id）。 */
@@ -552,6 +602,39 @@ export interface TagMembersRequest {
 export interface TagMembersResponse {
   ok: true
   tags: SkillTag[]
+}
+
+/** POST /api/skill-hub/tag/reorder — 拖拽重排场景分组 */
+export interface TagReorderRequest {
+  /** 按新顺序排列的 tag id 列表（需包含全部 id） */
+  orderedIds: string[]
+}
+/** POST /api/skill-hub/tag/reorder */
+export interface TagReorderResponse {
+  ok: true
+  tags: SkillTag[]
+}
+
+/** POST /api/skill-hub/collections/reorder — 拖拽重排来源集合 */
+export interface CollectionReorderRequest {
+  /** 按新顺序排列的集合名列表（需包含全部 name） */
+  orderedNames: string[]
+}
+/** POST /api/skill-hub/collections/reorder */
+export interface CollectionReorderResponse {
+  ok: true
+  collections: CollectionGroup[]
+  order: string[]
+}
+
+/** POST /api/skill-hub/source-groups/reorder — 拖拽重排来源顶层分组（project / collections / personal） */
+export interface SourceGroupReorderRequest {
+  /** 按新顺序排列的顶层分组 key 列表（project / col:xxx / uncategorized-source） */
+  orderedKeys: string[]
+}
+export interface SourceGroupReorderResponse {
+  ok: true
+  order: string[]
 }
 
 /** 来源跟踪记录：一组来自同一上游仓库根目录的技能。 */

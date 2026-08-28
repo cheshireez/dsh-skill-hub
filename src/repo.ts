@@ -2,9 +2,9 @@
  * GitHub repository skill discovery/import helpers.
  *
  * Kept dependency-free and mostly pure so the root/origin rules are easy to
- * test. The two supported roots mirror the repositories we care about:
- * `skills/**` (standard skill bundles) and `design-templates/**` (template
- * skill bundles in nexu-io/open-design).
+ * test. Roots are auto-derived: any top-level directory that contains a
+ * `**\/SKILL.md` (e.g. `skills/**`, `design-templates/**`, `templates/**`,
+ * `workflows/**`) is treated as a skill root. No hard-coded allowlist.
  */
 
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
@@ -13,8 +13,11 @@ import { isSkillName } from '@deepseek-ai/dsh-skill'
 import type { RepoRoot, RepoSkillEntry } from './protocol.ts'
 import { parseFrontmatter } from './skillfs.ts'
 
-/** Supported skill roots in a GitHub repo. */
+/** Preferred display order for known roots; unknown roots sort alphabetically after these. */
 export const REPO_ROOTS: readonly RepoRoot[] = ['skills', 'design-templates']
+
+/** Top-level directory pattern for a skill root: visible, non-dot, safe chars. First char must be alphanum. */
+const ROOT_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
 
 /** Parsed GitHub repository reference. */
 export interface RepoRef {
@@ -180,20 +183,25 @@ export function collectRepoSkillFiles(tree: readonly RepoTreeItem[], dir: string
 }
 
 /** Compute an origin collection name. Multiple roots split by root, one root keeps the repo slug. */
-export function originForRoot(repo: string, rootsPresent: ReadonlySet<RepoRoot>, root: RepoRoot): string {
+export function originForRoot(repo: string, rootsPresent: ReadonlySet<string>, root: string): string {
   return rootsPresent.size > 1 ? `${repo}/${root}` : repo
 }
 
-/** Discover importable skills from a repo tree. Invalid names are ignored. */
+/** Discover importable skills from a repo tree. Invalid names are ignored. Roots are auto-derived from the top-level directory of each SKILL.md. */
 export function discoverRepoEntries(tree: readonly RepoTreeItem[], repo: string, existingNames: ReadonlySet<string> = new Set()): RepoSkillEntry[] {
   const candidates: Array<{ root: RepoRoot; dir: string; name: string; path: string }> = []
-  const rootsPresent = new Set<RepoRoot>()
+  const rootsPresent = new Set<string>()
   for (const item of tree) {
     if (item.type !== 'blob') continue
-    const match = /^(skills|design-templates)\/(.+)\/SKILL\.md$/.exec(item.path)
-    if (match === null) continue
-    const root = match[1] as RepoRoot
+    // Any SKILL.md at depth >=2: top segment is the root, last segment is the skill name (may be nested like root/category/name/SKILL.md)
+    const slash = item.path.indexOf('/')
+    if (slash === -1) continue
+    if (!item.path.endsWith('/SKILL.md')) continue
+    const root = item.path.slice(0, slash)
+    if (!ROOT_RE.test(root)) continue
     const dir = item.path.slice(0, -'/SKILL.md'.length)
+    // dir must be at least root/name (reject bare root/SKILL.md)
+    if (dir === root || dir.length <= root.length + 1) continue
     const name = dir.slice(dir.lastIndexOf('/') + 1)
     if (!isSkillName(name)) continue
     rootsPresent.add(root)
@@ -231,28 +239,37 @@ export async function mapConcurrent<T, R>(items: readonly T[], limit: number, wo
   return results
 }
 
+/** Whether an error is an abort (AbortError / signal). */
+export function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'AbortError' || error.message.includes('aborted') || error.message.includes('Abort'))
+}
+
 /**
  * Download one GitHub file as a buffer. Tries raw.githubusercontent.com
  * first (no API quota); on any failure falls back to the api.github.com
  * contents endpoint with the raw media type (rate-limited, but reachable
  * from networks that block the raw host).
  */
-export async function downloadGitHubFile(repo: string, ref: string, path: string, fetchImpl: typeof fetch = fetch): Promise<Buffer> {
+export async function downloadGitHubFile(repo: string, ref: string, path: string, fetchImpl: typeof fetch = fetch, signal?: AbortSignal): Promise<Buffer> {
+  if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
   const encodedPath = path.split('/').map((segment) => encodeURIComponent(segment)).join('/')
   const rawUrl = `https://raw.githubusercontent.com/${repo}/${encodeURIComponent(ref)}/${encodedPath}`
   let firstError: string | null = null
   let response: Response | null = null
   try {
-    response = await fetchImpl(rawUrl, { headers: githubAuthHeaders() })
+    response = await fetchImpl(rawUrl, { headers: githubAuthHeaders(), ...(signal !== undefined ? { signal } : {}) })
   } catch (error) {
+    if (isAbortError(error)) throw error
     firstError = error instanceof Error ? error.message : String(error)
   }
   if (response === null || !response.ok) {
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
     // Fallback: api.github.com/contents with the raw media type.
     const apiUrl = `https://api.github.com/repos/${repo}/contents/${encodedPath}`
     try {
-      response = await fetchImpl(apiUrl, { headers: { accept: 'application/vnd.github.raw', ...githubAuthHeaders() } })
+      response = await fetchImpl(apiUrl, { headers: { accept: 'application/vnd.github.raw', ...githubAuthHeaders() }, ...(signal !== undefined ? { signal } : {}) })
     } catch (error) {
+      if (isAbortError(error)) throw error
       throw new RepoFetchError('download failed: ' + (firstError ?? (error instanceof Error ? error.message : String(error))))
     }
   }
@@ -262,6 +279,7 @@ export async function downloadGitHubFile(repo: string, ref: string, path: string
   try {
     return Buffer.from(await response.arrayBuffer())
   } catch (error) {
+    if (isAbortError(error)) throw error
     throw new RepoFetchError('download read failed: ' + (error instanceof Error ? error.message : String(error)))
   }
 }
@@ -278,21 +296,29 @@ export async function downloadRepoSkill(
   files: readonly RepoFile[],
   targetRoot: string,
   fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
+  onProgress?: (bytes: number, file: string) => void,
 ): Promise<{ targetDir: string; skillPath: string }> {
+  if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
   const targetDir = join(targetRoot, entry.name)
   await mkdir(targetRoot, { recursive: true })
   // Dot-prefixed so a leftover temp dir can never surface as a skill in the
   // provider's discovery scan (scanRoot skips dot entries).
   const tempDir = await mkdtemp(join(targetRoot, '.' + entry.name + '.import-'))
+  let renamed = false
   try {
     await mapConcurrent(files, 6, async (file) => {
+      if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
       const relative = file.path.slice(entry.dir.length + 1)
       if (relative === '' || relative.includes('..')) throw new RepoFetchError('unsafe repo path: ' + file.path)
       const target = join(tempDir, relative)
-      const buffer = await downloadGitHubFile(repo, ref, file.path, fetchImpl)
+      const buffer = await downloadGitHubFile(repo, ref, file.path, fetchImpl, signal)
       await mkdir(dirname(target), { recursive: true })
       await writeFile(target, buffer)
+      onProgress?.(buffer.length, relative)
     })
+
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
 
     let text: string
     try {
@@ -307,16 +333,53 @@ export async function downloadRepoSkill(
     }
 
     await rename(tempDir, targetDir)
+    renamed = true
     return { targetDir, skillPath: join(targetDir, 'SKILL.md') }
   } catch (error) {
-    // Concurrent workers may still be writing when the batch fails; retry
-    // the cleanup once after a beat before giving up.
-    await rm(tempDir, { recursive: true, force: true }).catch(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 60))
-      await rm(tempDir, { recursive: true, force: true }).catch(() => {})
-    })
     throw error
+  } finally {
+    if (!renamed) {
+      // 尽力清理临时目录，失败只打日志，不再静默吞掉；finally 保证 abort/异常都能清理
+      try {
+        await rm(tempDir, { recursive: true, force: true })
+      } catch (firstError) {
+        // 并发 worker 可能仍在写入，稍等 60ms 重试一次
+        await new Promise((resolve) => setTimeout(resolve, 60))
+        try {
+          await rm(tempDir, { recursive: true, force: true })
+        } catch (secondError) {
+          console.warn(`[skill-hub] cleanup tempDir failed ${tempDir}:`, secondError instanceof Error ? secondError.message : String(secondError), 'first:', firstError instanceof Error ? firstError.message : String(firstError))
+        }
+      }
+    }
   }
+}
+
+/**
+ * 启动时扫描并清理残留的 `.*.import-*` 临时目录（Issue #3 第4点）。
+ * 越积越多的点前缀目录不会显示为 skill，但会占空间，尽早回收。
+ */
+export async function cleanupLeftoverImportDirs(targetRoot: string): Promise<number> {
+  const { readdir, rm: rm2 } = await import('node:fs/promises')
+  let names: string[]
+  try {
+    names = await readdir(targetRoot)
+  } catch {
+    return 0
+  }
+  let cleaned = 0
+  for (const name of names) {
+    if (!/^\..*\.import-/.test(name)) continue
+    const full = join(targetRoot, name)
+    try {
+      await rm2(full, { recursive: true, force: true })
+      cleaned += 1
+    } catch (error) {
+      console.warn(`[skill-hub] startup cleanup failed ${full}:`, error instanceof Error ? error.message : String(error))
+    }
+  }
+  if (cleaned > 0) console.warn(`[skill-hub] startup cleaned ${cleaned} leftover import temp dir(s) in ${targetRoot}`)
+  return cleaned
 }
 
 // ------------------------------------------------------- source tracking
@@ -447,7 +510,7 @@ export function skillManifest(tree: readonly RepoTreeItem[], dir: string): Recor
  * resilient to incomplete manifests and upstream moves.
  */
 export function skillDirOf(
-  source: { root: RepoRoot; manifest?: Record<string, number> },
+  source: { root: string; manifest?: Record<string, number> },
   name: string,
   treePaths?: readonly string[],
 ): string {
@@ -473,7 +536,7 @@ export function skillDirOf(
  */
 export function diffRemoteSkills(
   tree: readonly RepoTreeItem[],
-  source: { root: RepoRoot; skills: readonly string[]; manifest?: Record<string, number> },
+  source: { root: string; skills: readonly string[]; manifest?: Record<string, number> },
 ): { updated: string[]; deleted: string[] } {
   const blobs = new Map<string, number>()
   for (const item of tree) {
@@ -513,7 +576,7 @@ export function diffRemoteSkills(
 }
 
 /** Minimal RepoSkillEntry for a tracked skill name (sync re-downloads by name). */
-export function repoSkillEntry(name: string, root: RepoRoot, repo: string): RepoSkillEntry {
+export function repoSkillEntry(name: string, root: string, repo: string): RepoSkillEntry {
   return {
     name,
     dir: root + '/' + name,

@@ -24,7 +24,6 @@ import { TagEditorView } from './TagEditorView.tsx'
 import { SourcesView } from './SourcesView.tsx'
 import { ScenesView } from './ScenesView.tsx'
 import { MarketView } from './MarketView.tsx'
-import { DisabledRow } from './DisabledRow.tsx'
 import { BranchChoiceDialog, ConfirmDialog, ConflictDialog, MarketSyncDialog } from './dialogs.tsx'
 import { useSkillHub } from './useSkillHub.ts'
 import css from './panel.module.css'
@@ -42,14 +41,14 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
     formRoot, formBusy, formMessage, hubConfig, tab, skillView, sourceFilter, sortKey, search,
     workspace, setWorkspace,
     sourcesState, tagBusy, busyNames, normalized, origins, sourceOptions, filtered,
-    conflictDialog, confirmDialog, deleteSkillDialog, confirmClearTrash, branchChoice, branchBusy, marketSyncDialog,
+    conflictDialog, confirmDialog, deleteSkillDialog, deleteGroupDialog, confirmClearTrash, branchChoice, branchBusy, marketSyncDialog,
     syncBusy, editingTag, editName, membersDraft, editSearch, uses, groupsState, sourceCheck, checkingSource, syncingSource,
-    showLegend,
+    showLegend, editMode,
     setLoadError, setSuccessBanner, setDetail, setShowForm, setFormName, setFormDesc, setFormRoot, setFormMessage, setTab,
-    setSkillView, setSourceFilter, setSortKey, setSearch, setConflictDialog, setConfirmDialog, setDeleteSkillDialog,
+    setSkillView, setSourceFilter, setSortKey, setSearch, setConflictDialog, setConfirmDialog, setDeleteSkillDialog, setDeleteGroupDialog,
     setConfirmClearTrash, setBranchChoice, setMarketSyncDialog, setEditingTag, setEditName, setMembersDraft, setEditSearch,
-    setShowLegend,
-    checkUpdate, loadMarket, checkSources, requestSync, requestDelete, restoreTrash, clearTrash, runDeleteSkill,
+    setShowLegend, setEditMode,
+    checkUpdate, loadMarket, checkSources, requestSync, requestDelete, restoreTrash, clearTrash, runDeleteSkill, runDeleteGroup,
     runConfirmed, resolveConflict, confirmBranchChoice, confirmMarketSync, create, saveTag, deleteTag, enableDisabled,
   } = hub
 
@@ -236,6 +235,7 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
               <option value='uses'>{tt('sort.uses')}</option>
             </select>
             <input className={css.search} value={search} onChange={(event) => { setSearch(event.target.value) }} placeholder={tt('panel.search')} />
+            <button type='button' className={css.button + (editMode ? ' ' + css.primary : '')} style={{ marginLeft:'auto' }} onClick={() => setEditMode((v) => !v)}>{editMode ? '完成' : '编辑'}</button>
           </div>
 
           {filtered.length === 0 && search.trim() !== '' ? <div className={css.empty}>{tt('panel.empty')}</div> : null}
@@ -260,19 +260,6 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
                   <button type='button' className={css.opBtn} disabled={tagBusy} onClick={() => { void restoreTrash(entry.name) }}>{tt('source.restore')}</button>
                 </div>
               ))}
-            </section>
-          ) : null}
-
-          {catalog.disabled.length > 0 ? (
-            <section className={css.section}>
-              <div className={css.sectionTitle}>{tt('panel.disabled')}</div>
-              {catalog.disabled
-                .filter((record) =>
-                  (normalized.length === 0 || record.name.toLocaleLowerCase().includes(normalized) || record.description.toLocaleLowerCase().includes(normalized))
-                  && (sourceFilter === 'all' || (origins[record.name] ?? PRIVATE_SOURCE) === sourceFilter))
-                .map((record) => (
-                  <DisabledRow key={record.name} record={record} busy={busyNames.has(record.name)} onEnable={() => { void enableDisabled(record) }} />
-                ))}
             </section>
           ) : null}
 
@@ -346,6 +333,18 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
           danger
           onCancel={() => { setDeleteSkillDialog(null) }}
           onConfirm={() => { void runDeleteSkill() }}
+        />
+      ) : null}
+
+      {deleteGroupDialog !== null ? (
+        <ConfirmDialog
+          title={tt('source.deleteGroupTitle')}
+          text={tt('source.deleteGroupText', { name: deleteGroupDialog.name, count: deleteGroupDialog.skillNames.length })}
+          items={deleteGroupDialog.skillNames}
+          confirmLabel={tt('source.deleteGroup')}
+          danger
+          onCancel={() => { setDeleteGroupDialog(null) }}
+          onConfirm={() => { void runDeleteGroup() }}
         />
       ) : null}
 

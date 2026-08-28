@@ -36,6 +36,10 @@ interface StoreFile {
   trash?: TrashEntry[]
   /** Usage-statistics incremental-scan checkpoint (frozen watermark + totals). */
   skillStats?: SkillStatsCheckpoint
+  /** Drag-reorder: collection name order for 来源分组 */
+  collectionOrder?: string[]
+  /** Drag-reorder: 来源顶层分组整体顺序（project / col:xxx / uncategorized-source） */
+  sourceGroupOrder?: string[]
 }
 
 /** Resolve the DSH home directory (the filesystem provider's user-dsh root base). */
@@ -76,7 +80,7 @@ export class StoreError extends Error {
  * Returns null when the file claims a newer schema than this plugin
  * understands, so the caller starts empty instead of risking data loss.
  */
-function migrateStore(parsed: unknown): { version: number; disabled: unknown; config?: unknown; tags?: unknown; sources?: unknown; marketSources?: unknown; trash?: unknown; skillStats?: unknown } | null {
+function migrateStore(parsed: unknown): { version: number; disabled: unknown; config?: unknown; tags?: unknown; sources?: unknown; marketSources?: unknown; trash?: unknown; skillStats?: unknown; collectionOrder?: unknown; sourceGroupOrder?: unknown } | null {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
   const record = parsed as Record<string, unknown>
   const version = typeof record.version === 'number' ? record.version : 0
@@ -125,6 +129,8 @@ function migrateStore(parsed: unknown): { version: number; disabled: unknown; co
     // v4 (skillStats) is a pure addition — older files simply lack the field,
     // and the loader validates its shape, so pass it through untouched.
     ...(record.skillStats !== undefined ? { skillStats: record.skillStats } : {}),
+    ...(Array.isArray(record.collectionOrder) ? { collectionOrder: record.collectionOrder } : {}),
+    ...(Array.isArray(record.sourceGroupOrder) ? { sourceGroupOrder: record.sourceGroupOrder } : {}),
   }
 }
 
@@ -137,6 +143,8 @@ export class SkillHubStore {
   private marketSources: MarketSourceRecord[] = []
   private trashByName = new Map<string, TrashEntry>()
   private skillStats: SkillStatsCheckpoint | undefined = undefined
+  private collectionOrder: string[] = []
+  private sourceGroupOrder: string[] = []
   private loaded = false
   /** Serializes persist runs: concurrent mutators must not let an earlier
    *  snapshot overwrite a later one (rename is atomic, ordering is not). */
@@ -189,10 +197,11 @@ export class SkillHubStore {
             const source = entry as { repo?: unknown; ref?: unknown; root?: unknown; commitSha?: unknown; skills?: unknown; manifest?: unknown } | null
             if (source !== null && typeof source === 'object' && typeof source.repo === 'string' && source.repo !== '' && Array.isArray(source.skills)) {
               const manifest = source.manifest as Record<string, unknown> | undefined
+              const rawRoot = typeof source.root === 'string' && source.root !== '' && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(source.root) ? source.root : 'skills'
               this.sourcesByRepo.set(source.repo, {
                 repo: source.repo,
                 ...(typeof source.ref === 'string' && source.ref !== '' ? { ref: source.ref } : {}),
-                root: (source.root === 'design-templates' ? 'design-templates' : 'skills') as RepoRoot,
+                root: rawRoot,
                 commitSha: typeof source.commitSha === 'string' ? source.commitSha : '',
                 skills: source.skills.filter((n): n is string => typeof n === 'string'),
                 ...(manifest !== null && typeof manifest === 'object' && !Array.isArray(manifest)
@@ -225,7 +234,7 @@ export class SkillHubStore {
                 path: item.path,
                 movedAt: typeof item.movedAt === 'number' ? item.movedAt : 0,
                 ...(typeof item.sourcePath === 'string' && item.sourcePath !== '' ? { sourcePath: item.sourcePath } : {}),
-                ...(origin !== null && typeof origin === 'object' && typeof origin.repo === 'string' && origin.repo !== '' && (origin.root === 'skills' || origin.root === 'design-templates')
+                ...(origin !== null && typeof origin === 'object' && typeof origin.repo === 'string' && origin.repo !== '' && typeof origin.root === 'string' && origin.root !== '' && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(origin.root)
                   ? {
                       origin: {
                         repo: origin.repo,
@@ -267,6 +276,14 @@ export class SkillHubStore {
             frozenSessions: sessions,
             lastFullReconcile: savedStats.lastFullReconcile,
           }
+        }
+        const rawColOrder = (migrated as Record<string, unknown>).collectionOrder as unknown
+        if (Array.isArray(rawColOrder)) {
+          this.collectionOrder = rawColOrder.filter((n): n is string => typeof n === 'string' && n !== '')
+        }
+        const rawSrcOrder = (migrated as Record<string, unknown>).sourceGroupOrder as unknown
+        if (Array.isArray(rawSrcOrder)) {
+          this.sourceGroupOrder = rawSrcOrder.filter((n): n is string => typeof n === 'string' && n !== '')
         }
       }
     } catch (error) {
@@ -421,6 +438,55 @@ export class SkillHubStore {
     if (changed) await this.persist()
   }
 
+  /** Reorder tag groups by orderedIds (drag-and-drop). */
+  async reorderTags(orderedIds: string[]): Promise<SkillTag[]> {
+    await this.ensureLoaded()
+    const currentIds = [...this.tagsById.keys()]
+    if (orderedIds.length !== currentIds.length) throw new StoreError('validation', 'orderedIds length mismatch')
+    const seen = new Set<string>()
+    for (const id of orderedIds) {
+      if (typeof id !== 'string' || id === '') throw new StoreError('validation', 'invalid tag id')
+      if (seen.has(id)) throw new StoreError('validation', 'duplicate tag id: ' + id)
+      if (!this.tagsById.has(id)) throw new StoreError('not-found', 'tag not found: ' + id)
+      seen.add(id)
+    }
+    const newMap = new Map<string, SkillTag>()
+    for (const id of orderedIds) newMap.set(id, this.tagsById.get(id)!)
+    this.tagsById = newMap
+    await this.persist()
+    return [...this.tagsById.values()]
+  }
+
+  /** Collection order for 来源分组拖拽 */
+  async getCollectionOrder(): Promise<string[]> {
+    await this.ensureLoaded()
+    return [...this.collectionOrder]
+  }
+
+  /** Reorder collections by orderedNames (drag-and-drop). */
+  async reorderCollections(orderedNames: string[]): Promise<string[]> {
+    await this.ensureLoaded()
+    const uniq = [...new Set(orderedNames.filter((n): n is string => typeof n === 'string' && n !== ''))]
+    this.collectionOrder = uniq
+    await this.persist()
+    return [...this.collectionOrder]
+  }
+
+  /** Source top-level group order for 来源分组（project / col:xxx / personal） */
+  async getSourceGroupOrder(): Promise<string[]> {
+    await this.ensureLoaded()
+    return [...this.sourceGroupOrder]
+  }
+
+  /** Reorder source top-level groups by orderedKeys */
+  async reorderSourceGroups(orderedKeys: string[]): Promise<string[]> {
+    await this.ensureLoaded()
+    const uniq = [...new Set(orderedKeys.filter((k): k is string => typeof k === 'string' && k !== ''))]
+    this.sourceGroupOrder = uniq
+    await this.persist()
+    return [...this.sourceGroupOrder]
+  }
+
   // ------------------------------------------------------------ sources
 
   /** All source records, sorted by repo. */
@@ -455,7 +521,7 @@ export class SkillHubStore {
    * Upsert one skill into a source record. When the repo has no record yet a
    * new one is created (root + commit snapshot from the caller).
    */
-  async addSourceSkill(repo: string, root: RepoRoot, commitSha: string, ref: string | undefined, skillName: string): Promise<void> {
+  async addSourceSkill(repo: string, root: string, commitSha: string, ref: string | undefined, skillName: string): Promise<void> {
     await this.ensureLoaded()
     const existing = this.sourcesByRepo.get(repo)
     if (existing === undefined) {
@@ -670,6 +736,8 @@ export class SkillHubStore {
         ...(this.marketSources.length > 0 ? { marketSources: [...this.marketSources] } : {}),
         ...(this.trashByName.size > 0 ? { trash: [...this.trashByName.values()] } : {}),
         ...(this.skillStats !== undefined ? { skillStats: this.skillStats } : {}),
+        ...(this.collectionOrder.length > 0 ? { collectionOrder: [...this.collectionOrder] } : {}),
+        ...(this.sourceGroupOrder.length > 0 ? { sourceGroupOrder: [...this.sourceGroupOrder] } : {}),
       }
       const tmp = this.file + '.tmp'
       await mkdir(dirname(this.file), { recursive: true })

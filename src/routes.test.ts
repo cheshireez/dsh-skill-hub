@@ -488,7 +488,7 @@ describe('skill-hub routes', () => {
     expect((del.json() as import('./protocol.ts').MarketSourceResponse).repos).toEqual([{ repo: 'other/repo', ref: 'v2.0.0' }])
   })
 
-  // ------------------------------------------------------- repo import
+  // ------------------------------------------------------- repo import (B方案 job+轮询)
   it('imports repo skills and records the upstream source', async () => {
     const skillMd = '---\nname: code-review\ndescription: Reviews code\n---\n\nbody'
     stubFetch([
@@ -506,9 +506,23 @@ describe('skill-hub routes', () => {
       const res = new FakeResponse()
       await routeFor(SKILL_HUB_API.repoImport).handler(fakeReq('POST', SKILL_HUB_API.repoImport, { repo: 'example/repo', paths: ['skills/code-review/SKILL.md'] }), res as never)
       expect(res.status).toBe(200)
-      const body = res.json() as import('./protocol.ts').RepoImportResponse
-      expect(body.imported).toHaveLength(1)
-      expect(body.imported[0]).toMatchObject({ name: 'code-review', origin: 'example/repo' })
+      const created = res.json() as import('./protocol.ts').RepoImportResponse
+      expect(created.jobId).toMatch(/^imp_/)
+      expect(created.total).toBe(1)
+      // 轮询直到完成（后台任务选项2：关面板也继续跑，轮询查进度）
+      let prog: import('./protocol.ts').RepoImportProgressResponse | undefined
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 50))
+        const progRes = new FakeResponse()
+        await routeFor(SKILL_HUB_API.repoImportProgress).handler(fakeReq('GET', `${SKILL_HUB_API.repoImportProgress}?jobId=${created.jobId}`), progRes as never)
+        expect(progRes.status).toBe(200)
+        prog = progRes.json() as import('./protocol.ts').RepoImportProgressResponse
+        if (prog.status !== 'running') break
+      }
+      expect(prog).toBeDefined()
+      expect(prog!.status).toBe('done')
+      expect(prog!.imported).toHaveLength(1)
+      expect(prog!.imported[0]).toMatchObject({ name: 'code-review', origin: 'example/repo' })
       await expect(access(join(home, 'skills', 'code-review', 'SKILL.md'))).resolves.toBeUndefined()
       const sources = await store.listSources()
       expect(sources).toHaveLength(1)

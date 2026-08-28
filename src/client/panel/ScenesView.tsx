@@ -5,7 +5,7 @@
  * are managed in the sources tab.
  */
 
-import type { JSX } from 'react'
+import { useState, type JSX } from 'react'
 import { tt } from '../helpers.ts'
 import { groupSwitchView } from '../grouping.ts'
 import { SkillRow } from './SkillRow.tsx'
@@ -17,6 +17,19 @@ import css from './panel.module.css'
 export function ScenesView(props: { hub: SkillHubState }): JSX.Element {
   const { hub } = props
   const { catalog, groupsState, sorted, normalized, collapsedGroups, viewNames, actionNames, batchBusy, busyNames, newTagName, setNewTagName, tagBusy, createTag, toggleGroupCollapse, toggleGroup, setEditingTag, setEditName, setMembersDraft, setEditSearch, enableDisabled } = hub
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [overId, setOverId] = useState<string | null>(null)
+  const handleDrop = (targetId: string): void => {
+    if (dragId === null || dragId === targetId || groupsState === null) return
+    const ids = groupsState.tags.map((t) => t.id)
+    const from = ids.indexOf(dragId)
+    const to = ids.indexOf(targetId)
+    if (from === -1 || to === -1) return
+    const next = [...ids]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    void hub.reorderTags(next)
+  }
   return (
     <>
       <form className={css.form} onSubmit={(event) => { void createTag(event) }}>
@@ -38,9 +51,21 @@ export function ScenesView(props: { hub: SkillHubState }): JSX.Element {
         const collapsed = collapsedGroups.has('tag:' + tag.id)
         const view = groupSwitchView(tag.skillNames, viewNames)
         const hasWritable = tag.skillNames.some((name) => actionNames.has(name))
+        const isDragging = dragId === tag.id
+        const isOver = overId === tag.id && dragId !== tag.id
         return (
-          <section key={'tag:' + tag.id} className={css.section}>
+          <section
+            key={'tag:' + tag.id}
+            className={css.section + (isDragging ? ' ' + css.dragging : '') + (isOver ? ' ' + css.dragOver : '')}
+            draggable
+            onDragStart={(e) => { setDragId(tag.id); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', tag.id) }}
+            onDragOver={(e) => { e.preventDefault(); if (overId !== tag.id) setOverId(tag.id) }}
+            onDragLeave={() => { if (overId === tag.id) setOverId(null) }}
+            onDrop={(e) => { e.preventDefault(); handleDrop(tag.id); setOverId(null) }}
+            onDragEnd={() => { setDragId(null); setOverId(null) }}
+          >
             <div className={css.groupHead}>
+              <span className={css.dragHandle} aria-hidden title="拖拽调整顺序">⋮⋮</span>
               <button type='button' className={css.disclosure} aria-expanded={!collapsed} onClick={() => { toggleGroupCollapse('tag:' + tag.id) }}>
                 <span className={css.chevron + (collapsed ? ' ' + css.chevronCollapsed : '')} />
                 <span className={css.groupTitle}>

@@ -5,10 +5,15 @@
 import {
   SKILL_HUB_API,
   type CatalogResponse,
+  type CollectionGroup,
   type ConfigRequest,
   type ConfigResponse,
   type CreateRequest,
   type CreateResponse,
+  type CollectionReorderRequest,
+  type CollectionReorderResponse,
+  type SourceGroupReorderRequest,
+  type SourceGroupReorderResponse,
   type MarketCheckResponse,
   type MarketSourceRefRequest,
   type MarketSourceRequest,
@@ -16,12 +21,15 @@ import {
   type MarketSourcesResponse,
   type MarketSyncResponse,
   type RepoDiscoverResponse,
+  type RepoImportCancelResponse,
+  type RepoImportProgressResponse,
   type RepoImportRequest,
   type RepoImportResponse,
   type SkillDetail,
   type SkillDetailResponse,
   type SkillDeleteRequest,
   type SkillDeleteResponse,
+  type SkillTag,
   type SourceCheckRequest,
   type SourceCheckResponse,
   type SourceDeleteRequest,
@@ -33,6 +41,8 @@ import {
   type SourceSyncRequest,
   type SourceSyncResponse,
   type StatsResponse,
+  type TagReorderRequest,
+  type TagReorderResponse,
   type ToggleBatchRequest,
   type ToggleBatchResponse,
   type UpdateCheckResponse,
@@ -206,7 +216,7 @@ export class SkillHubApi {
     return readJson<RepoDiscoverResponse>(response)
   }
 
-  /** Install selected repo skills into the user-dsh root (records the source). */
+  /** Install selected repo skills into the user-dsh root (records the source). Returns jobId for polling. */
   async repoImport(repo: string, paths: string[], ref?: string): Promise<RepoImportResponse> {
     const payload: RepoImportRequest = { repo, paths, ...(ref !== undefined && ref !== '' ? { ref } : {}) }
     const response = await fetchWithTimeout(SKILL_HUB_API.repoImport, {
@@ -215,6 +225,23 @@ export class SkillHubApi {
       body: JSON.stringify(payload),
     })
     return readJson<RepoImportResponse>(response)
+  }
+
+  /** Poll import job progress (B方案轮询) */
+  async repoImportProgress(jobId: string): Promise<RepoImportProgressResponse> {
+    const url = SKILL_HUB_API.repoImportProgress + '?jobId=' + encodeURIComponent(jobId)
+    const response = await fetchWithTimeout(url)
+    return readJson<RepoImportProgressResponse>(response)
+  }
+
+  /** Cancel a running import job (选项2：唯有取消才停) */
+  async repoImportCancel(jobId: string): Promise<RepoImportCancelResponse> {
+    const response = await fetchWithTimeout(SKILL_HUB_API.repoImportCancel, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jobId }),
+    })
+    return readJson<RepoImportCancelResponse>(response)
   }
 
   /** Read the hub's runtime config (effective values + saved overrides). */
@@ -270,6 +297,39 @@ export class SkillHubApi {
     })
     const body = await readJson<import('../protocol.ts').TagMembersResponse>(response)
     return body.tags
+  }
+
+  /** 拖拽重排场景分组 */
+  async reorderTags(orderedIds: string[]): Promise<SkillTag[]> {
+    const response = await fetchWithTimeout(SKILL_HUB_API.tagReorder, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orderedIds } satisfies TagReorderRequest),
+    })
+    const body = await readJson<TagReorderResponse>(response)
+    return body.tags
+  }
+
+  /** 拖拽重排来源集合 */
+  async reorderCollections(orderedNames: string[]): Promise<CollectionGroup[]> {
+    const response = await fetchWithTimeout(SKILL_HUB_API.collectionReorder, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orderedNames } satisfies CollectionReorderRequest),
+    })
+    const body = await readJson<CollectionReorderResponse>(response)
+    return body.collections
+  }
+
+  /** 拖拽重排来源顶层分组（project / collections / personal） */
+  async reorderSourceGroups(orderedKeys: string[]): Promise<string[]> {
+    const response = await fetchWithTimeout(SKILL_HUB_API.sourceGroupReorder, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orderedKeys } satisfies SourceGroupReorderRequest),
+    })
+    const body = await readJson<SourceGroupReorderResponse>(response)
+    return body.order
   }
 
   /** 来源列表 + 派生 origin 映射 + 集合组 + 回收站。 */

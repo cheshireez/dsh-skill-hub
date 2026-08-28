@@ -52,14 +52,6 @@ export function SkillRow(props: { skill: CatalogSkill; hub: SkillHubState }): JS
         ? <>
             <button
               type='button'
-              className={css.opBtn + ' ' + css.opDanger + ' ' + css.iconBtn}
-              disabled={hub.busyNames.has(skill.name) || hub.tagBusy}
-              title={tt('row.delete')}
-              aria-label={tt('row.delete')}
-              onClick={(event) => { event.stopPropagation(); hub.requestDeleteSkill(skill.name) }}
-            ><IconTrashOutline16 size={14} /></button>
-            <button
-              type='button'
               role='switch'
               aria-checked={true}
               aria-label={tt('row.disable')}
@@ -67,6 +59,14 @@ export function SkillRow(props: { skill: CatalogSkill; hub: SkillHubState }): JS
               disabled={hub.busyNames.has(skill.name)}
               onClick={(event) => { event.stopPropagation(); void hub.toggle(skill, false) }}
             ><span className={css.switchThumb} /></button>
+            {hub.editMode ? <button
+              type='button'
+              className={css.opBtn + ' ' + css.opDanger + ' ' + css.iconBtn}
+              disabled={hub.busyNames.has(skill.name) || hub.tagBusy}
+              title={tt('row.delete')}
+              aria-label={tt('row.delete')}
+              onClick={(event) => { event.stopPropagation(); hub.requestDeleteSkill(skill.name) }}
+            ><IconTrashOutline16 size={14} /></button> : null}
           </>
         : <span className={css.badge + ' ' + css.badgeReadonly}>{tt('row.readonly')}</span>}
     </div>

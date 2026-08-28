@@ -254,7 +254,9 @@ All endpoints are **loopback-only** (`127.0.0.1`/`localhost`) and JSON.
 | `/api/skill-hub/market/check` | GET | Check market sources for newer releases (throttled). |
 | `/api/skill-hub/market/source/sync` | POST | Align a market source to its pinned ref; returns tracked skills. |
 | `/api/skill-hub/repo?repo=` | GET | Discover importable skills in a GitHub repo. |
-| `/api/skill-hub/repo/import` | POST | Import selected repo skills (records the source + default scene). |
+| `/api/skill-hub/repo/import` | POST | Create an async import job (returns `{jobId, total, totalBytes}`); poll progress below. |
+| `/api/skill-hub/repo/import/progress?jobId=` | GET | Poll a running import job (`{status, done, total, downloadedBytes, totalBytes, bytesPerSecond, current, imported, skipped, failed}`). |
+| `/api/skill-hub/repo/import/cancel` | POST | Cancel a running import job (`{jobId}`). |
 | `/api/skill-hub/sources` | GET | Source records, derived origins/collections, trash. |
 | `/api/skill-hub/sources/check` | POST | Check upstream updates (throttled, 5 min). |
 | `/api/skill-hub/sources/sync` | POST | Sync selected (or all) skills of a source. |

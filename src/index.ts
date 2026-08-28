@@ -21,6 +21,10 @@ import { SkillHubProvider } from './provider.ts'
 import { makeRoutes } from './routes.ts'
 import { createSkillStatsReader, type SkillStatsReader } from './stats.ts'
 import { SkillHubStore } from './store.ts'
+import { cleanupLeftoverImportDirs } from './repo.ts'
+import { dshHome } from './store.ts'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 
 /** Stable cordis plugin name (matches cordis.patch.yml insert id). */
 export const name = 'skill-hub'
@@ -213,6 +217,20 @@ export function apply(ctx: Context, config?: Config): void {
   // build seeds the settings namespace from the saved sidecar config when the
   // namespace has no user section yet. Later edits live only in the settings
   // document; the sidecar keeps its (now-stale) copy untouched.
+  // Startup: 清理 Issue #3 遗留的 .*.import-* 临时目录（尽早回收，不阻塞）
+  void (async () => {
+    const home = dshHome()
+    const agentsHome = process.env.DSH_AGENTS_HOME ?? join(homedir(), '.agents')
+    for (const root of [join(home, 'skills'), join(agentsHome, 'skills')]) {
+      try {
+        const c = await cleanupLeftoverImportDirs(root)
+        if (c > 0) ctx.logger.info(`[dsh-skill-hub] startup cleaned ${c} leftover import temp dir(s) in ${root}`)
+      } catch (error) {
+        ctx.logger.warn('[dsh-skill-hub] startup cleanup failed', error)
+      }
+    }
+  })()
+
   void (async () => {
     const legacy = await store.getConfig()
     if (Object.keys(legacy).length > 0 && Object.keys(saved()).length === 0) {

@@ -22,9 +22,9 @@
 /* Inset grouped list: one rounded card per group. */
 .section { display: flex; flex-direction: column; background: rgba(128,128,128,.06); border-radius: 12px; overflow: hidden; margin-top: 4px; box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 4px 12px rgba(0,0,0,.04); }
 .sectionTitle { font-size: 13px; font-weight: 700; margin: 14px 16px 2px; }
-.groupHead { display: flex; align-items: center; gap: 8px; padding: 12px 14px 4px; }
-.groupTitle { font-size: 13px; font-weight: 600; opacity: .92; flex: 1; min-width: 0; }
-.groupOps { flex: none; display: inline-flex; gap: 6px; }
+.groupHead { display: flex; align-items: center; gap: 8px; padding: 10px 14px; min-height: 44px; box-sizing: border-box; }
+.groupTitle { font-size: 13px; font-weight: 600; opacity: .92; flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; line-height: 1; }
+.groupOps { flex: none; display: inline-flex; gap: 6px; align-items: center; }
 
 /* Small neutral pill buttons (group-level actions). */
 .opBtn { font-size: 11px; padding: 3px 11px; border-radius: 999px; border: none; background: rgba(128,128,128,.13); color: inherit; cursor: pointer; transition: background .15s ease; }
@@ -113,10 +113,10 @@
 .badgeDisabled { background: rgba(128,128,128,.1); border: none; opacity: .58; }
 
 /* Collapsible drawer headers (groups view). */
-.disclosure { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 2px 0; border: none; background: none; color: inherit; cursor: pointer; text-align: left; }
+.disclosure { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 2px 0; border: none; background: none; color: inherit; cursor: pointer; text-align: left; min-height: 24px; }
 .disclosure:hover .groupTitle { opacity: 1; }
-.chevron { flex: none; width: 8px; height: 8px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); transition: transform .15s ease; opacity: .55; margin-right: 2px; }
-.chevronCollapsed { transform: rotate(-45deg); }
+.chevron { flex: none; width: 8px; height: 8px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg) translateY(-1px); transition: transform .15s ease; opacity: .55; margin-right: 2px; align-self: center; }
+.chevronCollapsed { transform: rotate(-45deg) translateY(-1px); }
 
 /* Reduced header: title + quiet count on one line, controls on the next. */
 .headerCount { font-size: 12px; opacity: .5; margin-left: 2px; white-space: nowrap; }
@@ -226,3 +226,14 @@
 /* Project-level three-tier tree: outer card (the .section), inner levels are
    flat — indent + a hairline guide only, no nested card surfaces. */
 .projectNest { display: flex; flex-direction: column; margin: 2px 0 0 14px; border-left: 1px solid rgba(128,128,128,.14); }
+
+/* Drag handle + reorder states */
+.dragHandle { cursor: grab; opacity: .32; font-size: 11px; letter-spacing: 1px; padding: 0 4px; user-select: none; flex: none; display: inline-flex; align-items: center; justify-content: center; height: 20px; align-self: center; }
+.dragHandle:active { cursor: grabbing; }
+.dragging { opacity: .45; }
+.dragOver { outline: 2px dashed var(--hub-model, #2f81f7); outline-offset: -2px; background: rgba(47,129,247,.07); }
+
+/* Scan list for 276-skill import — theme-agnostic, replaces inline styles */
+.scanList { max-height: 360px; overflow: auto; border: 0.5px solid rgba(128,128,128,.13); border-radius: 12px; margin-top: 8px; background: rgba(128,128,128,.06); }
+.scanProgressTrack { flex: 1; height: 6px; background: rgba(128,128,128,.13); border-radius: 4px; overflow: hidden; }
+.scanProgressFill { height: 100%; background: var(--hub-model, #2f81f7); transition: width .2s; }
