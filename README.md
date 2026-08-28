@@ -56,8 +56,9 @@ ones — all from the dsh web GUI.
 | New-skill wizard | ❌ | ✅ (writes to `~/.dsh/skills` or `~/.agents/skills`) |
 | Invocation statistics | ❌ | ✅ (per-skill call counts read from session logs; group headers summarize) |
 | Upstream source tracking | ❌ | ✅ (repo + commit snapshot; check updates, sync, follow upstream deletion into a restorable trash; delete/restore keeps source + scene membership) |
-| Market | ❌ | ✅ (unified market list: built-in curated catalog + custom repos; scan, one-click import, per-source installed/updatable badges, one-click update-all) |
+| Market | ❌ | ✅ (unified market list: built-in curated catalog + custom repos; scan any top-level root — `skills/`, `design-templates/`, `templates/` … auto-derived, no allowlist — one-click import, per-source installed/updatable/deleted-upstream badges, one-click update-all) |
 | Live updates | — | filesystem-provider watcher, with a 5s panel poll as fallback |
+| Drag reorder | ❌ | ✅ (drag handles on every group header: scenes, source collections, and the top-level source-group bar — order persists in `~/.dsh/dsh-skill-hub.json`) |
 
 ## Features
 
@@ -78,6 +79,10 @@ ones — all from the dsh web GUI.
   one click. Closing a group whose member is also enabled elsewhere opens a conflict dialog (close all /
   keep on → the group falls into a half-filled mixed state). Read-only skills are skipped with
   per-name reports.
+- **Drag reorder & edit mode** — every group header has a drag handle; scenes, source collections, and
+  the top-level source-group bar (project / collections / personal) can be reordered and the order
+  persists. An **Edit** toggle on Sources/Scenes reveals delete/reorder controls while keeping the
+  flat/grouped view readable — market rows hide edit controls entirely.
 - **Enable / disable** — disable renames `SKILL.md` out of discovery (tracked in a sidecar file), so
   the change survives restarts and is trivially reversible. Files are never deleted.
 - **Skill detail** — read a skill’s body straight from disk, with its source card (repo, commit,
@@ -92,8 +97,11 @@ ones — all from the dsh web GUI.
 - **Unified market list** — one list on the Market tab: built-in catalog entries show a description
   and an **Add** button until added; once added (or custom sources entered by hand) the same row
   becomes a full source row. No duplicate entries.
-- **Scan → install** — scan any repo’s `skills/` and `design-templates/` roots, tick the skills you
-  want, import with one click. Imports record the upstream repo/commit automatically.
+- **Scan → install** — scan any repo (any top-level root that contains `SKILL.md` — `skills/`,
+  `design-templates/`, `templates/`, … auto-derived, no hard-coded allowlist), tick the skills you
+  want, import with one click. Imports record the upstream repo/commit automatically. Large imports
+  run as async jobs with byte-level progress (`{jobId, total, totalBytes}` → poll `/repo/import/progress`,
+  cancellable) so the panel stays responsive.
 - **State badges** — every source row aggregates its state: installed count, updatable count, and
   deleted-upstream count.
 - **Check all / update all** — “Check all” refreshes every source (release + skill diffs); “Update
@@ -112,7 +120,10 @@ ones — all from the dsh web GUI.
 > no telemetry leaves the machine.
 
 - **Invocation statistics** — per-skill call counts and last-used times read from session logs
-  (optional; absent session-query deployments simply omit the data); group headers summarize.
+  (optional; absent session-query deployments simply omit the data); group headers summarize. Rolling
+  window is configurable (default 14 days; `0` = full history) and a background incremental-scan cache
+  (adaptive TTL, daily full reconciliation) keeps large log volumes cheap; both interval and window are
+  live from the settings card.
 - **Discovery diagnostics** — the catalog reports *why* a skill was ignored (missing YAML
   frontmatter, missing `name`/`description`, illegal name), per skill.
 - **Settings card** — enable the plugin, toggle the agent announcement, and adjust panel display
@@ -157,13 +168,13 @@ Requires Node `^22.19.0 || >=24.0.0` and a dsh web deployment (compatible with t
 | File | Responsibility |
 | --- | --- |
 | `src/index.ts` | host entry: inject `[webServer, skills, systemPrompt, settings]`; registers the `dsh-skill-hub` settings namespace; system-prompt announcement |
-| `src/routes.ts` | declarative route wrapper: `/api/skill-hub/*` (loopback / method / master-switch / JSON-body fences handled once; handlers stay business-only) |
-| `src/store.ts` | sidecar state `~/.dsh/dsh-skill-hub.json` v3 (disabled, tags, sources, market sources, trash; versioned v1→v2→v3 migrations) |
-| `src/repo.ts` | GitHub discovery/import + source tracking (latest commit, tree diff, manifest) |
-| `src/skillfs.ts` | root resolution / toggle rename / trash & restore / scaffold / diagnostics |
-| `src/stats.ts` | invocation stats: session logs → per-skill call counts (optional sessionQuery) |
-| `src/protocol.ts` | host ↔ browser shared API contract (types + endpoint table) |
-| `src/client/` | browser half: settings card + skill hub panel. State and flows live in `useSkillHub.ts`; views are thin components (`SourcesView` / `ScenesView` / `MarketView` / `SkillRow` / dialogs / …). CSS Modules, Apple-style |
+| `src/routes.ts` | declarative route wrapper: `/api/skill-hub/*` (loopback / method / master-switch / JSON-body fences handled once; handlers stay business-only; async import jobs + drag-reorder routes) |
+| `src/store.ts` | sidecar state `~/.dsh/dsh-skill-hub.json` v4 (disabled, tags, sources, market sources, trash, `skillStats` checkpoint, `collectionOrder`/`sourceGroupOrder`; versioned v1→v4 migrations) |
+| `src/repo.ts` | GitHub discovery/import + source tracking (latest commit, tree diff, manifest; roots auto-derived from any top-level `SKILL.md`) |
+| `src/skillfs.ts` | root resolution / toggle rename / trash & restore / scaffold / diagnostics (Windows-safe `rootOfPath` via `sep`/`relative`) |
+| `src/stats.ts` | invocation stats: session logs → per-skill call counts with incremental frozen-bucket cache (rolling window, adaptive TTL, optional sessionQuery) |
+| `src/protocol.ts` | host ↔ browser shared API contract (types + endpoint table; generic `RepoRoot = string`, reorder contracts, async import progress) |
+| `src/client/` | browser half: settings card + skill hub panel. State and flows live in `useSkillHub.ts`; views are thin components (`SourcesView` / `ScenesView` / `MarketView` / `SkillRow` / dialogs / …). CSS Modules, Apple-style; edit-mode toggle + drag handles |
 
 - **Host half** uses only official SDKs: `ctx.skills.snapshot()/get()`, `ctx.webServer.register()`,
   `ctx.systemPrompt.section()`. No dsh source is modified.
@@ -183,9 +194,11 @@ Open **Settings → 技能** (Skill Hub) in the dsh web GUI. Three tabs:
 - **来源 (Sources)** — the skill list, flat or grouped: a project-level tree (workspaces merged by
   default, per project optionally split into `.dsh`/`.agents`) plus source collections and
   uncategorized. Search, source filter and sort share one row; group headers carry tri-state
-  switches; the source-group badge doubles as the re-check entry. *(see the screenshot at the top)*
+  switches plus a drag handle (reorder persists); the source-group badge doubles as the re-check
+  entry. An **Edit** toggle reveals delete/reorder controls without cluttering the read view. *(see the screenshot at the top)*
 - **场景 (Scenes)** — your own enable/disable units (e.g. a “Godot” scene vs a “Java” scene): create
-  tags, assign members, and flip a whole scene on/off with one switch.
+  tags, assign members, flip a whole scene on/off with one switch, and drag to reorder scenes. Edit
+  mode keeps the grouped/flat switch visible.
 
   <p align="center">
     <img src="https://raw.githubusercontent.com/cheshireez/dsh-skill-hub/main/promo/real-skill-hub-scenes.png" alt="场景 tab" width="560">
@@ -211,6 +224,8 @@ The plugin’s own switches live on the **Settings → 插件 → Skill Hub** ca
 | Show invocation count | Show per-skill call-count chips when session stats are available. |
 | Show last-used time | Show relative last-used time on each skill row. |
 | Show group summaries | Show count/last-used summaries after group titles. |
+| Stats window (days) | Rolling window for invocation counts (default 14; `0` = full history). Change applies live; widening forces a full reconciliation. |
+| Auto stats interval (min) | Background session-log scan interval (min 1, default 5); heavy scans automatically stretch the interval. Live from the card. |
 
 ## Troubleshooting
 
@@ -242,18 +257,21 @@ All endpoints are **loopback-only** (`127.0.0.1`/`localhost`) and JSON.
 | `/api/skill-hub/toggle-batch` | POST | Enable/disable a whole group in one write (`{names, enabled}`). |
 | `/api/skill-hub/create` | POST | Scaffold a new skill (`{name, description?, root?}`). |
 | `/api/skill-hub/stats` | GET | Per-skill invocation counts (unavailable when session-query is absent). |
-| `/api/skill-hub/config` | GET/POST | Plugin runtime config (`{enabled, announceToAgent}`); `null` clears an override. |
-| `/api/skill-hub/groups` | GET | User tags + source collections + origin map. |
+| `/api/skill-hub/config` | GET/POST | Plugin runtime config (`{enabled, announceToAgent, dot colors, show toggles, statsWindowDays, statsScanMinutes}`); `null` clears an override. |
+| `/api/skill-hub/groups` | GET | User tags + source collections + origin map + drag order (`sourceGroupOrder`/`collectionOrder`). |
 | `/api/skill-hub/tag` | POST | Create/rename a tag group. |
 | `/api/skill-hub/tag/delete` | POST | Delete a tag group. |
 | `/api/skill-hub/tag/members` | POST | Set a tag’s member list. |
+| `/api/skill-hub/tag/reorder` | POST | Drag-reorder scenes (`{orderedIds}` — must contain all ids). |
+| `/api/skill-hub/collections/reorder` | POST | Drag-reorder source collections (`{orderedNames}`). |
+| `/api/skill-hub/source-groups/reorder` | POST | Drag-reorder top-level source groups (`{orderedKeys}` — `project` / `col:<name>` / `uncategorized-source`). |
 | `/api/skill-hub/market` | GET | The user’s market source repos. |
 | `/api/skill-hub/market/source` | POST | Add a market source (`{repo}`). |
 | `/api/skill-hub/market/source/delete` | POST | Remove a market source. |
 | `/api/skill-hub/market/source/ref` | POST | Pin a market source to a release/branch ref. |
 | `/api/skill-hub/market/check` | GET | Check market sources for newer releases (throttled). |
 | `/api/skill-hub/market/source/sync` | POST | Align a market source to its pinned ref; returns tracked skills. |
-| `/api/skill-hub/repo?repo=` | GET | Discover importable skills in a GitHub repo. |
+| `/api/skill-hub/repo?repo=` | GET | Discover importable skills in a GitHub repo (any top-level root auto-derived). |
 | `/api/skill-hub/repo/import` | POST | Create an async import job (returns `{jobId, total, totalBytes}`); poll progress below. |
 | `/api/skill-hub/repo/import/progress?jobId=` | GET | Poll a running import job (`{status, done, total, downloadedBytes, totalBytes, bytesPerSecond, current, imported, skipped, failed}`). |
 | `/api/skill-hub/repo/import/cancel` | POST | Cancel a running import job (`{jobId}`). |
@@ -270,7 +288,7 @@ All endpoints are **loopback-only** (`127.0.0.1`/`localhost`) and JSON.
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (152 tests across 8 suites)
+npm test            # vitest (174 tests across 9 suites)
 npm run build       # tsc declarations + tsdown bundles (lib/index.js + lib/client.js)
 npm pack            # build the installable tarball (dsh-skill-hub-<version>.tgz)
 ```

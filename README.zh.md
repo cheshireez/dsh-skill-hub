@@ -55,8 +55,9 @@
 | 新建技能向导 | ❌ | ✅（写入 `~/.dsh/skills` 或 `~/.agents/skills`） |
 | 触发统计 | ❌ | ✅（从会话日志读每技能实际调用次数；组头汇总） |
 | 来源跟踪 | ❌ | ✅（记录上游 repo + commit 快照；检查更新 / 同步 / 上游删除跟进进回收站；删除→恢复保留来源与场景归属） |
-| 市场 | ❌ | ✅（统一市场列表：内置精选目录 + 自定义仓库；扫描、一键导入、每源显示已装/可更新数量、一键全部更新） |
+| 市场 | ❌ | ✅（统一市场列表：内置精选目录 + 自定义仓库；扫描任意顶层根目录 — `skills/` / `design-templates/` / `templates/` … 自动识别、无白名单 — 一键导入、每源显示已装/可更新/上游已删数量、一键全部更新） |
 | 实时更新 | — | 文件系统 provider 的 watcher 驱动，面板 5s 轮询兜底 |
+| 拖拽排序 | ❌ | ✅（各分组头部拖拽手柄：场景、来源集合、顶层来源分组均可拖拽排序，顺序持久化到 `~/.dsh/dsh-skill-hub.json`） |
 
 ## 功能
 
@@ -72,6 +73,9 @@
   分组（每个项目可选细分 `.dsh` / `.agents`）；面板顶部的路径输入框可以把视图固定到单个工作区。
 - **组开关（三态）** —— 每个分组头部一个滑动开关，一键启用/禁用整组；关闭时若成员在其他组开启，
   弹窗询问（全部关闭 / 保留开启 → 该组开关进入半开混合态）。只读技能跳过并逐名报告。
+- **拖拽排序与编辑模式** —— 每个分组头部有拖拽手柄；场景、来源集合、顶层来源分组（项目 / 集合 / 个人）
+  均可拖拽排序且持久化。来源/场景页的**编辑**开关统一收敛删除与排序控件，平时保持平铺/分组视图清爽；
+  市场行始终隐藏编辑控件。
 - **启用 / 禁用** —— 禁用时把 `SKILL.md` 重命名移出发现范围（记录在 sidecar 文件中），重启后
   仍然生效且可一键恢复。文件从不删除。
 - **技能详情** —— 直接从磁盘读取技能正文，并附来源卡片（仓库、commit、检查 / 同步 / 跟进删除）。
@@ -83,8 +87,10 @@
 
 - **统一市场列表** —— 市场 tab 只有一张列表：内置精选目录的条目在未添加时显示简介 + 「添加」
   按钮；已添加的（以及手动输入的自定义源）同一行变成完整状态行，不会出现重复条目。
-- **扫描 → 安装** —— 扫描任意仓库的 `skills/` 与 `design-templates/` 根目录，勾选要装的技能，
-  一键导入；导入自动记录上游 repo/commit。
+- **扫描 → 安装** —— 扫描任意仓库（只要顶层目录下有 `SKILL.md` 即视为技能根目录 — `skills/` /
+  `design-templates/` / `templates/` … 自动识别、无白名单），勾选要装的技能，一键导入；导入自动
+  记录上游 repo/commit。大批量导入走异步任务并显示字节级进度（`{jobId, total, totalBytes}` → 轮询
+  `/repo/import/progress`，可取消），面板不卡死。
 - **状态徽章** —— 每个来源行聚合显示：已装 N / 可更新 N / 上游已删 N。
 - **检查全部 / 全部更新** —— 「检查全部」一次刷新所有来源（版本 + 技能差异）；「全部更新」一次
   同步所有待更新来源（单个来源失败不影响其他，汇总报告）。打开面板时每天最多自动检查一次
@@ -99,7 +105,8 @@
 > **知道你的 Agent 到底在用什么。** 调用次数来自你自己的会话日志——没有任何数据离开本机。
 
 - **触发统计** —— 从会话日志读每个技能的实际调用次数与最近使用时间（可选；没有 session-query
-  的部署直接省略）；分组标题汇总。
+  的部署直接省略）；分组标题汇总。统计支持滚动窗口（默认 14 天；`0` = 全部历史）与后台增量扫描
+  缓存（自适应 TTL、每天一次全量对账），大量日志下依然轻量；窗口与扫描间隔均可在设置卡片实时调整。
 - **发现诊断** —— 目录逐项报告技能被忽略的原因（缺 YAML frontmatter、缺 `name`/`description`、
   非法名称）。
 - **设置卡片** —— 在 **设置 → 插件 → Skill Hub** 启用插件、开关向 Agent 的公告、调整面板显示偏好。
@@ -143,12 +150,12 @@ description: 一句话说明什么时候该用这个技能。
 | --- | --- |
 | `src/index.ts` | host 入口：inject `[webServer, skills, systemPrompt, settings]`；注册 `dsh-skill-hub` 设置命名空间；系统提示公告 |
 | `src/routes.ts` | 声明式 route 包装：`/api/skill-hub/*`（回环 / 方法 / 总开关 / JSON 体四道围栏统一处理一次，路由只写业务逻辑） |
-| `src/store.ts` | sidecar 状态 `~/.dsh/dsh-skill-hub.json` v3（禁用、tag、sources、市场源、回收站；v1→v2→v3 版本化迁移） |
-| `src/repo.ts` | GitHub 发现/导入 + 来源跟踪（最新 commit、tree 差异、manifest） |
-| `src/skillfs.ts` | 根目录解析 / 开关重命名 / 回收站 & 恢复 / 脚手架 / 诊断扫描 |
-| `src/stats.ts` | 触发统计：会话日志 → 每技能调用次数（可选 sessionQuery） |
-| `src/protocol.ts` | host ↔ browser 共享 API 契约（类型 + 端点表） |
-| `src/client/` | browser 半边：设置卡片 + 技能中枢面板。状态与流程收敛在 `useSkillHub.ts`；视图是薄组件（`SourcesView` / `ScenesView` / `MarketView` / `SkillRow` / dialogs / …）。CSS Modules，苹果风 |
+| `src/store.ts` | sidecar 状态 `~/.dsh/dsh-skill-hub.json` v4（禁用、tag、sources、市场源、回收站、`skillStats` 检查点、`collectionOrder`/`sourceGroupOrder`；v1→v4 版本化迁移） |
+| `src/repo.ts` | GitHub 发现/导入 + 来源跟踪（最新 commit、tree 差异、manifest；根目录从任意顶层 `SKILL.md` 自动推导） |
+| `src/skillfs.ts` | 根目录解析 / 开关重命名 / 回收站 & 恢复 / 脚手架 / 诊断扫描（`rootOfPath` 兼容 Windows `sep`/`relative`） |
+| `src/stats.ts` | 触发统计：会话日志 → 每技能调用次数，增量 frozen-bucket 缓存（滚动窗口、自适应 TTL、可选 sessionQuery） |
+| `src/protocol.ts` | host ↔ browser 共享 API 契约（类型 + 端点表；`RepoRoot = string` 通用化、拖拽排序契约、异步导入进度） |
+| `src/client/` | browser 半边：设置卡片 + 技能中枢面板。状态与流程收敛在 `useSkillHub.ts`；视图是薄组件（`SourcesView` / `ScenesView` / `MarketView` / `SkillRow` / dialogs / …）。CSS Modules，苹果风；含编辑模式开关与拖拽手柄 |
 
 - **宿主半边** 只用官方 SDK：`ctx.skills.snapshot()/get()`、`ctx.webServer.register()`、
   `ctx.systemPrompt.section()`。不修改 dsh 源码。
@@ -164,10 +171,11 @@ description: 一句话说明什么时候该用这个技能。
 在 dsh Web GUI 打开 **设置 → 技能**（Skill Hub），三个 tab：
 
 - **来源** —— 技能列表，平铺或分组：项目级三级树（默认合并所有工作区，每项目可选细分
-  `.dsh`/`.agents`）+ 来源集合 + 未归类。搜索、来源筛选、排序共用一行；分组头部有三态开关，
-  来源组的徽章兼作重新检查入口。（见本页顶部截图）
+  `.dsh`/`.agents`）+ 来源集合 + 未归类。搜索、来源筛选、排序共用一行；分组头部有三态开关与拖拽
+  手柄（拖拽后持久化），来源组的徽章兼作重新检查入口。**编辑**开关统一收敛删除/排序操作，保持常态
+  视图清爽。（见本页顶部截图）
 - **场景** —— 你自己的启用/禁用单元（比如「Godot 开发」和「Java 开发」各一个场景）：新建 tag、
-  勾选成员，一键整场景开关。
+  勾选成员，一键整场景开关并支持拖拽排序；编辑模式下平铺/分组切换仍可见。
 
   <p align="center">
     <img src="https://raw.githubusercontent.com/cheshireez/dsh-skill-hub/main/promo/real-skill-hub-scenes.png" alt="场景 tab" width="560">
@@ -192,6 +200,8 @@ description: 一句话说明什么时候该用这个技能。
 | 显示调用次数 | 有会话统计时显示每个技能的调用次数角标。 |
 | 显示最近调用时间 | 在技能行显示相对最近调用时间。 |
 | 显示分组汇总 | 在分组标题后汇总调用次数与最近调用时间。 |
+| 统计窗口（天） | 统计滚动窗口天数（默认 14 天；`0` = 全部历史）。修改立即生效，扩大窗口会触发一次全量对账。 |
+| 自动统计间隔（分钟） | 后台扫描会话日志的间隔，最小 1 分钟，默认 5 分钟；耗时过长时自动拉长。卡片里改完即生效。 |
 
 ## 故障排查
 
@@ -219,18 +229,21 @@ description: 一句话说明什么时候该用这个技能。
 | `/api/skill-hub/toggle-batch` | POST | 一次写入整组启停（`{names, enabled}`）。 |
 | `/api/skill-hub/create` | POST | 脚手架新技能（`{name, description?, root?}`）。 |
 | `/api/skill-hub/stats` | GET | 每技能调用次数（无 session-query 时不可用）。 |
-| `/api/skill-hub/config` | GET/POST | 插件运行时配置（`{enabled, announceToAgent}` 等）；`null` 清除覆盖。 |
-| `/api/skill-hub/groups` | GET | 用户标签 + 来源组 + origin 映射。 |
+| `/api/skill-hub/config` | GET/POST | 插件运行时配置（`{enabled, announceToAgent, 圆点颜色, 显示开关, statsWindowDays, statsScanMinutes}`）；`null` 清除覆盖。 |
+| `/api/skill-hub/groups` | GET | 用户标签 + 来源组 + origin 映射 + 拖拽顺序（`sourceGroupOrder`/`collectionOrder`）。 |
 | `/api/skill-hub/tag` | POST | 新建/重命名标签分组。 |
 | `/api/skill-hub/tag/delete` | POST | 删除标签分组。 |
 | `/api/skill-hub/tag/members` | POST | 设置某标签的成员列表。 |
+| `/api/skill-hub/tag/reorder` | POST | 拖拽重排场景（`{orderedIds}`，需包含全部 id）。 |
+| `/api/skill-hub/collections/reorder` | POST | 拖拽重排来源集合（`{orderedNames}`）。 |
+| `/api/skill-hub/source-groups/reorder` | POST | 拖拽重排来源顶层分组（`{orderedKeys}` — `project` / `col:<name>` / `uncategorized-source`）。 |
 | `/api/skill-hub/market` | GET | 用户的市场源仓库列表。 |
 | `/api/skill-hub/market/source` | POST | 添加市场源（`{repo}`）。 |
 | `/api/skill-hub/market/source/delete` | POST | 移除市场源。 |
 | `/api/skill-hub/market/source/ref` | POST | 把市场源固定到某个 release/分支。 |
 | `/api/skill-hub/market/check` | GET | 检查市场源是否有新版本（节流）。 |
 | `/api/skill-hub/market/source/sync` | POST | 市场源版本对齐，返回该源跟踪的技能。 |
-| `/api/skill-hub/repo?repo=` | GET | 发现 GitHub 仓库中可导入的技能。 |
+| `/api/skill-hub/repo?repo=` | GET | 发现 GitHub 仓库中可导入的技能（任意顶层根目录自动推导）。 |
 | `/api/skill-hub/repo/import` | POST | 创建异步导入任务（返回 `{jobId, total, totalBytes}`，轮询进度见下）。 |
 | `/api/skill-hub/repo/import/progress?jobId=` | GET | 轮询导入任务进度（`{status, done, total, downloadedBytes, totalBytes, bytesPerSecond, current, imported, skipped, failed}`）。 |
 | `/api/skill-hub/repo/import/cancel` | POST | 取消进行中的导入任务（`{jobId}`）。 |
@@ -247,7 +260,7 @@ description: 一句话说明什么时候该用这个技能。
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest（8 个套件，152 个用例）
+npm test            # vitest（9 个套件，174 个用例）
 npm run build       # tsc 声明 + tsdown 双半边产物（lib/index.js + lib/client.js）
 npm pack            # 生成可安装的 tgz（dsh-skill-hub-<version>.tgz）
 ```
