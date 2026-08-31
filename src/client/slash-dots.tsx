@@ -119,6 +119,47 @@ function dotIcon(color: string): InputTriggerCandidate['icon'] {
  * @param scope - hub settings scope for the dot colors.
  * @returns a disposer restoring the original candidates.
  */
+/**
+ * DOM 兜底：在 alpha.2 新版 MenuView（icon 仅枚举）下通过直接操作
+ * 已渲染的 `[role="option"]` 列表注入彩色点，绕过 `icon` 限制。
+ * 旧版仍走 `icon` 注入，此处仅为新版。
+ */
+function injectDotsViaDOM(modelByName: Map<string, boolean>, modelColor: string, userColor: string): void {
+  if (typeof document === 'undefined' || typeof requestAnimationFrame === 'undefined') return
+  const run = (): void => {
+    const options = document.querySelectorAll('[role="option"]')
+    for (const opt of options) {
+      // 已注入则跳过（由 data 属性标记）
+      if (opt.querySelector('[data-skill-dot]') !== null) continue
+      // 技能名在 .itemName 中，取文本匹配 catalog
+      const nameEl = opt.querySelector('[class*="itemName"]') as HTMLElement | null
+      if (nameEl === null) continue
+      const name = (nameEl.textContent ?? '').trim()
+      if (name.length === 0) continue
+      if (!modelByName.has(name) && nameEl.textContent !== name) continue // 保守：仅处理已知名
+      const color = (modelByName.get(name) ?? true) ? modelColor : userColor
+      const dot = document.createElement('span')
+      dot.setAttribute('data-skill-dot', '')
+      dot.setAttribute('aria-hidden', 'true')
+      dot.style.display = 'inline-block'
+      dot.style.width = '6px'
+      dot.style.height = '6px'
+      dot.style.borderRadius = '3px'
+      dot.style.background = color
+      dot.style.flex = 'none'
+      // 插在名称前；若存在 icon 槽则插在其后，兼容旧版结构
+      const iconEl = opt.querySelector('[class*="itemIcon"]')
+      if (iconEl !== null && iconEl.nextSibling !== null) {
+        iconEl.parentElement?.insertBefore(dot, iconEl.nextSibling)
+      } else {
+        nameEl.parentElement?.insertBefore(dot, nameEl)
+      }
+    }
+  }
+  // 菜单由 React 异步渲染，需等下一帧
+  requestAnimationFrame(() => setTimeout(run, 0))
+}
+
 export function wrapSkillSource(source: InputTriggerSource, api: SkillHubApi, scope: SettingsScope<HubSettingsValue>): () => void {
   const original = source.candidates
   source.candidates = async (session, req) => {
@@ -126,15 +167,19 @@ export function wrapSkillSource(source: InputTriggerSource, api: SkillHubApi, sc
     if (req.signal.aborted) return items
     // Dual-compat: 0.1.2-alpha.2 的 MenuView 将 icon 收窄为 'file'|'folder'|'session'
     // 并通过 ReferenceIcon 渲染，旧版的自定义 ReactElement 点已无法展示。
-    // 以 `drilled` 是否存在探测新版（alpha.2 必有，rc 无），新版直接透传不注入
-    // icon，旧版保持彩色点，避免新版传入非法 icon 导致渲染异常。
+    // 以 `drilled` 是否存在探测新版（alpha.2 必有，rc 无）。
     const isNewHost = req !== null && typeof req === 'object' && 'drilled' in (req as unknown as Record<string, unknown>)
-    if (isNewHost) return items
     const modelByName = await modelInvocableMap(api)
     if (req.signal.aborted) return items
     const snapshot = scope.getSnapshot()
     const modelColor = snapshot.value?.dotModelColor ?? DEFAULT_DOT_MODEL_COLOR
     const userColor = snapshot.value?.dotUserColor ?? DEFAULT_DOT_USER_COLOR
+    if (isNewHost) {
+      // 新版：不通过 icon（枚举限制），改为 DOM 注入
+      injectDotsViaDOM(modelByName, modelColor, userColor)
+      return items
+    }
+    // 旧版：保持原有 icon 注入
     return items.map((item) => ({
       ...item,
       icon: dotIcon((modelByName.get(item.name) ?? true) ? modelColor : userColor),
