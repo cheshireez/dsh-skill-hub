@@ -14,6 +14,9 @@
  */
 
 import type { CatalogSkill, CollectionGroup, SkillTag } from '../protocol.ts'
+import { isProjectSource } from '../protocol.ts'
+
+export { isProjectSource }
 
 /** Grouped switch state derived from member enablement. */
 export type GroupSwitchState = 'on' | 'off' | 'mixed'
@@ -68,11 +71,6 @@ export function conflictsOnClose(
 
 /** Origin-repo filter value: skills with no source record (private skills). */
 export const PRIVATE_SOURCE = 'private'
-
-/** 项目级技能来源（它们有 workspace 归属，不属于「个人」组）。 */
-export function isProjectSource(source: string): boolean {
-  return source === 'project-dsh' || source === 'project-agents'
-}
 
 /**
  * Apply the origin filter ('all' or a specific origin repo; skills without a

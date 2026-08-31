@@ -94,6 +94,7 @@ import {
   type ToggleResponse,
   type WritableRoot,
   HEX_COLOR_RE,
+  isProjectSource,
   resolveHubConfig,
 } from './protocol.ts'
 import { clearTrash, createSkill, disableSkill, enableSkill, restoreSkill, rootOfPath, rootPath, scanDiagnostics, trashSkill } from './skillfs.ts'
@@ -348,11 +349,6 @@ async function workspaceEntries(home: string): Promise<WorkspaceEntry[]> {
   } catch {
     return []
   }
-}
-
-/** 项目技能来源（workspace 字段只对它们设置）。 */
-function isProjectSource(source: string): boolean {
-  return source === 'project-dsh' || source === 'project-agents'
 }
 
 /**

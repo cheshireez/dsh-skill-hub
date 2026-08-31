@@ -181,7 +181,6 @@ export function MarketView(props: { hub: SkillHubState }): JSX.Element {
         <section className={css.section} style={{ borderLeft: '3px solid var(--hub-model, #2f81f7)', background: 'rgba(47,129,247,0.04)' }}>
           <div className={css.sectionTitle + ' ' + css.sectionHeadRow} style={{ margin: '10px 14px 6px' }}>
             <span className={css.sectionTitleFill} style={{ display:'flex', alignItems:'center', gap:6 }}>
-              <span style={{ width:7, height:7, borderRadius:'50%', background:'var(--hub-model, #2f81f7)', display:'inline-block' }} />
               扫描结果
               <span style={{ fontWeight:400, opacity:.75 }}>
                 — {repoDiscoverState.status === 'ready' ? repoDiscoverState.data.repo : repoDiscoverState.status === 'error' ? (scanningRepo ?? '') : (scanningRepo ?? '')}

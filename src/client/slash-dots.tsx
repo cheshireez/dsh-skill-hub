@@ -127,13 +127,22 @@ function dotIcon(color: string): InputTriggerCandidate['icon'] {
 function injectDotsViaDOM(modelByName: Map<string, boolean>, modelColor: string, userColor: string): void {
   if (typeof document === 'undefined' || typeof requestAnimationFrame === 'undefined') return
   const run = (): void => {
-    const options = document.querySelectorAll('[role="option"]')
+    // 仅处理斜杠菜单：通过 MenuView 的哈希类 `_3e4SsG_menu` 定位，避免误伤
+    // 面板内市场扫描/分组等其它 `[role="option"]` 列表
+    const menu = document.querySelector('[class*="_3e4SsG_menu"]') as HTMLElement | null
+    const listbox = menu?.querySelector('[role="listbox"]') ?? document.querySelector('[role="listbox"]')
+    // 若菜单未打开则不注入
+    if (listbox === null) return
+    const scope: ParentNode = listbox
+    const options = scope.querySelectorAll('[role="option"]')
     for (const opt of options) {
       if (opt.querySelector('[data-skill-dot]') !== null) continue
       const nameEl = opt.querySelector('[class*="itemName"]') as HTMLElement | null
       if (nameEl === null) continue
       const name = (nameEl.textContent ?? '').trim()
       if (name.length === 0) continue
+      // 仅对技能生效：非技能候选（/command、@file 等）不在 catalog，不注点
+      if (!modelByName.has(name)) continue
       const color = (modelByName.get(name) ?? true) ? modelColor : userColor
       // 复刻旧版 icon 槽：16×16 容器居中 6px 点，与升级前 `dotIcon` 在 `itemIcon` 内的效果一致
       const wrapper = document.createElement('span')

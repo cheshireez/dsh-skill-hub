@@ -24,7 +24,7 @@
 .sectionTitle { font-size: 13px; font-weight: 700; margin: 14px 16px 2px; }
 .groupHead { display: flex; align-items: center; gap: 8px; padding: 10px 14px; min-height: 44px; box-sizing: border-box; }
 .groupTitle { font-size: 13px; font-weight: 600; opacity: .92; flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; line-height: 1; }
-.groupOps { flex: none; display: inline-flex; gap: 6px; align-items: center; }
+.groupOps { flex: none; display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
 /* Small neutral pill buttons (group-level actions). */
 .opBtn { font-size: 11px; padding: 3px 11px; border-radius: 999px; border: none; background: rgba(128,128,128,.13); color: inherit; cursor: pointer; transition: background .15s ease; }
@@ -146,9 +146,6 @@
 
 /* Group title inner summary (count + last used) sits inline after the name. */
 .groupTitleInner { display: inline-flex; align-items: baseline; }
-
-/* Group ops row wraps on narrow widths; keep controls compact. */
-.groupOps { flex: none; display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
 /* Source link inside group titles / rows. */
 .sourceLink { color: inherit; font-weight: 600; text-decoration: none; border-bottom: 1px dotted currentColor; opacity: .9; }

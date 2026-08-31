@@ -775,3 +775,8 @@ export interface SourceTrashClearResponse {
   /** 未能删除的技能（保留在回收站中）。 */
   failed: Array<{ name: string; error: string }>
 }
+
+/** 项目级技能来源（它们有 workspace 归属，不属于「个人」组）。 */
+export function isProjectSource(source: string): boolean {
+  return source === 'project-dsh' || source === 'project-agents'
+}
