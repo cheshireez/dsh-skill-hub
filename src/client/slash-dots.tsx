@@ -129,34 +129,34 @@ function injectDotsViaDOM(modelByName: Map<string, boolean>, modelColor: string,
   const run = (): void => {
     const options = document.querySelectorAll('[role="option"]')
     for (const opt of options) {
-      // 已注入则跳过（由 data 属性标记）
       if (opt.querySelector('[data-skill-dot]') !== null) continue
-      // 技能名在 .itemName 中，取文本匹配 catalog
       const nameEl = opt.querySelector('[class*="itemName"]') as HTMLElement | null
       if (nameEl === null) continue
       const name = (nameEl.textContent ?? '').trim()
       if (name.length === 0) continue
-      if (!modelByName.has(name) && nameEl.textContent !== name) continue // 保守：仅处理已知名
       const color = (modelByName.get(name) ?? true) ? modelColor : userColor
+      // 复刻旧版 icon 槽：16×16 容器居中 6px 点，与升级前 `dotIcon` 在 `itemIcon` 内的效果一致
+      const wrapper = document.createElement('span')
+      wrapper.setAttribute('data-skill-dot', '')
+      wrapper.setAttribute('aria-hidden', 'true')
+      wrapper.style.width = '16px'
+      wrapper.style.height = '16px'
+      wrapper.style.display = 'inline-flex'
+      wrapper.style.justifyContent = 'center'
+      wrapper.style.alignItems = 'center'
+      wrapper.style.flex = 'none'
       const dot = document.createElement('span')
-      dot.setAttribute('data-skill-dot', '')
-      dot.setAttribute('aria-hidden', 'true')
       dot.style.display = 'inline-block'
       dot.style.width = '6px'
       dot.style.height = '6px'
       dot.style.borderRadius = '3px'
       dot.style.background = color
       dot.style.flex = 'none'
-      // 插在名称前；若存在 icon 槽则插在其后，兼容旧版结构
-      const iconEl = opt.querySelector('[class*="itemIcon"]')
-      if (iconEl !== null && iconEl.nextSibling !== null) {
-        iconEl.parentElement?.insertBefore(dot, iconEl.nextSibling)
-      } else {
-        nameEl.parentElement?.insertBefore(dot, nameEl)
-      }
+      wrapper.appendChild(dot)
+      // 新版无 icon 槽，直接插在名称前，与旧版 `itemIcon` 位置一致
+      nameEl.parentElement?.insertBefore(wrapper, nameEl)
     }
   }
-  // 菜单由 React 异步渲染，需等下一帧
   requestAnimationFrame(() => setTimeout(run, 0))
 }
 
