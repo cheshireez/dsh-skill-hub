@@ -26,6 +26,10 @@ const ID = 'dsh-skill-hub'
  * The shell's shared module table (vendored from dsh-web-ui's
  * shared/web-platform.ts): the only specifiers the browser loader can
  * answer. Everything else must inline.
+ *
+ * Dual-compat: `dsh-client-store` 是 0.1.2-alpha.2 新增（原先在
+ * dsh-client-runtime），为兼容旧版（0.1.0-rc.7 / 0.1.1-rc.2）将其打包进
+ * 本插件，而非走外部加载；新版主机上同样可用，旧版主机不会 404。
  */
 const PLATFORM_MODULES = [
   'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
@@ -34,11 +38,11 @@ const PLATFORM_MODULES = [
   '@deepseek-ai/dsh-client-schema-form',
 ] as const
 
-/** Runtime exemption: the snapshot-store engine still lives in runtime. */
-const RUNTIME_STORE_EXEMPTION = '@deepseek-ai/dsh-client-runtime/client'
+/** 已打包，无需外部豁免；保留空数组以兼容旧配置注释。 */
+const RUNTIME_STORE_EXEMPTION: readonly string[] = []
 
 /** Externals resolved from the loader module table. */
-const CLIENT_EXTERNALS: readonly string[] = [...PLATFORM_MODULES, RUNTIME_STORE_EXEMPTION]
+const CLIENT_EXTERNALS: readonly string[] = [...PLATFORM_MODULES, ...RUNTIME_STORE_EXEMPTION]
 
 /**
  * Virtual-id wrapper keeping module CSS away from tsdown's own css pipeline

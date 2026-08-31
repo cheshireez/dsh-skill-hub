@@ -9,7 +9,8 @@
  * land keeps its drafts, so the user can correct them instead of retyping.
  */
 
-import { createSnapshotStore, type SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
 
 /** One staged field: its draft text plus the clear/reset marker. */
 interface StagedEdit {

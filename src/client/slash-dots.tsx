@@ -18,9 +18,12 @@
  * / `sessionOf` — the lookup below is defensive: it never throws).
  */
 
-import type { ClientContext, SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the Context merge for ctx.inputTriggers.
 import type {} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
+// Type-only: pulls the connection/reset event.
+import type {} from '@deepseek-ai/dsh-client-connection/client'
 import type { InputTriggerCandidate, InputTriggerServiceContract, InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import { createElement } from 'react'
 import type { HubSettingsValue } from '../protocol.ts'
@@ -121,6 +124,12 @@ export function wrapSkillSource(source: InputTriggerSource, api: SkillHubApi, sc
   source.candidates = async (session, req) => {
     const items = await original(session, req)
     if (req.signal.aborted) return items
+    // Dual-compat: 0.1.2-alpha.2 的 MenuView 将 icon 收窄为 'file'|'folder'|'session'
+    // 并通过 ReferenceIcon 渲染，旧版的自定义 ReactElement 点已无法展示。
+    // 以 `drilled` 是否存在探测新版（alpha.2 必有，rc 无），新版直接透传不注入
+    // icon，旧版保持彩色点，避免新版传入非法 icon 导致渲染异常。
+    const isNewHost = req !== null && typeof req === 'object' && 'drilled' in (req as unknown as Record<string, unknown>)
+    if (isNewHost) return items
     const modelByName = await modelInvocableMap(api)
     if (req.signal.aborted) return items
     const snapshot = scope.getSnapshot()

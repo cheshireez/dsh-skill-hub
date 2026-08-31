@@ -9,7 +9,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { SkillProviderControl } from '@deepseek-ai/dsh-skill'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from 'schemastery'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-skill'
@@ -67,7 +67,7 @@ export const Config: z<Config> = z.object({
  * page edit this namespace through the official settings transport, and the
  * plugin consumes the same resolved value — one source of truth.
  */
-export const CONFIG_NAMESPACE = settingsNamespace('dsh-skill-hub')
+export const CONFIG_NAMESPACE = 'dsh-skill-hub' as SettingsNamespace
 
 /** Schema of the hub's settings namespace: the card's fields (booleans + optional dot colors). */
 export const HubSettingsSchema: z<HubSettingsValue> = z.object({

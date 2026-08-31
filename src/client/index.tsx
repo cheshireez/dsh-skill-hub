@@ -22,7 +22,7 @@
  * internal.
  */
 
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 // Type-only: pulls the settings-scope service merge and the settings.section slot.
@@ -33,6 +33,15 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 // Type-only: pulls the Context merge for ctx.inputTriggers (slash-dots wiring).
 import type {} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
+// Type-only: pulls the connection/reset event.
+import type {} from '@deepseek-ai/dsh-client-connection/client'
+
+// 0.1.2-alpha.2: slots service moved to ui-renderer; provide local augmentation for build.
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    slots: any
+  }
+}
 import type { HubSettingsValue } from '../protocol.ts'
 import { SkillHubApi } from './api.ts'
 import { en, zh, type HubKey } from './locales.ts'

@@ -6,7 +6,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { InputTriggerCandidate, InputTriggerServiceContract, InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { HubSettingsValue } from '../protocol.ts'
 import type { SkillHubApi } from './api.ts'
@@ -39,7 +39,8 @@ function scopeWith(value: HubSettingsValue): SettingsScope<HubSettingsValue> {
     subscribe: () => () => {},
     set: async () => {},
     unset: async () => {},
-  } as SettingsScope<HubSettingsValue>
+    mutate: async () => {},
+  } as unknown as SettingsScope<HubSettingsValue>
 }
 
 /** Fake hub api whose catalog lists the given skills. */
@@ -84,7 +85,7 @@ describe('findSkillSource', () => {
 })
 
 describe('wrapSkillSource', () => {
-  it('adds a model-colored dot to model-callable skills and a user-colored dot to user-only ones', async () => {
+  it('adds a model-colored dot to model-callable skills and a user-colored dot to user-only ones (old host, no drilled)', async () => {
     const source = skillSource(async () => [
       { name: 'code-review', description: 'review code' },
       { name: 'personal-note', description: 'only me' },
@@ -98,7 +99,8 @@ describe('wrapSkillSource', () => {
 
     const restore = wrapSkillSource(source, api, scope)
     try {
-      const rows = await source.candidates({ sessionId: 's1' as never }, { query: '', position: 'leading', signal: new AbortController().signal })
+      // Old host: CandidateRequest 无 drilled 字段，注入彩色点
+      const rows = await source.candidates({ sessionId: 's1' as never }, { query: '', position: 'leading', signal: new AbortController().signal } as unknown as import('@deepseek-ai/dsh-client-ui-input-trigger/client').CandidateRequest)
 
       expect(rows).toHaveLength(3)
       // Model-callable → model color.
@@ -115,17 +117,33 @@ describe('wrapSkillSource', () => {
     }
   })
 
-  it('falls back to the default colors when settings omit them and catalog fails', async () => {
+  it('falls back to the default colors when settings omit them and catalog fails (old host)', async () => {
     const source = skillSource(async () => [{ name: 'lonely', description: '' }])
     const api = { catalog: async () => { throw new Error('route down') } } as unknown as SkillHubApi
     const scope = scopeWith({ enabled: true, announceToAgent: true, showUseCount: true, showUseTime: true, showGroupSummary: true })
 
     const restore = wrapSkillSource(source, api, scope)
     try {
-      const rows = await source.candidates({ sessionId: 's1' as never }, { query: '', position: 'leading', signal: new AbortController().signal })
+      const rows = await source.candidates({ sessionId: 's1' as never }, { query: '', position: 'leading', signal: new AbortController().signal } as unknown as import('@deepseek-ai/dsh-client-ui-input-trigger/client').CandidateRequest)
       // Catalog failed → unknown name → model default dot still renders.
       expect(rows[0].icon).toBeDefined()
       expect((rows[0].icon as unknown as { props: { style: { background: string } } }).props.style.background).toBe('#2f81f7')
+    } finally {
+      restore()
+    }
+  })
+
+  it('skips dot injection on new host (alpha.2, drilled present) for ReferenceIcon compat', async () => {
+    const source = skillSource(async () => [{ name: 'code-review', description: 'review code' }])
+    const api = apiWith([{ name: 'code-review', modelInvocable: true }])
+    const scope = scopeWith({ enabled: true, announceToAgent: true, showUseCount: true, showUseTime: true, showGroupSummary: true, dotModelColor: '#112233', dotUserColor: '#445566' })
+
+    const restore = wrapSkillSource(source, api, scope)
+    try {
+      const rows = await source.candidates({ sessionId: 's1' as never }, { query: '', position: 'leading', drilled: false, signal: new AbortController().signal })
+      expect(rows).toHaveLength(1)
+      expect(rows[0].icon).toBeUndefined()
+      expect(rows[0].name).toBe('code-review')
     } finally {
       restore()
     }
