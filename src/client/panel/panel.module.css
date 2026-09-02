@@ -224,8 +224,8 @@
    flat — indent + a hairline guide only, no nested card surfaces. */
 .projectNest { display: flex; flex-direction: column; margin: 2px 0 0 14px; border-left: 1px solid rgba(128,128,128,.14); }
 
-/* Drag handle + reorder states */
-.dragHandle { cursor: grab; opacity: .32; font-size: 11px; letter-spacing: 1px; padding: 0 4px; user-select: none; flex: none; display: inline-flex; align-items: center; justify-content: center; height: 20px; align-self: center; }
+/* Drag handle + reorder states — 窄版：尽量收窄占位，仍保留抓取感 */
+.dragHandle { cursor: grab; opacity: .28; font-size: 10px; letter-spacing: 0; padding: 0 1px; width: 8px; overflow: hidden; user-select: none; flex: none; display: inline-flex; align-items: center; justify-content: center; height: 16px; align-self: center; }
 .dragHandle:active { cursor: grabbing; }
 .dragging { opacity: .45; }
 .dragOver { outline: 2px dashed var(--hub-model, #2f81f7); outline-offset: -2px; background: rgba(47,129,247,.07); }

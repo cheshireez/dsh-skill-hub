@@ -127,8 +127,9 @@ function dotIcon(color: string): InputTriggerCandidate['icon'] {
 function injectDotsViaDOM(modelByName: Map<string, boolean>, modelColor: string, userColor: string): void {
   if (typeof document === 'undefined' || typeof requestAnimationFrame === 'undefined') return
   const run = (): void => {
-    // 仅处理斜杠菜单：通过 MenuView 的哈希类 `_3e4SsG_menu` 定位，避免误伤
-    // 面板内市场扫描/分组等其它 `[role="option"]` 列表
+    // 仅处理斜杠菜单：优先用哈希类 `_3e4SsG_menu` 严格隔离面板内其它 listbox，
+    // 哈希为 dsh 构建产物（review #4 已知脆弱点），已提供 `[role="listbox"]` 回退；
+    // 后续 dsh 若暴露 `data-*` 锚点应迁移至此
     const menu = document.querySelector('[class*="_3e4SsG_menu"]') as HTMLElement | null
     const listbox = menu?.querySelector('[role="listbox"]') ?? document.querySelector('[role="listbox"]')
     // 若菜单未打开则不注入

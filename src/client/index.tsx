@@ -46,6 +46,7 @@ import type { HubSettingsValue } from '../protocol.ts'
 import { SkillHubApi } from './api.ts'
 import { en, zh, type HubKey } from './locales.ts'
 import { applySettingsNavIcon } from './settings-nav-icon.ts'
+import { setupSkillSlashDots } from './slash-dots.tsx'
 import { SkillHubSettingsCard, SkillHubSettingsCardController } from './SkillHubSettingsCard.tsx'
 import { SkillHubPanel } from './panel/SkillHubPanel.tsx'
 
@@ -66,7 +67,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
  * `settingsScope` is the namespace-scope binder itself; mirror the official
  * settings-plugins inject list.
  */
-export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope']
+export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope', 'inputTriggers']
 
 /** Type-only surface (export discipline: no value exports beyond the plugin contract). */
 export type { SkillHubPanelProps } from './panel/SkillHubPanel.tsx'
@@ -86,11 +87,14 @@ export function apply(ctx: ClientContext): void {
   // settings transport — the configurable-plugins tab only dispatches cards
   // whose key the Host serves, and the Host serves every registered namespace
   // since rc.7, so this is what makes the card appear (and stay in sync).
-  const settingsCard = new SkillHubSettingsCardController(
-    ctx.settingsScope.bind<HubSettingsValue>({ namespace: NS }),
-  )
+  // Single scope instance reused for both the card and slash-dots to avoid
+  // duplicate subscriptions (review #3).
+  const scope = ctx.settingsScope.bind<HubSettingsValue>({ namespace: NS })
+  const settingsCard = new SkillHubSettingsCardController(scope)
 
-  // 斜杠菜单圆点已按需求移除：不再包 `/skill` 源，避免演示性预填 "/" 的干扰
+  // Chat `/` 菜单技能圆点：为每个候选行加可调用性圆点（蓝=模型可调，绿=仅用户），颜色与面板图例同步；仅装饰，不自动预填 "/"
+  // inject 含 inputTriggers 保证 fiber 就绪后再 wrap，slash-dots 内的 undefined 防御仅用于单元测试 mock
+  ctx.effect(() => setupSkillSlashDots(ctx, api, scope), 'dsh-skill-hub: slash dots')
 
   // Plugin-management card: Settings → 插件 → 可配置插件列表.
   // rc.7's slot contract declares this keyed slot with options `key`
