@@ -46,7 +46,6 @@ import type { HubSettingsValue } from '../protocol.ts'
 import { SkillHubApi } from './api.ts'
 import { en, zh, type HubKey } from './locales.ts'
 import { applySettingsNavIcon } from './settings-nav-icon.ts'
-import { setupSkillSlashDots } from './slash-dots.tsx'
 import { SkillHubSettingsCard, SkillHubSettingsCardController } from './SkillHubSettingsCard.tsx'
 import { SkillHubPanel } from './panel/SkillHubPanel.tsx'
 
@@ -67,7 +66,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
  * `settingsScope` is the namespace-scope binder itself; mirror the official
  * settings-plugins inject list.
  */
-export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope', 'inputTriggers']
+export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope']
 
 /** Type-only surface (export discipline: no value exports beyond the plugin contract). */
 export type { SkillHubPanelProps } from './panel/SkillHubPanel.tsx'
@@ -91,14 +90,7 @@ export function apply(ctx: ClientContext): void {
     ctx.settingsScope.bind<HubSettingsValue>({ namespace: NS }),
   )
 
-  // Chat `/` menu skill dots: wrap the core skill source so every candidate
-  // row carries the invocation dot, colored from the same settings the panel
-  // legend uses (dotModelColor / dotUserColor). Own scope = independent reader;
-  // fails silent, never takes the GUI down.
-  ctx.effect(
-    () => setupSkillSlashDots(ctx, api, ctx.settingsScope.bind<HubSettingsValue>({ namespace: NS })),
-    'dsh-skill-hub: slash dots',
-  )
+  // 斜杠菜单圆点已按需求移除：不再包 `/skill` 源，避免演示性预填 "/" 的干扰
 
   // Plugin-management card: Settings → 插件 → 可配置插件列表.
   // rc.7's slot contract declares this keyed slot with options `key`
