@@ -13,31 +13,9 @@
   <img src="https://raw.githubusercontent.com/cheshireez/dsh-skill-hub/main/promo/real-skill-hub.png" alt="dsh-skill-hub panel" width="640">
 </p>
 
-In-GUI skill hub for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — browse the full `ctx.skills` catalog, toggle skills, inspect bodies, diagnose missing skills, install from the market, and scaffold new ones.
+In-GUI skill hub for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — browse the full `ctx.skills` catalog, toggle skills, inspect bodies, fix discovery issues, install from the market, and scaffold new ones.
 
 > Host runs in the dsh process via official SDKs only; browser renders through official slots. No dsh source changes.
-
-## Why not just the read-only browser?
-
-[dsh-skill-manager](https://www.npmjs.com/package/dsh-skill-manager) browses, [dsh-skill-importer](https://github.com/saitamahang/dsh-skill-importer) / [dsh-find-skill](https://github.com/Moximxxx/dsh-find-skill) import. **This plugin is the manager in between.**
-
-| Capability | read-only browser | **dsh-skill-hub** |
-| --- | --- | --- |
-| Catalog | user roots, self-scanned | `ctx.skills` registry: project / custom / user / bundled + third-party |
-| Workspace | ❌ | ✅ `.dsh/skills` & `.agents/skills` (read-only, merged by default) |
-| Toggle | ❌ | ✅ rename `SKILL.md` (never delete), tri-state group switches + drag reorder |
-| Diagnostics / scaffold | ❌ | ✅ missing frontmatter checks / `~/.dsh/skills` wizard |
-| Source tracking | ❌ | ✅ repo + commit, check/sync/trash (restores source & scene) |
-| Market | ❌ | ✅ built-in + custom repos, any top-level root, badges + update-all |
-| Stats | ❌ | ✅ call counts from session logs (14-day window, incremental cache) |
-
-## Features
-
-- **Catalog** — search + source filter + flat/grouped in one row; groups = scenes (tags) + source collections; workspace tree merged by default.
-- **Switches** — per-skill and per-group toggles; conflict dialog (close all / keep on) → mixed state; only `~/.dsh/skills` & `~/.agents/skills` are writable.
-- **Reorder & edit** — drag handle on every group header (persists in `~/.dsh/dsh-skill-hub.json`); Edit toggle reveals reorder/delete without cluttering the read view.
-- **Market** — unified list (built-in Add → becomes source row); scan any root with `SKILL.md` (no allowlist), async import with `{jobId, totalBytes}` progress & cancel; Check all / Update all (failures non-fatal, daily auto-check).
-- **Stats** — per-skill `count` + `lastUsed`, group summaries; configurable window/interval live from the settings card.
 
 ## Quick start
 
@@ -45,6 +23,35 @@ In-GUI skill hub for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-
 dsh plugin --profile web add dsh-skill-hub
 # restart dsh web → Settings → 技能 → Market → scan → import
 ```
+
+Requires `Node ^22.19 || >=24` + dsh web (`0.1.2-alpha.5`, `0.1.x` forward compatible).
+
+## Features
+
+**Settings → 技能** — 3 tabs: **Sources** (skills, flat/grouped + project tree), **Scenes** (custom tag groups), **Market** (install + update).
+
+- **Browse** — every root of the `ctx.skills` registry: project / user / bundled + third-party providers. Search across name, description, `displayName`; filter by source and invocation (model / user); sort by name, added time, or usage. Same-name skills from different sources get a duplicate badge instead of silently hiding.
+- **Toggle** — per-skill switches and per-group tri-state switches with a conflict dialog (close all / keep on). Disabling renames the discovery file (never deletes); disabled skills stay inspectable and re-enableable from their detail page. Only `~/.dsh/skills` & `~/.agents/skills` are writable; everything else is read-only.
+- **Organize** — scenes (tags) plus auto-aggregated source collections, all drag-reorderable and persisted in `~/.dsh/dsh-skill-hub.json`. Edit mode reveals delete/reorder without cluttering the read view.
+- **Diagnose & fix** — files the provider skips (missing frontmatter, bad YAML, name mismatch, short description) show up with reasons; auto-fixable ones (e.g. unquoted `:` in descriptions) get a one-click Fix button.
+- **Scaffold** — new-skill wizard writing to `~/.dsh/skills` or `~/.agents/skills` (`SKILL.md` template below).
+- **Market** — built-in curated repos plus custom `owner/repo` sources. Any top-level directory containing `SKILL.md` scans as a root (no allowlist). Async import with byte-level progress and cancel. Each source pins a version — click the ref badge to switch between releases, branches, or a custom ref.
+- **Track updates** — imported skills record a repo + commit snapshot. Check all / update-all, per-source badges (installed / updatable / deleted upstream / new release). Sync overwrites local edits (with confirm); upstream deletions move into a restorable trash that keeps source and scene membership.
+- **Stats** — per-skill call counts + last-used times from session logs (incremental cache), group summaries; window and scan interval live-configurable from the settings card.
+- **Settings card** — master switch, announce-to-agent, invocation dot colors, usage display toggles, stats window/interval; plus a self-update check against GitHub releases.
+
+## Why not just the read-only browser?
+
+[dsh-skill-manager](https://www.npmjs.com/package/dsh-skill-manager) browses, [dsh-skill-importer](https://github.com/saitamahang/dsh-skill-importer) / [dsh-find-skill](https://github.com/Moximxxx/dsh-find-skill) import. **This plugin manages.**
+
+| Capability | read-only browser | **dsh-skill-hub** |
+| --- | --- | --- |
+| Catalog | user roots, self-scanned | `ctx.skills` registry, all roots + third-party |
+| Toggle | ❌ | ✅ per-skill + per-group, never deletes |
+| Diagnostics | ❌ | ✅ reasons + one-click fix |
+| Market | ❌ | ✅ built-in + custom, version pins, update-all |
+| Source tracking | ❌ | ✅ check/sync/trash with restore |
+| Stats | ❌ | ✅ counts + last-used |
 
 Scaffold format (`SKILL.md`):
 
@@ -57,8 +64,6 @@ description: One line when the agent should use this skill.
 Body...
 ```
 
-Requires `Node ^22.19 || >=24` + dsh web (`0.1.0-rc.7` / `0.1.1-rc.2`, `0.1.x` forward compatible).
-
 ## How it works
 
 ```text
@@ -70,40 +75,25 @@ GitHub repo ──scan/import──▶ ~/.dsh/skills
                     /api/skill-hub/* ──▶ Panel (Settings → 技能)
 ```
 
-| File | Role |
-| --- | --- |
-| `src/index.ts` | inject `[webServer, skills, systemPrompt, settings]`, settings namespace, announcement |
-| `src/routes.ts` | `/api/skill-hub/*` fences + handlers (async import, reorder) |
-| `src/store.ts` | `~/.dsh/dsh-skill-hub.json` v4 (disabled/tags/sources/market/trash/stats/order) |
-| `src/repo.ts` | discovery / import / diff (any top-level `SKILL.md`) |
-| `src/skillfs.ts` | toggle/trash/scaffold/diagnostics |
-| `src/client/` | panel (`useSkillHub` + thin views), CSS Modules |
-
-Host uses only `ctx.skills.snapshot/get`, `ctx.webServer.register`, `ctx.systemPrompt.section`.
-
-## Usage
-
-**Settings → 技能** — 3 tabs: **Sources** (flat/grouped + project tree + drag), **Scenes** (tags, drag), **Market** (unified list). Header workspace field pins to one cwd; trash & diagnostics are always visible.
-
-**Settings → 插件 → Skill Hub** — master switch, announce to agent, dot colors, `showUseCount/showUseTime/showGroupSummary`, stats window (days, default 14, `0`=all) & interval (min, default 5).
+Host uses only `ctx.skills.snapshot/get`, `ctx.webServer.register`, `ctx.systemPrompt.section`. Loopback-only routes (`127.0.0.1`/`localhost`), JSON.
 
 ## HTTP API
 
-Loopback-only (`127.0.0.1`/`localhost`), JSON.
-
 | Endpoint | Method | Purpose |
 | --- | --- | --- |
-| `/api/skill-hub/catalog?cwd=` | GET | catalog + disabled + diagnostics |
-| `/api/skill-hub/skill?name=&cwd=` | GET | skill body |
+| `/api/skill-hub/catalog?cwd=` | GET | skills + disabled + diagnostics + duplicates |
+| `/api/skill-hub/skill?name=&cwd=` | GET | skill body (works for disabled too) |
 | `/api/skill-hub/skill/delete` | POST | move to trash (snapshots source+scenes) |
 | `/api/skill-hub/toggle` | POST | `{name, enabled}` |
 | `/api/skill-hub/toggle-batch` | POST | `{names, enabled}` |
 | `/api/skill-hub/create` | POST | `{name, description?, root?}` |
+| `/api/skill-hub/diagnostic/fix` | POST | `{path}` auto-fix frontmatter |
 | `/api/skill-hub/stats` | GET | invocation counts |
 | `/api/skill-hub/config` | GET/POST | runtime config (`null` clears) |
 | `/api/skill-hub/groups` | GET | tags + collections + orders |
-| `/api/skill-hub/tag` etc. | POST | create/rename, delete, set members, reorder (`/tag/reorder`, `/collections/reorder`, `/source-groups/reorder`) |
-| `/api/skill-hub/market` etc. | GET/POST | list/add/delete/pin/check/sync market sources |
+| `/api/skill-hub/tag` etc. | POST | create/rename, delete, set members, reorder |
+| `/api/skill-hub/market` etc. | GET/POST | list/add/delete/pin/check/sync sources |
+| `/api/skill-hub/market/source/versions?repo=` | GET | releases + branches for the version picker |
 | `/api/skill-hub/repo?repo=` | GET | discover (any root) |
 | `/api/skill-hub/repo/import` | POST | async job `{jobId, total, totalBytes}` |
 | `/api/skill-hub/repo/import/progress?jobId=` | GET | poll job |
@@ -115,16 +105,16 @@ Loopback-only (`127.0.0.1`/`localhost`), JSON.
 
 ```bash
 npm run typecheck  # tsc --noEmit
-npm test           # 174 tests, 9 suites
+npm test           # 176 tests, 9 suites
 npm run build      # tsc + tsdown → lib/index.js + lib/client.js
 ```
 
-> Don't run two `dsh web` on the same `$DSH_HOME` + cwd — rc has no session-log lock (`seq gap` corruption). Use separate `DSH_HOME`.
+> Don't run two `dsh web` on the same `$DSH_HOME` + cwd — no session-log lock (`seq gap` corruption). Use separate `DSH_HOME`.
 
 ## Troubleshooting
 
-- `duplicate loader entry id: skill-hub` — remove duplicate install (keep one `dsh plugin add` method).
-- Skill missing — check diagnostics (frontmatter / name mismatch / short description).
+- `duplicate loader entry id: skill-hub` — remove the duplicate install (keep one `dsh plugin add` method).
+- Skill missing — check the diagnostics section (frontmatter / name mismatch / short description).
 - Dots missing in `/` menu — dsh internals changed; catalog still works.
 
 ## Community
