@@ -35,6 +35,17 @@ export interface BranchChoiceState {
   selected: string
 }
 
+/** Version picker for a market source: releases + branches + custom ref. */
+export interface VersionChoiceState {
+  repo: string
+  current?: string
+  releases: string[]
+  branches: string[]
+  selected: string
+  custom: string
+  loading: boolean
+}
+
 /** Post-sync skill update dialog: which tracked skills to refresh. */
 export interface MarketSyncDialogState {
   repo: string
@@ -143,6 +154,56 @@ export function BranchChoiceDialog(props: {
       <div className={css.dialogActions}>
         <button type='button' className={css.button} onClick={onCancel}>{tt('form.cancel')}</button>
         <button type='button' className={css.button + ' ' + css.primary} disabled={busy} onClick={onConfirm}>{tt('market.branchConfirm')}</button>
+      </div>
+    </DialogShell>
+  )
+}
+
+/** Version picker: switch a market source's tracked ref (release / branch / custom). */
+export function VersionChoiceDialog(props: {
+  choice: VersionChoiceState
+  busy: boolean
+  onSelect: (ref: string) => void
+  onCustom: (custom: string) => void
+  onCancel: () => void
+  onConfirm: () => void
+}): JSX.Element {
+  const { choice, busy, onSelect, onCustom, onCancel, onConfirm } = props
+  const effective = choice.custom.trim() !== '' ? choice.custom.trim() : choice.selected
+  return (
+    <DialogShell onClose={onCancel}>
+      <h3 className={css.dialogTitle}>{tt('market.versionTitle')}</h3>
+      <p className={css.dialogText}>{tt('market.versionText', { repo: choice.repo })}{choice.current !== undefined ? ` (${tt('market.versionCurrent', { ref: choice.current })})` : ''}</p>
+      {choice.loading ? <p className={css.dialogText}>{tt('market.scanning')}</p> : (
+        <>
+          {choice.releases.length > 0 ? (
+            <>
+              <p className={css.dialogText} style={{ marginBottom: 4 }}>{tt('market.versionReleases')}</p>
+              <select className={css.select + ' ' + css.dialogSelect} value={choice.releases.includes(choice.selected) ? choice.selected : choice.releases[0]}
+                onChange={(event) => { onSelect(event.target.value); onCustom('') }}>
+                {choice.releases.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+              </select>
+            </>
+          ) : null}
+          {choice.branches.length > 0 ? (
+            <>
+              <p className={css.dialogText} style={{ marginBottom: 4 }}>{tt('market.versionBranches')}</p>
+              <select className={css.select + ' ' + css.dialogSelect} value={choice.branches.includes(choice.selected) ? choice.selected : choice.branches[0]}
+                onChange={(event) => { onSelect(event.target.value); onCustom('') }}>
+                {choice.branches.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+              </select>
+            </>
+          ) : null}
+          <p className={css.dialogText} style={{ marginBottom: 4 }}>{tt('market.versionCustom')}</p>
+          <input className={css.input + ' ' + css.dialogSelect} value={choice.custom}
+            onChange={(event) => { onCustom(event.target.value) }} placeholder='v1.2.3 / main / abc1234' />
+        </>
+      )}
+      <div className={css.dialogActions}>
+        <button type='button' className={css.button} onClick={onCancel}>{tt('form.cancel')}</button>
+        <button type='button' className={css.button + ' ' + css.primary} disabled={busy || choice.loading || effective === ''} onClick={onConfirm}>
+          {busy ? tt('source.syncing') : tt('market.versionConfirm', { ref: effective })}
+        </button>
       </div>
     </DialogShell>
   )

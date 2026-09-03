@@ -215,7 +215,7 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
               <>
                 {skills.map((skill) => <SkillRow key={skill.name} skill={skill} hub={hub} />)}
                 {disabledMembers.map((record) => (
-                  <DisabledRow key={record.name} record={record} busy={busyNames.has(record.name)} onEnable={() => { void enableDisabled(record) }} />
+                  <DisabledRow key={record.name} record={record} busy={busyNames.has(record.name)} duplicate={catalog?.duplicateNames?.includes(record.name) === true} onEnable={() => { void enableDisabled(record) }} onOpen={() => { void hub.openDetail(record.name) }} />
                 ))}
               </>
             ) : null}
@@ -257,7 +257,7 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
               {!collapsed ? (
                 <>
                   {uncategorized.map((skill) => <SkillRow key={skill.name} skill={skill} hub={hub} />)}
-                  {personalDisabled.map((record) => (<DisabledRow key={record.name} record={record} busy={busyNames.has(record.name)} onEnable={() => { void enableDisabled(record) }} />))}
+                  {personalDisabled.map((record) => (<DisabledRow key={record.name} record={record} busy={busyNames.has(record.name)} duplicate={catalog?.duplicateNames?.includes(record.name) === true} onEnable={() => { void enableDisabled(record) }} onOpen={() => { void hub.openDetail(record.name) }} />))}
                 </>
               ) : null}
             </section>

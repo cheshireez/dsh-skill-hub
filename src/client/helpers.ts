@@ -21,3 +21,43 @@ export function errorMessage(error: unknown): string {
   return String(error)
 }
 
+/**
+ * Whether a displayName is worth showing beside the kebab-case name.
+ * Pure case/punctuation variants (e.g. "Code Review" vs "code-review") are redundant.
+ */
+export function isDisplayNameDistinct(name: string, displayName: string | undefined): displayName is string {
+  if (displayName === undefined) return false
+  const normalize = (s: string): string => s.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '')
+  return normalize(displayName) !== normalize(name)
+}
+
+/**
+ * Copy text to the clipboard. Uses the async API with a positioned-textarea
+ * fallback for insecure contexts. Resolves true only when the copy succeeded.
+ */
+export async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (navigator.clipboard?.writeText !== undefined) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // Fall through to the legacy path below.
+    }
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.top = '0'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    ta.remove()
+    return ok
+  } catch {
+    return false
+  }
+}
+

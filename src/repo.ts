@@ -67,6 +67,23 @@ export function githubAuthHeaders(): Record<string, string> {
   return githubToken === '' ? {} : { authorization: 'Bearer ' + githubToken }
 }
 
+/** ETag cache for GitHub API JSON (mirrors codex lib.rs marker+fingerprint). In-memory only, saves 304 for daily checks. */
+const etagCache = new Map<string, { etag: string; json: unknown }>()
+const ETAG_MAX = 200
+function etagCacheGet(url: string): { etag: string; json: unknown } | undefined {
+  return etagCache.get(url)
+}
+function etagCacheSet(url: string, etag: string, json: unknown): void {
+  if (etagCache.size >= ETAG_MAX) {
+    const first = etagCache.keys().next().value as string | undefined
+    if (first !== undefined) etagCache.delete(first)
+  }
+  etagCache.set(url, { etag, json })
+}
+export function clearEtagCache(): void {
+  etagCache.clear()
+}
+
 /**
  * Build a RepoFetchError; when the response shows an exhausted rate limit,
  * report the reset time instead of a bare HTTP status.
@@ -128,49 +145,50 @@ export function normalizeRepoInput(input: string): RepoRef | null {
  * tree is fetched at `ref ?? default_branch` so an explicit branch/tag scans
  * the exact same content a later download would fetch.
  */
-export async function loadRepoTree(repo: string, ref?: string, fetchImpl: typeof fetch = fetch): Promise<{ ref: string; tree: RepoTreeItem[] }> {
-  let metaResponse: Response
+async function fetchJsonCached(url: string, fetchImpl: typeof fetch, context: string): Promise<{ json: unknown; response: Response }> {
+  const cached = etagCacheGet(url)
+  const headers: Record<string, string> = { accept: 'application/vnd.github+json', ...githubAuthHeaders() }
+  if (cached !== undefined) headers['if-none-match'] = cached.etag
+  let response: Response
   try {
-    metaResponse = await fetchImpl(`https://api.github.com/repos/${repo}`, {
-      headers: { accept: 'application/vnd.github+json', ...githubAuthHeaders() },
-    })
+    response = await fetchImpl(url, { headers })
   } catch (error) {
-    throw new RepoFetchError('github request failed: ' + (error instanceof Error ? error.message : String(error)))
+    throw new RepoFetchError(context + ': ' + (error instanceof Error ? error.message : String(error)))
   }
-  if (!metaResponse.ok) throw fetchError('github repo not found or unavailable', metaResponse)
-
-  let meta: unknown
+  if (response.status === 304 && cached !== undefined) {
+    // Return cached JSON with a synthetic 200-like response for error mapping.
+    return { json: cached.json, response }
+  }
+  if (!response.ok) throw fetchError(context, response)
+  let json: unknown
   try {
-    meta = await metaResponse.json()
+    json = await response.json()
   } catch {
-    throw new RepoFetchError('invalid github repo response')
+    throw new RepoFetchError('invalid github response for ' + url)
   }
+  const etag = response.headers.get('etag')
+  if (etag !== null && etag !== '') etagCacheSet(url, etag, json)
+  return { json, response }
+}
+
+export async function loadRepoTree(repo: string, ref?: string, fetchImpl: typeof fetch = fetch): Promise<{ ref: string; tree: RepoTreeItem[]; truncated: boolean }> {
+  const metaUrl = `https://api.github.com/repos/${repo}`
+  const { json: metaJson } = await fetchJsonCached(metaUrl, fetchImpl, 'github repo not found or unavailable')
+  let meta: unknown = metaJson
   const record = typeof meta === 'object' && meta !== null ? meta as Record<string, unknown> : {}
   const defaultBranch = typeof record.default_branch === 'string' && record.default_branch !== '' ? record.default_branch : 'main'
   const treeRef = ref !== undefined && ref !== '' ? ref : defaultBranch
 
-  let treeResponse: Response
-  try {
-    treeResponse = await fetchImpl(`https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(treeRef)}?recursive=1`, {
-      headers: { accept: 'application/vnd.github+json', ...githubAuthHeaders() },
-    })
-  } catch (error) {
-    throw new RepoFetchError('github tree request failed: ' + (error instanceof Error ? error.message : String(error)))
-  }
-  if (!treeResponse.ok) throw fetchError('github tree not found', treeResponse)
-
-  let payload: unknown
-  try {
-    payload = await treeResponse.json()
-  } catch {
-    throw new RepoFetchError('invalid github tree response')
-  }
+  const treeUrl = `https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(treeRef)}?recursive=1`
+  const { json: payload } = await fetchJsonCached(treeUrl, fetchImpl, 'github tree not found')
   const treeRecord = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : {}
-  if (treeRecord.truncated === true) throw new RepoFetchError('repo tree is too large to scan')
+  const truncated = treeRecord.truncated === true
   const tree = Array.isArray(treeRecord.tree) ? treeRecord.tree as RepoTreeItem[] : []
   // Report the ref the tree was actually fetched at: downloaders must use
   // this exact value so an explicit branch import never mixes trees.
-  return { ref: treeRef, tree }
+  // When truncated is true GitHub returned a partial tree; callers should
+  // surface a warning but still allow the partial discovery (mirrors codex walk_truncated).
+  return { ref: treeRef, tree, truncated }
 }
 
 /** Collect every file inside a skill directory, including SKILL.md itself. */
@@ -407,6 +425,30 @@ export async function getLatestReleaseTag(repo: string, fetchImpl: typeof fetch 
   }
   const tag = typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>).tag_name : undefined
   return typeof tag === 'string' && tag !== '' ? tag : undefined
+}
+
+/** Release tags of a repo, newest first (skips drafts, keeps prereleases). */
+export async function listRepoReleases(repo: string, fetchImpl: typeof fetch = fetch): Promise<string[]> {
+  let response: Response
+  try {
+    response = await fetchImpl(`https://api.github.com/repos/${repo}/releases?per_page=20`, {
+      headers: { accept: 'application/vnd.github+json', ...githubAuthHeaders() },
+    })
+  } catch (error) {
+    throw new RepoFetchError('github releases request failed: ' + (error instanceof Error ? error.message : String(error)))
+  }
+  if (!response.ok) throw fetchError('github releases lookup failed', response)
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch {
+    throw new RepoFetchError('invalid github releases response')
+  }
+  if (!Array.isArray(payload)) return []
+  return payload
+    .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null && (item as Record<string, unknown>).draft !== true)
+    .map((item) => item.tag_name)
+    .filter((tag): tag is string => typeof tag === 'string' && tag !== '')
 }
 
 /** Branch names of a repo, default branch first (one GitHub API request). */

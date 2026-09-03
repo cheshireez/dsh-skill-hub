@@ -19,6 +19,7 @@ import {
   type MarketSourceRequest,
   type MarketSourceResponse,
   type MarketSourcesResponse,
+  type MarketSourceVersionsResponse,
   type MarketSyncResponse,
   type RepoDiscoverResponse,
   type RepoImportCancelResponse,
@@ -191,6 +192,13 @@ export class SkillHubApi {
       body: JSON.stringify({ repo }),
     })
     return readJson<MarketSyncResponse>(response)
+  }
+
+  /** Releases + branches of a market source for the version picker. */
+  async marketSourceVersions(repo: string): Promise<MarketSourceVersionsResponse> {
+    const url = SKILL_HUB_API.marketSourceVersions + '?repo=' + encodeURIComponent(repo)
+    const response = await fetchWithTimeout(url)
+    return readJson<MarketSourceVersionsResponse>(response)
   }
 
   /** Pin a market source to an explicit ref (branch picker). */
@@ -386,5 +394,15 @@ export class SkillHubApi {
   async clearTrash(): Promise<SourceTrashClearResponse> {
     const response = await fetchWithTimeout(SKILL_HUB_API.sourceTrashClear, { method: 'POST' })
     return readJson<SourceTrashClearResponse>(response)
+  }
+
+  /** Auto-fix a fixable diagnostic (e.g. unquoted colon). */
+  async fixDiagnostic(path: string): Promise<import('../protocol.ts').DiagnosticFixResponse> {
+    const response = await fetchWithTimeout(SKILL_HUB_API.diagnosticFix, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path } satisfies import('../protocol.ts').DiagnosticFixRequest),
+    })
+    return readJson<import('../protocol.ts').DiagnosticFixResponse>(response)
   }
 }

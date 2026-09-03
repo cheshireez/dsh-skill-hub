@@ -39,6 +39,8 @@ export const SKILL_HUB_API = {
   sourceDelete: '/api/skill-hub/sources/delete',
   sourceRestore: '/api/skill-hub/sources/restore',
   sourceTrashClear: '/api/skill-hub/sources/trash/clear',
+  diagnosticFix: '/api/skill-hub/diagnostic/fix',
+  marketSourceVersions: '/api/skill-hub/market/source/versions',
 } as const
 
 /** User-level roots the hub may write to (matches dsh-skill-filesystem ranks 400/500). */
@@ -71,6 +73,13 @@ export interface CatalogSkill {
   workspace?: string
   /** 工作区显示标题（来自 workspace.json；无则回退为路径）。 */
   workspaceTitle?: string
+  /** UI metadata from agents/openai.yaml (mirrors codex SkillInterface). */
+  displayName?: string
+  shortDescription?: string
+  brandColor?: string
+  iconSmall?: string
+  iconLarge?: string
+  defaultPrompt?: string
 }
 
 /** One disabled skill tracked by the hub sidecar (SKILL.md renamed away). */
@@ -88,6 +97,17 @@ export interface DiagnosticEntry {
   path: string
   root: string
   reason: string
+  /** Whether this diagnostic can be auto-fixed (e.g. unquoted colon). */
+  fixable?: boolean
+}
+
+/** POST /api/skill-hub/diagnostic/fix — repair a fixable diagnostic in place. */
+export interface DiagnosticFixRequest {
+  path: string
+}
+export interface DiagnosticFixResponse {
+  ok: true
+  path: string
 }
 
 /** GET /api/skill-hub/catalog */
@@ -103,6 +123,8 @@ export interface CatalogResponse {
   disabled: DisabledSkill[]
   /** Files in the writable roots the provider ignores, with reasons. */
   diagnostics: DiagnosticEntry[]
+  /** Skill names that appeared in multiple roots (first wins, others hidden). Mirrors codex name_counts. */
+  duplicateNames?: string[]
 }
 
 /** GET /api/skill-hub/skill */
@@ -120,6 +142,12 @@ export interface SkillDetail {
   updatedAt?: number
   /** Markdown instruction body. */
   content: string
+  displayName?: string
+  shortDescription?: string
+  brandColor?: string
+  iconSmall?: string
+  iconLarge?: string
+  defaultPrompt?: string
 }
 
 export interface SkillDetailResponse {
@@ -389,6 +417,18 @@ export interface MarketSourceRefRequest {
   ref: string
 }
 
+/** GET /api/skill-hub/market/source/versions?repo= — releases + branches for the version picker. */
+export interface MarketSourceVersionsResponse {
+  ok: true
+  repo: string
+  /** Currently pinned ref, when one is recorded. */
+  current?: string
+  /** Release tags, newest first (drafts excluded). */
+  releases: string[]
+  /** Branch names, default branch first. */
+  branches: string[]
+}
+
 /** GET /api/skill-hub/market/check — update check over market sources. */
 export interface MarketCheckResponse {
   ok: true
@@ -455,6 +495,8 @@ export interface RepoDiscoverResponse {
   /** Branch names to choose from when ref is null (default branch first). */
   branches?: string[]
   entries: RepoSkillEntry[]
+  /** GitHub truncated the tree; discovery is partial (mirrors codex walk_truncated). */
+  truncated?: boolean
 }
 
 /** POST /api/skill-hub/repo/import — install selected repo skills. */

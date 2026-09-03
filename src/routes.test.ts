@@ -178,6 +178,28 @@ describe('skill-hub routes', () => {
     expect(byName.get('shared-user')?.workspace).toBeUndefined()
   })
 
+  it('flags duplicate names only across distinct source/provider identities', async () => {
+    // 两个工作区快照返回同一个用户级技能：同一来源+提供者，不算重名。
+    await mkdir(join(home, 'storages'), { recursive: true })
+    await writeFile(join(home, 'storages', 'workspace.json'), JSON.stringify({
+      tables: { workspaces: { a: { title: 'Alpha', path: '/ws/a' }, b: { title: 'Beta', path: '/ws/b' } } },
+    }), 'utf8')
+    skills.snapshot = async () => ({
+      skills: [
+        summary({ name: 'shared-user', source: 'user-dsh', provider: 'skill-hub' }),
+        summary({ name: 'two-homes', source: 'custom', provider: 'openviking' }),
+        summary({ name: 'two-homes', source: 'user-dsh', provider: 'skill-hub' }),
+      ],
+      complete: true,
+    })
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.catalog).handler(fakeReq('GET', SKILL_HUB_API.catalog), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as CatalogResponse
+    // shared-user 在两个快照出现但身份一致 → 不标；two-homes 来源不同 → 标。
+    expect(body.duplicateNames ?? []).toEqual(['two-homes'])
+  })
+
   it('falls back across workspaces when fetching a project skill detail without cwd', async () => {
     await mkdir(join(home, 'storages'), { recursive: true })
     await writeFile(join(home, 'storages', 'workspace.json'), JSON.stringify({

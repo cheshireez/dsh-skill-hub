@@ -171,10 +171,21 @@ export function parseFrontmatter(text: string): { value: FrontmatterValue } | { 
   const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n([\s\S]*))?$/.exec(text)
   if (match === null) return { error: 'missing YAML frontmatter (--- block)' }
   let data: unknown
+  let rawFrontmatter = match[1]
   try {
-    data = load(match[1])
+    data = load(rawFrontmatter)
   } catch (error) {
-    return { error: 'invalid YAML frontmatter: ' + (error instanceof Error ? error.message : String(error)) }
+    const repaired = repairFrontmatterScalarFields(rawFrontmatter)
+    if (repaired !== null) {
+      try {
+        data = load(repaired)
+        rawFrontmatter = repaired
+      } catch {
+        return { error: 'invalid YAML frontmatter: ' + (error instanceof Error ? error.message : String(error)) }
+      }
+    } else {
+      return { error: 'invalid YAML frontmatter: ' + (error instanceof Error ? error.message : String(error)) }
+    }
   }
   if (typeof data !== 'object' || data === null || Array.isArray(data)) {
     return { error: 'frontmatter must be a YAML mapping' }
@@ -198,6 +209,125 @@ export function parseFrontmatter(text: string): { value: FrontmatterValue } | { 
     return { error: error instanceof Error ? error.message : String(error) }
   }
   return { value: { name, description, ...(whenToUse !== undefined ? { whenToUse } : {}), invocation, content: (match[2] ?? '').trim() } }
+}
+
+/**
+ * Repair bare scalar fields that contain an unquoted colon (e.g. `description: Build for AWS: ECS`)
+ * or an invalid flow-like scalar (`@`, `` ` ``, `[`, `{`). Mirrors codex `repair_frontmatter_scalar_fields`:
+ * line-oriented, only touches lines where quoting makes the YAML valid, and preserves block scalars.
+ * Returns the repaired frontmatter string when at least one line was quoted, otherwise null.
+ */
+function repairFrontmatterScalarFields(frontmatter: string): string | null {
+  let changed = false
+  let blockScalarIndent: number | null = null
+  const repairedLines: string[] = []
+  for (const line of frontmatter.split('\n')) {
+    const indent = line.search(/[^ ]/)
+    const effectiveIndent = indent === -1 ? line.length : indent
+    if (blockScalarIndent !== null) {
+      if (line.trim() === '' || effectiveIndent > blockScalarIndent) {
+        repairedLines.push(line)
+        continue
+      }
+      blockScalarIndent = null
+    }
+    const colonIndex = line.indexOf(':')
+    if (colonIndex === -1) {
+      repairedLines.push(line)
+      continue
+    }
+    const key = line.slice(0, colonIndex)
+    const value = line.slice(colonIndex + 1)
+    if (key.trim() === '' || value.length === 0 || !/^\s/.test(value)) {
+      repairedLines.push(line)
+      continue
+    }
+    const trimmedStart = value.trimStart()
+    const leadingWhitespace = value.slice(0, value.length - trimmedStart.length)
+    let scalar = trimmedStart
+    let comment = ''
+    // Split trailing `# comment` only when `#` is preceded by whitespace and
+    // followed by whitespace/end (YAML comment rule). This preserves `#1` as content.
+    for (let idx = 0; idx < trimmedStart.length; idx += 1) {
+      if (trimmedStart[idx] === '#') {
+        const prev = idx === 0 ? ' ' : trimmedStart[idx - 1]
+        const next = idx + 1 < trimmedStart.length ? trimmedStart[idx + 1] : ' '
+        if (/\s/.test(prev) && /\s/.test(next)) {
+          const commentStart = trimmedStart.slice(0, idx).trimEnd().length
+          scalar = trimmedStart.slice(0, commentStart)
+          comment = trimmedStart.slice(commentStart)
+          break
+        }
+      }
+    }
+    scalar = scalar.trimEnd()
+    if (scalar === '') {
+      repairedLines.push(line)
+      continue
+    }
+    const firstChar = scalar[0]
+    if (firstChar === '|' || firstChar === '>') {
+      blockScalarIndent = effectiveIndent
+      repairedLines.push(line)
+      continue
+    }
+    if (firstChar === "'" || firstChar === '"') {
+      repairedLines.push(line)
+      continue
+    }
+    let hasColonSeparator = false
+    for (let i = 0; i < scalar.length - 1; i += 1) {
+      if (scalar[i] === ':' && /\s/.test(scalar[i + 1])) {
+        hasColonSeparator = true
+        break
+      }
+    }
+    let invalidFlowLike = false
+    if ((firstChar === '[' || firstChar === '{' || firstChar === '@' || firstChar === '`')) {
+      try {
+        load(scalar)
+      } catch {
+        invalidFlowLike = true
+      }
+    }
+    if (!hasColonSeparator && !invalidFlowLike) {
+      repairedLines.push(line)
+      continue
+    }
+    const quotedScalar = "'" + scalar.replace(/'/g, "''") + "'"
+    repairedLines.push(key + ':' + leadingWhitespace + quotedScalar + comment)
+    changed = true
+  }
+  return changed ? repairedLines.join('\n') : null
+}
+
+/** Try to repair a SKILL.md's frontmatter in place (unquoted colon etc.). Returns the new file text or null when not fixable. */
+export function repairFrontmatterFileText(text: string): string | null {
+  const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n([\s\S]*))?$/.exec(text)
+  if (match === null) return null
+  const repaired = repairFrontmatterScalarFields(match[1])
+  if (repaired === null) return null
+  try {
+    load(repaired)
+  } catch {
+    return null
+  }
+  const body = match[2] ?? ''
+  return '---\n' + repaired + '\n---' + (body !== '' ? '\n' + body : '')
+}
+
+/** Repair one file on disk when its frontmatter is auto-fixable. Returns the new text. */
+export async function fixDiagnosticFile(path: string, home = dshHome()): Promise<string> {
+  const root = rootOfPath(path, home)
+  if (root === undefined) throw new TypeError('not a hub writable skill path: ' + path)
+  const text = await readFile(path, 'utf8')
+  const repairedText = repairFrontmatterFileText(text)
+  if (repairedText === null) throw new TypeError('diagnostic is not auto-fixable: ' + path)
+  // Validate the repaired text parses as a legal skill (prevents writing a still-broken file).
+  const parsed = parseFrontmatter(repairedText)
+  if ('error' in parsed) throw new TypeError('repaired frontmatter still invalid: ' + parsed.error)
+  await writeFile(path, repairedText, 'utf8')
+  return path
 }
 
 /** Official boolean grammar: true/false, 1/0, and the common string spellings. */
@@ -262,6 +392,55 @@ export function listSkillEntries(root: WritableRoot, home = dshHome()): Promise<
   return scanRoot(rootPath(root, home))
 }
 
+/** Read UI metadata from `agents/openai.yaml` beside a directory skill (mirrors codex SkillInterface). */
+export async function readSkillInterface(directory: string): Promise<{ displayName?: string; shortDescription?: string; brandColor?: string; iconSmall?: string; iconLarge?: string; defaultPrompt?: string } | undefined> {
+  const yamlPath = join(directory, 'agents', 'openai.yaml')
+  let text: string
+  try {
+    text = await readFile(yamlPath, 'utf8')
+  } catch {
+    return undefined
+  }
+  let data: unknown
+  try {
+    data = load(text)
+  } catch {
+    return undefined
+  }
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
+  const record = data as Record<string, unknown>
+  const iface = (record.interface ?? record) as Record<string, unknown>
+  // codex stores interface under top-level `interface` key, but some templates put display_name at top level; support both.
+  const ifaceObj = typeof record.interface === 'object' && record.interface !== null && !Array.isArray(record.interface) ? record.interface as Record<string, unknown> : iface
+  const cleanStr = (value: unknown, maxLen: number): string | undefined => {
+    if (typeof value !== 'string') return undefined
+    const cleaned = value.split(/\s+/).join(' ').trim()
+    if (cleaned === '' || cleaned.length > maxLen) return undefined
+    return cleaned
+  }
+  const hexColor = (value: unknown): string | undefined => {
+    if (typeof value !== 'string') return undefined
+    const trimmed = value.trim()
+    return /^#[0-9a-fA-F]{6}$/.test(trimmed) ? trimmed : undefined
+  }
+  const iconPath = (value: unknown): string | undefined => {
+    if (typeof value !== 'string' || value.trim() === '') return undefined
+    const trimmed = value.trim().replace(/\\/g, '/')
+    if (trimmed.startsWith('/') || trimmed.includes('..')) return undefined
+    if (!trimmed.startsWith('assets/')) return undefined
+    return trimmed
+  }
+  const displayName = cleanStr(ifaceObj.display_name, 64)
+  const shortDescription = cleanStr(ifaceObj.short_description, 1024)
+  const brandColor = hexColor(ifaceObj.brand_color)
+  const defaultPrompt = cleanStr(ifaceObj.default_prompt, 1024)
+  const iconSmall = iconPath(ifaceObj.icon_small)
+  const iconLarge = iconPath(ifaceObj.icon_large)
+  const hasAny = displayName !== undefined || shortDescription !== undefined || brandColor !== undefined || iconSmall !== undefined || iconLarge !== undefined || defaultPrompt !== undefined
+  if (!hasAny) return undefined
+  return { ...(displayName !== undefined ? { displayName } : {}), ...(shortDescription !== undefined ? { shortDescription } : {}), ...(brandColor !== undefined ? { brandColor } : {}), ...(iconSmall !== undefined ? { iconSmall } : {}), ...(iconLarge !== undefined ? { iconLarge } : {}), ...(defaultPrompt !== undefined ? { defaultPrompt } : {}) }
+}
+
 /**
  * Walk up from cwd (max 32 levels) for a project marker (.dsh or .git);
  * falls back to cwd itself. The provider roots project skills here.
@@ -298,8 +477,14 @@ export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Pro
     }
     const parsed = parseFrontmatter(text)
     if ('error' in parsed) {
-      diagnostics.push({ path: entry.path, root, reason: parsed.error })
+      const fixable = repairFrontmatterFileText(text) !== null
+      diagnostics.push({ path: entry.path, root, reason: parsed.error, ...(fixable ? { fixable: true } : {}) })
       continue
+    }
+    // File was auto-repaired in memory (e.g. unquoted `:`); surface a fixable hint so the user can persist it.
+    const repaired = repairFrontmatterFileText(text)
+    if (repaired !== null) {
+      diagnostics.push({ path: entry.path, root, reason: 'frontmatter contains unquoted colon/bracket (auto-repaired in memory; click Fix to persist)', fixable: true })
     }
     const { value } = parsed
     // The provider registers a skill by its discovery path (directory name or

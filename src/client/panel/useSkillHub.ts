@@ -28,7 +28,7 @@ import type {
 import type { SkillHubApi } from '../api.ts'
 import { errorMessage, tt } from '../helpers.ts'
 import { conflictsOnClose, isProjectSource, PRIVATE_SOURCE, sortSkills, type SortKey, type GroupSwitchState } from '../grouping.ts'
-import type { BranchChoiceState, ConfirmDialogState, ConflictDialogState, MarketSyncDialogState } from './dialogs.tsx'
+import type { BranchChoiceState, ConfirmDialogState, ConflictDialogState, MarketSyncDialogState, VersionChoiceState } from './dialogs.tsx'
 
 /** Catalog poll interval while the panel is mounted (the provider watcher feeds this). */
 const POLL_MS = 5000
@@ -118,6 +118,7 @@ export function useSkillHub(api: SkillHubApi) {
   const [tab, setTab] = useState<'sources' | 'scenes' | 'market'>('sources')
   const [skillView, setSkillView] = useState<'flat' | 'groups'>('groups')
   const [sourceFilter, setSourceFilter] = useState('all')
+  const [invocationFilter, setInvocationFilter] = useState<'all' | 'model' | 'user'>('all')
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [marketState, setMarketState] = useState<MarketState>({ status: 'loading', repos: [] })
   const [marketCheck, setMarketCheck] = useState<Readonly<Record<string, MarketCheckResult>>>({})
@@ -145,8 +146,9 @@ export function useSkillHub(api: SkillHubApi) {
   const [newTagName, setNewTagName] = useState('')
   const [tagBusy, setTagBusy] = useState(false)
   const [editSearch, setEditSearch] = useState('')
-  /** 分组视图里收起的分组（key 为 tag:<id>、col:<name> 或 project 树键）。 */
+  /** 分组视图里收起的分组（key 为 tag:<id>、col:<name> 或 project 树键）。技能总数 >80 时首次加载自动折叠 personal。 */
   const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(new Set())
+  const autoCollapsedPersonal = useRef(false)
   /** 项目级三级树里已细分（按 .dsh/.agents）的项目键。 */
   const [subdividedProjects, setSubdividedProjects] = useState<ReadonlySet<string>>(new Set())
   const [showLegend, setShowLegend] = useState(false)
@@ -174,6 +176,10 @@ export function useSkillHub(api: SkillHubApi) {
     try {
       const next = await api.catalog(workspace !== '' ? { cwd: workspace } : undefined)
       setCatalog(next)
+      if (!autoCollapsedPersonal.current && next.skills.length + next.disabled.length > 80) {
+        autoCollapsedPersonal.current = true
+        setCollapsedGroups((previous) => new Set(previous).add('uncategorized-source'))
+      }
       setLoadError(null)
     } catch (error) {
       setLoadError(errorMessage(error))
@@ -466,6 +472,27 @@ export function useSkillHub(api: SkillHubApi) {
     }
   }, [api, load, loadSources])
 
+  const [fixingPaths, setFixingPaths] = useState<ReadonlySet<string>>(new Set())
+  const fixDiagnostic = useCallback(async (path: string): Promise<void> => {
+    setFixingPaths((previous) => new Set(previous).add(path))
+    setLoadError(null)
+    try {
+      const confirmed = window.confirm(tt('diag.fixConfirm', { path }))
+      if (!confirmed) return
+      await api.fixDiagnostic(path)
+      await load()
+      setSuccessBanner(tt('diag.fixed'))
+    } catch (error) {
+      setLoadError(errorMessage(error))
+    } finally {
+      setFixingPaths((previous) => {
+        const next = new Set(previous)
+        next.delete(path)
+        return next
+      })
+    }
+  }, [api, load])
+
   /** 打开单个技能的删除确认（移入回收站，可恢复）。 */
   const requestDeleteSkill = useCallback((name: string): void => {
     setDeleteSkillDialog(name)
@@ -722,12 +749,14 @@ export function useSkillHub(api: SkillHubApi) {
         return
       }
       setRepoDiscoverState({ status: 'ready', data })
+      // The discover route may have auto-pinned the release; refresh the list so the ref badge shows.
+      void loadMarket()
     } catch (error) {
       setRepoDiscoverState({ status: 'error', message: errorMessage(error) })
     } finally {
       setScanningRepo(null)
     }
-  }, [api])
+  }, [api, loadMarket])
 
   /** 确认分支选择：持久化 ref 后重新扫描。 */
   const confirmBranchChoice = useCallback(async (): Promise<void> => {
@@ -744,6 +773,47 @@ export function useSkillHub(api: SkillHubApi) {
       setBranchBusy(false)
     }
   }, [api, branchChoice, scanRepo])
+
+  /** 版本对话框：打开时拉 releases + branches，确认后定版并重扫。 */
+  const [versionDialog, setVersionDialog] = useState<VersionChoiceState | null>(null)
+  const [versionBusy, setVersionBusy] = useState(false)
+  const openVersionDialog = useCallback(async (repo: string): Promise<void> => {
+    const current = marketState.repos.find((item) => item.repo === repo)?.ref
+    setVersionDialog({ repo, ...(current !== undefined ? { current } : {}), releases: [], branches: [], selected: current ?? '', custom: '', loading: true })
+    setLoadError(null)
+    try {
+      const data = await api.marketSourceVersions(repo)
+      setVersionDialog({
+        repo,
+        ...(data.current !== undefined ? { current: data.current } : {}),
+        releases: data.releases,
+        branches: data.branches,
+        selected: data.current ?? data.releases[0] ?? data.branches[0] ?? '',
+        custom: '',
+        loading: false,
+      })
+    } catch (error) {
+      setLoadError(errorMessage(error))
+      setVersionDialog(null)
+    }
+  }, [api, marketState])
+  const confirmVersionDialog = useCallback(async (): Promise<void> => {
+    if (versionDialog === null) return
+    const ref = versionDialog.custom.trim() !== '' ? versionDialog.custom.trim() : versionDialog.selected
+    if (ref === '') return
+    setVersionBusy(true)
+    setLoadError(null)
+    try {
+      await api.setMarketSourceRef(versionDialog.repo, ref)
+      setVersionDialog(null)
+      await loadMarket()
+      await scanRepo(versionDialog.repo)
+    } catch (error) {
+      setLoadError(errorMessage(error))
+    } finally {
+      setVersionBusy(false)
+    }
+  }, [api, versionDialog, loadMarket, scanRepo])
 
   /** Toggle one repo preview row. */
   const toggleRepoSelected = useCallback((path: string, checked: boolean): void => {
@@ -989,29 +1059,44 @@ export function useSkillHub(api: SkillHubApi) {
     const hasPrivate = skills.some((skill) => origins[skill.name] === undefined && !isProjectSource(skill.source))
     return [...repos, ...(hasPrivate ? [PRIVATE_SOURCE] : [])]
   }, [catalog, origins])
-  const filtered = useMemo(() => (catalog?.skills ?? []).filter((skill) =>
-    normalized.length === 0 || skill.name.toLocaleLowerCase().includes(normalized) || skill.description.toLocaleLowerCase().includes(normalized),
-  ), [catalog, normalized])
+  const filtered = useMemo(() => (catalog?.skills ?? []).filter((skill) => {
+    if (invocationFilter === 'model' && !skill.invocation.modelInvocable) return false
+    if (invocationFilter === 'user' && !skill.invocation.userInvocable) return false
+    if (normalized.length === 0) return true
+    return skill.name.toLocaleLowerCase().includes(normalized)
+      || skill.description.toLocaleLowerCase().includes(normalized)
+      || skill.displayName?.toLocaleLowerCase().includes(normalized)
+      || skill.shortDescription?.toLocaleLowerCase().includes(normalized)
+  }), [catalog, normalized, invocationFilter])
+  /** Rows actually rendered with a shortened description (shortDescription in use). */
+  const shortenedCount = useMemo(() => filtered.filter((skill) => skill.shortDescription !== undefined).length, [filtered])
   /** 排序后的技能列表（所有视图共用；调用次数未知按 0 处理）。 */
   const sorted = useMemo(() => sortSkills(filtered, sortKey, (name) => uses.get(name)?.count), [filtered, sortKey, uses])
+
+  /** Clear the list filters (search + source + invocation) back to the full view. */
+  const clearListFilters = useCallback((): void => {
+    setSearch('')
+    setSourceFilter('all')
+    setInvocationFilter('all')
+  }, [])
 
   return {
     // state
     catalog, loading, loadError, successBanner, updateState, repoDiscoverState, scanningRepo, repoSelected, repoImporting, repoResult, importJobId,
     search, workspace, detail, detailLoading, busyNames, batchBusy, showForm, formName, formDesc, formRoot, formBusy, formMessage,
-    uses, hubConfig, tab, skillView, sourceFilter, sortKey, marketState, marketCheck, branchChoice, branchBusy,
+    uses, hubConfig, tab, skillView, sourceFilter, invocationFilter, sortKey, marketState, marketCheck, branchChoice, branchBusy,
     marketSyncDialog, syncingMarket, syncBusy, newSourceName, groupsState, sourcesState, sourceCheck, checkingSource, syncingSource,
     conflictDialog, confirmDialog, deleteSkillDialog, deleteGroupDialog, confirmClearTrash, updateAllDialog, editingTag, editName, membersDraft, newTagName, tagBusy,
-    editSearch, collapsedGroups, subdividedProjects, showLegend, editMode,
+    editSearch, collapsedGroups, subdividedProjects, showLegend, editMode, versionDialog, versionBusy,
     // derived
-    actionNames, viewNames, normalized, origins, sourceOptions, filtered, sorted,
+    actionNames, viewNames, normalized, origins, sourceOptions, filtered, sorted, shortenedCount,
     // actions + setters
     setLoadError, setSuccessBanner, setSearch, setWorkspace, setDetail, setShowForm, setFormName, setFormDesc, setFormRoot, setFormMessage,
     setRepoSelected, setTab, setSkillView,
-    setSourceFilter, setSortKey, setBranchChoice, setMarketSyncDialog, setNewSourceName, setConflictDialog, setConfirmDialog,
-    setDeleteSkillDialog, setDeleteGroupDialog, setConfirmClearTrash, setUpdateAllDialog, setEditingTag, setEditName, setMembersDraft, setNewTagName, setEditSearch, setShowLegend, setEditMode,
+    setSourceFilter, setInvocationFilter, setSortKey, setBranchChoice, setMarketSyncDialog, setNewSourceName, setConflictDialog, setConfirmDialog,
+    setDeleteSkillDialog, setDeleteGroupDialog, setConfirmClearTrash, setUpdateAllDialog, setEditingTag, setEditName, setMembersDraft, setNewTagName, setEditSearch, setShowLegend, setEditMode, setVersionDialog,
     toggleGroupCollapse, toggleSubdivide, checkUpdate, loadMarket, openDetail, toggle, enableDisabled, batchToggleNames, toggleGroup, resolveConflict,
-    runConfirmed, checkSources, requestSync, requestDelete, restoreTrash, clearTrash, requestDeleteSkill, runDeleteSkill, requestDeleteGroup, runDeleteGroup, createTag,
+    runConfirmed, checkSources, requestSync, requestDelete, restoreTrash, clearTrash, fixingPaths, fixDiagnostic, clearListFilters, openVersionDialog, confirmVersionDialog, requestDeleteSkill, runDeleteSkill, requestDeleteGroup, runDeleteGroup, createTag,
     deleteTag, saveTag, reorderTags, reorderCollections, reorderSourceGroups, addSource, addMarketSource, removeMarketSource, scanRepo, confirmBranchChoice, toggleRepoSelected, importRepo, cancelImport, clearScan,
     checkMarket, syncMarketSource, confirmMarketSync, updateAll, create,
   }

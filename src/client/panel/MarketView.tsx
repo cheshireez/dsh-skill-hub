@@ -78,7 +78,13 @@ export function MarketView(props: { hub: SkillHubState }): JSX.Element {
         <div className={css.rowMain}>
           <div className={css.rowName}>
             <a className={css.sourceLink} href={'https://github.com/' + record.repo} target='_blank' rel='noreferrer'>{record.repo}</a>
-            {record.ref !== undefined ? <span className={css.badge + ' ' + css.badgeSource}>{record.ref}</span> : null}
+            <button
+              type='button'
+              className={css.badge + ' ' + css.badgeSource}
+              style={{ cursor:'pointer', fontFamily:'inherit' }}
+              title={tt('market.versionHint')}
+              onClick={() => { void hub.openVersionDialog(record.repo) }}
+            >{record.ref ?? tt('market.unpinned')}</button>
             {installedCount > 0 ? <span className={css.badge + ' ' + css.badgeCount}>{tt('market.installed', { count: installedCount })}</span> : null}
             {hasSkillUpdate
               ? <span className={css.badge + ' ' + css.statusUpdated}>{tt('market.updatable', { count: skillCheck!.updated.length })}</span>
@@ -214,6 +220,7 @@ export function MarketView(props: { hub: SkillHubState }): JSX.Element {
         return (
           <>
             <p className={css.hintLine + ' ' + css.hintInline}>{tt('repo.ready', { count: entries.length })} · {repoDiscoverState.data.ref !== null ? `ref ${repoDiscoverState.data.ref}` : ''}</p>
+            {repoDiscoverState.data.truncated === true ? <div className={css.errorBanner} style={{ background:'rgba(210,153,34,0.08)', color:'#d29922', borderLeft:'3px solid #d29922' }}>{tt('repo.truncated')}</div> : null}
             {entries.length === 0 ? <div className={css.empty}>{tt('repo.empty')}</div> : (
               <>
                 {/* 搜索 + 过滤 + 统计 — 精简 */}

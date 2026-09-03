@@ -24,7 +24,7 @@ import { TagEditorView } from './TagEditorView.tsx'
 import { SourcesView } from './SourcesView.tsx'
 import { ScenesView } from './ScenesView.tsx'
 import { MarketView } from './MarketView.tsx'
-import { BranchChoiceDialog, ConfirmDialog, ConflictDialog, MarketSyncDialog } from './dialogs.tsx'
+import { BranchChoiceDialog, ConfirmDialog, ConflictDialog, MarketSyncDialog, VersionChoiceDialog } from './dialogs.tsx'
 import { useSkillHub } from './useSkillHub.ts'
 import css from './panel.module.css'
 
@@ -51,10 +51,12 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
     checkUpdate, loadMarket, checkSources, requestSync, requestDelete, restoreTrash, clearTrash, runDeleteSkill, runDeleteGroup,
     runConfirmed, resolveConflict, confirmBranchChoice, confirmMarketSync, create, saveTag, deleteTag, enableDisabled,
   } = hub
+  const { shortenedCount, fixingPaths, clearListFilters } = hub
 
   // -------------------------------------------------------------- detail
 
   if (detail !== null) {
+    const disabledRecord = catalog?.disabled.find((record) => record.name === detail.name)
     return (
       <SkillDetailView
         detail={detail}
@@ -66,6 +68,8 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
         checkingSource={checkingSource}
         syncingSource={syncingSource}
         loading={detailLoading}
+        disabled={disabledRecord !== undefined}
+        onEnable={disabledRecord !== undefined ? () => { void enableDisabled(disabledRecord).then(() => { setDetail(null) }) } : undefined}
         onBack={() => { setDetail(null) }}
         onCheck={(repo) => { void checkSources(repo) }}
         onSync={requestSync}
@@ -126,6 +130,7 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
             </span>
           : null}
         {catalog !== null && !catalog.complete ? <span className={css.hint}>{tt('panel.incomplete')}</span> : null}
+        {catalog !== null && (catalog.duplicateNames?.length ?? 0) > 0 ? <button type='button' className={css.opBtn} title={tt('row.duplicateHint')} onClick={() => { clearListFilters() }}>⚠ {tt('row.duplicate')}×{(catalog.duplicateNames ?? []).length}</button> : null}
         <span className={css.actions}>
           <button type='button' className={css.button} disabled={updateState.status === 'checking'} title={updateTitle} onClick={() => { void checkUpdate() }}>{updateState.status === 'checking' ? tt('update.checking') : tt('update.check')}</button>
           {updateState.status === 'ready' && updateState.data.updateAvailable && updateState.data.url !== null
@@ -234,9 +239,20 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
               <option value='added'>{tt('sort.added')}</option>
               <option value='uses'>{tt('sort.uses')}</option>
             </select>
+            <select className={css.select} value={hub.invocationFilter} onChange={(event) => { hub.setInvocationFilter(event.target.value as 'all' | 'model' | 'user') }}>
+              <option value='all'>{tt('filter.invocationAll')}</option>
+              <option value='model'>{tt('filter.modelOnly')}</option>
+              <option value='user'>{tt('filter.userOnly')}</option>
+            </select>
             <input className={css.search} value={search} onChange={(event) => { setSearch(event.target.value) }} placeholder={tt('panel.search')} />
             <button type='button' className={css.button + (editMode ? ' ' + css.primary : '')} style={{ marginLeft:'auto' }} onClick={() => setEditMode((v) => !v)}>{editMode ? '完成' : '编辑'}</button>
           </div>
+          {catalog !== null && (filtered.length !== catalog.skills.length || hub.invocationFilter !== 'all' || sourceFilter !== 'all') ? (
+            <div className={css.hintLine} style={{ margin: '2px 2px 0', display:'flex', gap:8, flexWrap:'wrap' }}>
+              <span>{tt('filter.showing', { shown: filtered.length, total: catalog.skills.length, filtered: hub.invocationFilter !== 'all' || sourceFilter !== 'all' ? tt('filter.filteredSuffix') : '' })}</span>
+              {shortenedCount > 0 ? <span title={tt('filter.shortened', { count: shortenedCount })}>{tt('filter.shortened', { count: shortenedCount })}</span> : null}
+            </div>
+          ) : null}
 
           {filtered.length === 0 && search.trim() !== '' ? <div className={css.empty}>{tt('panel.empty')}</div> : null}
           {filtered.length === 0 && search.trim() === '' && catalog.skills.length === 0 && catalog.disabled.length === 0 && catalog.diagnostics.length === 0
@@ -267,9 +283,20 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
             <section className={css.section}>
               <div className={css.sectionTitle}>{tt('panel.diagnostics')}</div>
               {catalog.diagnostics.map((entry) => (
-                <div key={entry.path} className={css.diagRow}>
-                  <div className={css.diagPath}>{entry.path}</div>
-                  <div className={css.diagReason}>{entry.reason}</div>
+                <div key={entry.path} className={css.diagRow} style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div className={css.diagPath}>{entry.path}</div>
+                    <div className={css.diagReason}>{entry.reason}</div>
+                  </div>
+                  {entry.fixable === true ? (
+                    <button
+                      type='button'
+                      className={css.opBtn}
+                      disabled={fixingPaths.has(entry.path)}
+                      onClick={() => { void hub.fixDiagnostic(entry.path) }}
+                      style={{ flex:'none', alignSelf:'center' }}
+                    >{fixingPaths.has(entry.path) ? tt('diag.fixing') : tt('diag.fix')}</button>
+                  ) : null}
                 </div>
               ))}
             </section>
@@ -307,6 +334,17 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
           onSelect={(selected) => { setBranchChoice({ ...branchChoice, selected }) }}
           onCancel={() => { setBranchChoice(null) }}
           onConfirm={() => { void confirmBranchChoice() }}
+        />
+      ) : null}
+
+      {hub.versionDialog !== null ? (
+        <VersionChoiceDialog
+          choice={hub.versionDialog}
+          busy={hub.versionBusy}
+          onSelect={(selected) => { hub.setVersionDialog({ ...hub.versionDialog!, selected }) }}
+          onCustom={(custom) => { hub.setVersionDialog({ ...hub.versionDialog!, custom }) }}
+          onCancel={() => { hub.setVersionDialog(null) }}
+          onConfirm={() => { void hub.confirmVersionDialog() }}
         />
       ) : null}
 

@@ -29,6 +29,7 @@ import {
   getLatestReleaseTag,
   isAbortError,
   listRepoBranches,
+  listRepoReleases,
   loadRepoTree,
   loadRepoTreeAt,
   normalizeRepoInput,
@@ -60,6 +61,7 @@ import {
   type MarketSourceRequest,
   type MarketSourceResponse,
   type MarketSourcesResponse,
+  type MarketSourceVersionsResponse,
   type MarketSyncResponse,
   type SourceCheckRequest,
   type SourceCheckResponse,
@@ -88,6 +90,8 @@ import {
   type SourceGroupReorderResponse,
   type TagSaveRequest,
   type TagSaveResponse,
+  type DiagnosticFixRequest,
+  type DiagnosticFixResponse,
   type ToggleBatchRequest,
   type ToggleBatchResponse,
   type ToggleRequest,
@@ -97,7 +101,7 @@ import {
   isProjectSource,
   resolveHubConfig,
 } from './protocol.ts'
-import { clearTrash, createSkill, disableSkill, enableSkill, restoreSkill, rootOfPath, rootPath, scanDiagnostics, trashSkill } from './skillfs.ts'
+import { clearTrash, createSkill, disableSkill, enableSkill, fixDiagnosticFile, parseFrontmatter, readSkillInterface, restoreSkill, rootOfPath, rootPath, scanDiagnostics, trashSkill } from './skillfs.ts'
 import { checkLatestRelease, CURRENT_VERSION } from './update.ts'
 import { dshHome, StoreError, type SkillHubStore } from './store.ts'
 import type { SkillStatsReader } from './stats.ts'
@@ -365,20 +369,49 @@ async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promise<Cata
     workspaces = await workspaceEntries(home)
     if (workspaces.length === 0) workspaces = [{ path: '', title: '' }]
   }
-  const byName = new Map<string, { skill: SkillSummary; workspace?: string; workspaceTitle?: string }>()
+  // Project skills with same name but different workspace are distinct entries (grouped by workspace in SourcesView), so key includes workspace for project sources.
+  const byKey = new Map<string, { skill: SkillSummary; workspace?: string; workspaceTitle?: string }>()
+  // Distinct identities per logical key: the same skill reappearing across
+  // workspace snapshots (same source+provider) is one skill, not a duplicate.
+  // Only different source/provider identities sharing a name are ambiguous.
+  const identitiesByKey = new Map<string, Set<string>>()
   let complete = true
   for (const ws of workspaces) {
     const lookup = ws.path !== '' ? { cwd: ws.path } : undefined
     const snapshot = await deps.skills.snapshot(lookup)
     if (!snapshot.complete) complete = false
     for (const skill of snapshot.skills) {
-      if (byName.has(skill.name)) continue
-      byName.set(skill.name, {
+      const logicalKey = isProjectSource(skill.source) && ws.path !== '' ? `${skill.name}\0${ws.path}\0${skill.source}` : skill.name
+      let identities = identitiesByKey.get(logicalKey)
+      if (identities === undefined) {
+        identities = new Set()
+        identitiesByKey.set(logicalKey, identities)
+      }
+      identities.add(skill.source + '\0' + skill.provider)
+      if (byKey.has(logicalKey)) continue
+      byKey.set(logicalKey, {
         skill,
         ...(isProjectSource(skill.source) && ws.path !== '' ? { workspace: ws.path, workspaceTitle: ws.title } : {}),
       })
     }
   }
+  const disabled = await deps.store.listDisabled()
+  const byName = byKey
+  // A hub-disabled record whose name is also enabled elsewhere hides one
+  // identity behind the toggle; flag it as well.
+  for (const d of disabled) {
+    let identities = identitiesByKey.get(d.name)
+    if (identities === undefined) {
+      identities = new Set()
+      identitiesByKey.set(d.name, identities)
+    }
+    identities.add('hub-disabled\0' + d.root)
+  }
+  const duplicateNames = [...identitiesByKey.entries()]
+    .filter(([, identities]) => identities.size > 1)
+    .map(([key]) => key.split('\0')[0])
+    .filter((name, idx, arr) => arr.indexOf(name) === idx)
+    .sort((a, b) => a.localeCompare(b))
   // 添加/更新时间 = 用户级技能文件的创建/修改时间（排序与详情展示用）。
   // snapshot 只给 SkillSummary（无 path），所以按可写根推断路径；非用户级
   // 来源没有稳定路径，省略字段，客户端排序会把它放到末尾。
@@ -387,7 +420,7 @@ async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promise<Cata
   const timesByName = new Map<string, { addedAt: number; updatedAt: number }>()
   await Promise.all([...byName.values()].map(async ({ skill }) => {
     if (!isWritableSource(skill.source)) return
-    const base = rootPath(skill.source, home)
+    const base = rootPath(skill.source as WritableRoot, home)
     for (const candidate of [join(base, skill.name, 'SKILL.md'), join(base, skill.name), join(base, skill.name + '.md')]) {
       try {
         const times = await stat(candidate)
@@ -395,6 +428,29 @@ async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promise<Cata
         return
       } catch {
         // 目录/文件不存在则尝试下一个候选路径。
+      }
+    }
+  }))
+  // UI metadata from agents/openai.yaml (codex SkillInterface) — best-effort, no error if missing.
+  const interfaceByName = new Map<string, { displayName?: string; shortDescription?: string; brandColor?: string; iconSmall?: string; iconLarge?: string; defaultPrompt?: string }>()
+  await Promise.all([...byName.values()].map(async ({ skill, workspace }) => {
+    const candidates: string[] = []
+    if (isWritableSource(skill.source as WritableRoot)) {
+      candidates.push(join(rootPath(skill.source as WritableRoot, home), skill.name))
+    } else if (isProjectSource(skill.source) && workspace !== undefined) {
+      candidates.push(join(workspace, skill.source === 'project-dsh' ? '.dsh/skills' : '.agents/skills', skill.name))
+    } else if (isProjectSource(skill.source)) {
+      for (const ws of workspaces) if (ws.path !== '') candidates.push(join(ws.path, skill.source === 'project-dsh' ? '.dsh/skills' : '.agents/skills', skill.name))
+    }
+    for (const dir of candidates) {
+      try {
+        const iface = await readSkillInterface(dir)
+        if (iface !== undefined) {
+          interfaceByName.set(skill.name, iface)
+          return
+        }
+      } catch {
+        // ignore
       }
     }
   }))
@@ -417,14 +473,30 @@ async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promise<Cata
       row.addedAt = times.addedAt
       row.updatedAt = times.updatedAt
     }
+    const iface = interfaceByName.get(skill.name)
+    if (iface !== undefined) {
+      if (iface.displayName !== undefined) row.displayName = iface.displayName
+      if (iface.shortDescription !== undefined) row.shortDescription = iface.shortDescription
+      if (iface.brandColor !== undefined) row.brandColor = iface.brandColor
+      if (iface.iconSmall !== undefined) row.iconSmall = iface.iconSmall
+      if (iface.iconLarge !== undefined) row.iconLarge = iface.iconLarge
+      if (iface.defaultPrompt !== undefined) row.defaultPrompt = iface.defaultPrompt
+    }
     return row
   })
-  const disabled = await deps.store.listDisabled()
   const diagnostics = [
     ...(await scanDiagnostics('user-dsh', home)),
     ...(await scanDiagnostics('user-agents', home)),
   ]
-  return { ok: true, pluginVersion: CURRENT_VERSION, complete, skills, disabled, diagnostics }
+  return {
+    ok: true,
+    pluginVersion: CURRENT_VERSION,
+    complete,
+    skills,
+    disabled,
+    diagnostics,
+    ...(duplicateNames.length > 0 ? { duplicateNames } : {}),
+  }
 }
 
 /** Map a loaded definition onto the wire shape. */
@@ -590,7 +662,41 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
           }
           if (skill === undefined) skill = await deps.skills.get(name)
         }
-        if (skill === undefined) { writeError(res, 404, 'skill not found: ' + name); return }
+        if (skill === undefined) {
+          // Hub-disabled skills live outside registry discovery (renamed to .disabled);
+          // serve their detail straight from the sidecar record + file.
+          const record = await deps.store.getDisabled(name)
+          if (record !== undefined) {
+            try {
+              const text = await readFile(record.path, 'utf8')
+              const parsed = parseFrontmatter(text)
+              if (!('error' in parsed)) {
+                const disabledDetail: SkillDetail = {
+                  name: record.name,
+                  description: parsed.value.description,
+                  ...(parsed.value.whenToUse !== undefined ? { whenToUse: parsed.value.whenToUse } : {}),
+                  invocation: { ...parsed.value.invocation },
+                  provider: 'skill-hub (disabled)',
+                  path: record.path,
+                  content: parsed.value.content,
+                }
+                try {
+                  const times = await stat(record.path)
+                  disabledDetail.addedAt = times.birthtimeMs
+                  disabledDetail.updatedAt = times.mtimeMs
+                } catch {
+                  // ignore
+                }
+                writeJson(res, 200, { ok: true, skill: disabledDetail } satisfies SkillDetailResponse)
+                return
+              }
+            } catch {
+              // fall through to 404 below
+            }
+          }
+          writeError(res, 404, 'skill not found: ' + name)
+          return
+        }
         const detail = toDetail(skill)
         if (skill.path !== undefined) {
           try {
@@ -599,6 +705,24 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
             detail.updatedAt = times.mtimeMs
           } catch {
             // 文件不可读时省略时间字段，详情页不显示这两行。
+          }
+          // UI metadata from agents/openai.yaml beside the skill directory (codex).
+          try {
+            const rb = skill.resourceBase as { kind?: string; path?: string } | undefined
+            const dir = rb?.kind === 'directory' && typeof rb.path === 'string' ? rb.path : (skill.path.endsWith('SKILL.md') ? dirname(skill.path) : undefined)
+            if (dir !== undefined) {
+              const iface = await readSkillInterface(dir)
+              if (iface !== undefined) {
+                if (iface.displayName !== undefined) detail.displayName = iface.displayName
+                if (iface.shortDescription !== undefined) detail.shortDescription = iface.shortDescription
+                if (iface.brandColor !== undefined) detail.brandColor = iface.brandColor
+                if (iface.iconSmall !== undefined) detail.iconSmall = iface.iconSmall
+                if (iface.iconLarge !== undefined) detail.iconLarge = iface.iconLarge
+                if (iface.defaultPrompt !== undefined) detail.defaultPrompt = iface.defaultPrompt
+              }
+            }
+          } catch {
+            // best-effort
           }
         }
         writeJson(res, 200, { ok: true, skill: detail } satisfies SkillDetailResponse)
@@ -882,6 +1006,28 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
         writeJson(res, 200, { ok: true, repos: await deps.store.listMarketSources() } satisfies MarketSourceResponse)
       },
     }),
+    // -------------------------------------------- market/source/versions
+    // Version picker data: release tags + branch names for one market source.
+    route({
+      path: SKILL_HUB_API.marketSourceVersions,
+      methods: ['GET'],
+      handler: async ({ res, url }) => {
+        const input = queryParam(url, 'repo') ?? ''
+        const parsed = normalizeRepoInput(input)
+        if (parsed === null) { writeError(res, 400, 'repo must be owner/repo or a github.com URL'); return }
+        const repo = repoSlug(parsed)
+        const source = await deps.store.getMarketSource(repo)
+        if (source === undefined) { writeError(res, 404, 'market source not found: ' + repo); return }
+        const [releases, branches] = await Promise.all([listRepoReleases(repo), listRepoBranches(repo)])
+        writeJson(res, 200, {
+          ok: true,
+          repo,
+          ...(source.ref !== undefined && source.ref !== '' ? { current: source.ref } : {}),
+          releases,
+          branches,
+        } satisfies MarketSourceVersionsResponse)
+      },
+    }),
     // ------------------------------------------------------- market/check
     // Update check over every market source: compares the pinned ref's
     // commit against the recorded baseline and surfaces newer releases.
@@ -986,6 +1132,12 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
           const releaseTag = await getLatestReleaseTag(repo)
           if (releaseTag !== undefined) {
             ref = releaseTag
+            // Auto-pin an existing but unpinned market source to the resolved
+            // release, so the row shows the tracked version from the first scan.
+            const existing = await deps.store.getMarketSource(repo)
+            if (existing !== undefined && (existing.ref === undefined || existing.ref === '')) {
+              await deps.store.setMarketSourceRef(repo, releaseTag)
+            }
           } else {
             const branches = await listRepoBranches(repo)
             if (branches.length === 0) { writeError(res, 404, 'repo has no branches to scan'); return }
@@ -993,10 +1145,10 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
             return
           }
         }
-        const { ref: resolvedRef, tree } = await loadRepoTree(repo, ref)
+        const { ref: resolvedRef, tree, truncated } = await loadRepoTree(repo, ref)
         const existing = await knownSkillNames(deps)
         const entries = discoverRepoEntries(tree, repo, existing)
-        writeJson(res, 200, { ok: true, repo, ref: resolvedRef, entries } satisfies RepoDiscoverResponse)
+        writeJson(res, 200, { ok: true, repo, ref: resolvedRef, entries, ...(truncated ? { truncated: true } : {}) } satisfies RepoDiscoverResponse)
       },
     }),
     // ----------------------------------------------------------- repo/import  B方案 Job
@@ -1018,6 +1170,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
         const { ref: resolvedRef, tree } = await loadRepoTree(repo, ref)
         const existing = await knownSkillNames(deps)
         const entries = discoverRepoEntries(tree, repo, existing)
+        // truncated tree is still usable for the selected paths the user already picked from the prior discover response
         const byPath = new Map(entries.map((entry) => [entry.path, entry]))
         const selected = paths.map((path) => byPath.get(path)).filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
         if (selected.length === 0) { writeError(res, 400, 'no matching skills for selected paths'); return }
@@ -1544,6 +1697,24 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
         for (const name of deleted) await deps.store.removeTrash(name)
         if (deleted.length > 0) deps.invalidate?.()
         writeJson(res, 200, { ok: true, deleted, failed } satisfies SourceTrashClearResponse)
+      },
+    }),
+    // -------------------------------------------------------- diagnostic fix
+    route({
+      path: SKILL_HUB_API.diagnosticFix,
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const request = body as unknown as DiagnosticFixRequest
+        const rawPath = typeof request.path === 'string' ? request.path.trim() : ''
+        if (rawPath === '') { writeError(res, 400, 'path is required'); return }
+        try {
+          await fixDiagnosticFile(rawPath, homeOf(deps))
+          deps.invalidate?.()
+          writeJson(res, 200, { ok: true, path: rawPath } satisfies DiagnosticFixResponse)
+        } catch (error) {
+          writeRouteError(res, error)
+        }
       },
     }),
   ]

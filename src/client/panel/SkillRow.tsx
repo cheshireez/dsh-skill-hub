@@ -6,7 +6,7 @@
 import type { JSX, KeyboardEvent } from 'react'
 import type { CatalogSkill } from '../../protocol.ts'
 import { IconTrashOutline16 } from '../icons.tsx'
-import { tt } from '../helpers.ts'
+import { isDisplayNameDistinct, tt } from '../helpers.ts'
 import { dotStyle, relativeTimeText } from './format.ts'
 import type { SkillHubState } from './useSkillHub.ts'
 import css from './panel.module.css'
@@ -16,6 +16,7 @@ export function SkillRow(props: { skill: CatalogSkill; hub: SkillHubState }): JS
   const stat = hub.uses.get(skill.name)
   const count = stat?.count ?? 0
   const lastUsed = stat?.lastUsed
+  const isDuplicate = hub.catalog?.duplicateNames?.includes(skill.name) === true
   /** 单一状态圆点：模型可调 → 蓝；否则用户可调 → 绿。与聊天 / 菜单同规则。 */
   const dot = skill.invocation.modelInvocable
     ? <span className={css.dot + ' ' + css.dotModel} style={dotStyle(hub.hubConfig?.dotModelColor)} title={tt('legend.model')} />
@@ -42,11 +43,13 @@ export function SkillRow(props: { skill: CatalogSkill; hub: SkillHubState }): JS
       <div className={css.rowMain}>
         <div className={css.rowName}>
           <span className={css.rowNameText}>{skill.name}</span>
+          {isDisplayNameDistinct(skill.name, skill.displayName) ? <span className={css.displayName} title={skill.displayName}>{skill.displayName}</span> : null}
           {count > 0 && hub.hubConfig?.showUseCount !== false ? <span className={css.useCount}>{count}</span> : null}
           {dot}
+          {isDuplicate ? <span className={css.badge + ' ' + css.statusError} title={tt('row.duplicateHint')}>{tt('row.duplicate')}</span> : null}
           {lastUsed !== undefined && hub.hubConfig?.showUseTime !== false ? <span className={css.useTime}>{relativeTimeText(lastUsed)}</span> : null}
         </div>
-        <div className={css.rowDesc}>{skill.description}</div>
+        <div className={css.rowDesc} title={skill.description}>{skill.shortDescription ?? skill.description}</div>
       </div>
       {skill.writable
         ? <>

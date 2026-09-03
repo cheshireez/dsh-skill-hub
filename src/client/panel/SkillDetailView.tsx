@@ -5,9 +5,9 @@
  * panel stays the single owner of state.
  */
 
-import type { JSX } from 'react'
+import { useEffect, useRef, useState, type JSX } from 'react'
 import type { GroupsResponse, HubConfig, SkillDetail, SourceCheckResult, SourcesResponse } from '../../protocol.ts'
-import { tt } from '../helpers.ts'
+import { copyTextToClipboard, isDisplayNameDistinct, tt } from '../helpers.ts'
 import css from './panel.module.css'
 import { dotStyle, formatDateTime, shortSha } from './format.ts'
 import { SourceStatusBadge } from './SourceStatusBadge.tsx'
@@ -23,6 +23,10 @@ export interface SkillDetailViewProps {
   checkingSource: string | null
   syncingSource: string | null
   loading: boolean
+  /** Whether the skill is currently hub-disabled (served from the .disabled file). */
+  disabled?: boolean
+  /** Re-enable a hub-disabled skill. */
+  onEnable?: () => void
   onBack: () => void
   /** Check one source repo for upstream updates. */
   onCheck: (repo: string) => void
@@ -33,21 +37,37 @@ export interface SkillDetailViewProps {
 }
 
 export function SkillDetailView(props: SkillDetailViewProps): JSX.Element {
-  const { detail, hubConfig, uses, groupsState, sourcesState, sourceCheck, checkingSource, syncingSource, loading, onBack, onCheck, onSync, onFollowDelete } = props
+  const { detail, hubConfig, uses, groupsState, sourcesState, sourceCheck, checkingSource, syncingSource, loading, disabled, onEnable, onBack, onCheck, onSync, onFollowDelete } = props
   const detailSource = sourcesState?.sources.find((source) => source.skills.includes(detail.name))
   const detailCheck = detailSource !== undefined ? sourceCheck[detailSource.repo] : undefined
+  const [copied, setCopied] = useState<string | null>(null)
+  const copyTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => { window.clearTimeout(copyTimer.current) }, [])
+  const copyText = (text: string, key: string): void => {
+    void copyTextToClipboard(text).then((ok) => {
+      if (!ok) return
+      setCopied(key)
+      window.clearTimeout(copyTimer.current)
+      copyTimer.current = window.setTimeout(() => { setCopied(null) }, 1200)
+    })
+  }
   return (
     <div className={css.panel}>
       <div className={css.detailHead}>
         <button type='button' className={css.back} onClick={onBack}>{tt('detail.back')}</button>
-        <span className={css.detailName}>
+        <span className={css.detailName} style={{ display:'inline-flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
           {detail.name}
-          {/* 单一状态圆点：模型可调 → 蓝；否则用户可调 → 绿。与聊天 / 菜单同规则。 */}
+          {isDisplayNameDistinct(detail.name, detail.displayName) ? <span className={css.displayName} style={{ fontSize:13, marginLeft:0 }}>{detail.displayName}</span> : null}
           {detail.invocation.modelInvocable
             ? <span className={css.dot + ' ' + css.dotModel} style={dotStyle(hubConfig?.dotModelColor)} title={tt('legend.model')} />
             : detail.invocation.userInvocable
               ? <span className={css.dot + ' ' + css.dotUser} style={dotStyle(hubConfig?.dotUserColor)} title={tt('legend.user')} />
               : null}
+        </span>
+        <span className={css.actions} style={{ marginLeft: 'auto', gap: 6 }}>
+          {disabled === true && onEnable !== undefined ? <button type='button' className={css.opBtn} role='switch' aria-checked={false} aria-label={tt('row.enable')} onClick={onEnable}>{tt('row.enable')}</button> : null}
+          <button type='button' className={css.opBtn} onClick={() => { copyText('$' + detail.name, 'mention') }}>{copied === 'mention' ? tt('detail.copied') : tt('detail.copyMention')}</button>
+          {detail.path !== undefined ? <button type='button' className={css.opBtn} onClick={() => { const path = detail.path; if (path !== undefined) copyText(path, 'path') }}>{copied === 'path' ? tt('detail.copied') : tt('detail.copyPath')}</button> : null}
         </span>
       </div>
       <div className={css.detailMeta}>
@@ -81,12 +101,16 @@ export function SkillDetailView(props: SkillDetailViewProps): JSX.Element {
             <button type='button' className={css.opBtn} disabled={checkingSource !== null} onClick={() => { onCheck(detailSource.repo) }}>
               {checkingSource === detailSource.repo ? tt('source.checking') : tt('source.check')}
             </button>
-            <button type='button' className={css.opBtn} disabled={syncingSource !== null} onClick={() => { onSync(detailSource.repo, [detail.name]) }}>
-              {syncingSource === detailSource.repo ? tt('source.syncing') : tt('source.sync')}
-            </button>
-            {detailCheck?.deleted.includes(detail.name) === true
-              ? <button type='button' className={css.opBtn + ' ' + css.opDanger} onClick={() => { onFollowDelete(detailSource.repo, [detail.name]) }}>{tt('source.followDelete')}</button>
-              : null}
+            {disabled !== true ? (
+              <>
+                <button type='button' className={css.opBtn} disabled={syncingSource !== null} onClick={() => { onSync(detailSource.repo, [detail.name]) }}>
+                  {syncingSource === detailSource.repo ? tt('source.syncing') : tt('source.sync')}
+                </button>
+                {detailCheck?.deleted.includes(detail.name) === true
+                  ? <button type='button' className={css.opBtn + ' ' + css.opDanger} onClick={() => { onFollowDelete(detailSource.repo, [detail.name]) }}>{tt('source.followDelete')}</button>
+                  : null}
+              </>
+            ) : null}
           </div>
         </div>
       ) : (
