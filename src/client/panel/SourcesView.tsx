@@ -61,21 +61,6 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
     next.splice(to, 0, moved)
     void hub.reorderSourceGroups(next)
   }
-  // 兼容旧逻辑：若用户拖的是 collection 且未使用顶层排序，回退到 collectionReorder（保留旧数据兼容）
-  const handleCollectionDropLegacy = (targetName: string): void => {
-    // 仅当顶层排序未启用时（storedTopOrder 为空）才用旧接口
-    if ((groupsState?.sourceGroupOrder?.length ?? 0) > 0) { handleTopDrop('col:' + targetName); return }
-    const dragCol = topDragKey !== null && topDragKey.startsWith('col:') ? topDragKey.slice(4) : null
-    if (dragCol === null || dragCol === targetName || groupsState === null) return
-    const names = groupsState.collections.map((c) => c.name)
-    const from = names.indexOf(dragCol)
-    const to = names.indexOf(targetName)
-    if (from === -1 || to === -1) return
-    const next = [...names]
-    const [moved] = next.splice(from, 1)
-    next.splice(to, 0, moved)
-    void hub.reorderCollections(next)
-  }
 
   // 空状态：没有任何分组时提示
   const isEmptyTop = !hasProject && collections.length === 0 && !hasPersonal

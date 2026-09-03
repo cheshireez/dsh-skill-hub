@@ -507,14 +507,6 @@ export interface RepoImportCancelResponse {
   status: 'cancelled' | 'done'
 }
 
-/** @deprecated 旧同步响应，保留供类型兼容，实际已由 Progress 代替 */
-export interface RepoImportLegacyResponse {
-  ok: true
-  imported: Array<{ name: string; origin: string; path: string }>
-  skipped: Array<{ name: string; reason: 'exists' }>
-  failed: Array<{ name: string; error: string }>
-}
-
 /** GET /api/skill-hub/update — check the plugin's own latest GitHub release. */
 export interface UpdateCheckResponse {
   ok: true

@@ -89,48 +89,6 @@ export function PluginSettingsCard(props: PluginSettingsCardProps): ReactElement
   )
 }
 
-/** One staged boolean field: 继承 / 开 / 关. */
-export interface BooleanFieldProps {
-  id: string
-  label: string
-  hint: string
-  inheritLabel: string
-  onLabel: string
-  offLabel: string
-  overriddenLabel: string
-  resetLabel: string
-  disabled: boolean
-  text: string
-  overridden: boolean
-  onEdit: (text: string) => void
-  onReset: () => void
-}
-
-export function BooleanField(props: BooleanFieldProps): ReactElement {
-  return (
-    <div className={css.field}>
-      <div className={css.head}>
-        <label className={css.label} htmlFor={props.id}>{props.label}</label>
-        {props.overridden ? (
-          <span className={css.badges}>
-            <span className={css.badge}>{props.overriddenLabel}</span>
-            <button type='button' className={css.reset} disabled={props.disabled} onClick={props.onReset}>
-              {props.resetLabel}
-            </button>
-          </span>
-        ) : null}
-      </div>
-      <select id={props.id} className={css.input} value={props.text} disabled={props.disabled} onChange={(event) => { props.onEdit(event.target.value) }}>
-        <option value=''>{props.inheritLabel}</option>
-        <option value='true'>{props.onLabel}</option>
-        <option value='false'>{props.offLabel}</option>
-      </select>
-      <p className={css.hint}>{props.hint}</p>
-    </div>
-  )
-}
-
-
 /**
  * A compact sliding switch for the card's master enable/disable control.
  * An empty text value means the field inherits its default; the switch still

@@ -204,7 +204,7 @@ export class CardForm {
 
   private async store(field: string, value: unknown): Promise<boolean> {
     await this.scope.set(field, value)
-    return this.userLayer()?.[field] === value
+    return this.userRecord()?.[field] === value
   }
 
   private userRecord(): Record<string, unknown> | undefined {
@@ -231,10 +231,6 @@ export class CardForm {
   private baseValue(field: string): unknown {
     const base = this.scope.getSnapshot().base
     return typeof base === 'object' && base !== null ? (base as Record<string, unknown>)[field] : undefined
-  }
-
-  private userLayer(): Record<string, unknown> | undefined {
-    return this.userRecord()
   }
 
   private stored(field: string): boolean {

@@ -14,8 +14,6 @@ import { ColorField, NumberField, PluginSettingsCard, SwitchField } from './sett
 import { booleanField, CardForm, colorField, numberField, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
 // Single source for the TS-side dot defaults (the panel CSS mirrors these).
 import { DEFAULT_DOT_MODEL_COLOR, DEFAULT_DOT_USER_COLOR } from './panel/format.ts'
-// Re-export for any consumer that imported them from the card before the move.
-export { DEFAULT_DOT_MODEL_COLOR, DEFAULT_DOT_USER_COLOR }
 
 /** The card's projected state. */
 export interface SkillHubSettingsState extends CardShell {
