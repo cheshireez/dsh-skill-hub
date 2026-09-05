@@ -5,9 +5,18 @@
 import { en, t, zh, type HubKey, type TranslateValues } from './locales.ts'
 
 /** Active dictionary, picked by the document language at call time. */
+let cachedDictionaryLang = ''
+let cachedDictionary: Record<string, string> | null = null
 export function dictionary(): Record<string, string> {
   const lang = typeof document !== 'undefined' ? document.documentElement.lang : 'zh'
-  return lang.toLowerCase().startsWith('en') ? { ...en } : { ...zh }
+  const key = lang.toLowerCase().startsWith('en') ? 'en' : 'zh'
+  // 字典是静态常量：按语言缓存一份，避免每次 tt() 都全量 spread
+  // 258 个键。调用方只读（t() 纯读取），共享引用安全。
+  if (cachedDictionary === null || cachedDictionaryLang !== key) {
+    cachedDictionaryLang = key
+    cachedDictionary = key === 'en' ? { ...en } : { ...zh }
+  }
+  return cachedDictionary
 }
 
 /** Translate a key with optional {name} template params (current language). */
