@@ -197,6 +197,57 @@ export function ColorField(props: ColorFieldProps): ReactElement {
   )
 }
 
+/**
+ * One staged secret field: a password input that never echoes the stored
+ * value. Shows a "set" state via the overridden badge; Reset unsets it.
+ */
+export interface SecretFieldProps {
+  id: string
+  label: string
+  hint: string
+  /** Placeholder shown while empty (never the stored token). */
+  placeholder: string
+  overriddenLabel: string
+  resetLabel: string
+  disabled: boolean
+  text: string
+  overridden: boolean
+  invalid?: boolean
+  onEdit: (text: string) => void
+  onReset: () => void
+}
+
+export function SecretField(props: SecretFieldProps): ReactElement {
+  return (
+    <div className={css.field}>
+      <div className={css.head}>
+        <label className={css.label} htmlFor={props.id}>{props.label}</label>
+        {props.overridden ? (
+          <span className={css.badges}>
+            <span className={css.badge}>{props.overriddenLabel}</span>
+            <button type='button' className={css.reset} disabled={props.disabled} onClick={props.onReset}>
+              {props.resetLabel}
+            </button>
+          </span>
+        ) : null}
+      </div>
+      <input
+        id={props.id}
+        type='password'
+        autoComplete='off'
+        spellCheck={false}
+        className={css.input}
+        value={props.text}
+        disabled={props.disabled}
+        placeholder={props.placeholder}
+        aria-invalid={props.invalid === true}
+        onChange={(event) => { props.onEdit(event.target.value) }}
+      />
+      <p className={css.hint}>{props.hint}</p>
+    </div>
+  )
+}
+
 /** One staged numeric field: a numeric draft text input with inherit/reset semantics. */
 export interface NumberFieldProps {
   id: string

@@ -282,4 +282,22 @@ describe('SkillHubStore', () => {
     expect(await store.getSkillStatsState()).toBeUndefined()
   })
 
+  it('persists a marketStats snapshot round-trip and drops corrupt buckets', async () => {
+    expect(await store.getMarketStatsState()).toBeUndefined()
+    const snapshot = { fetchedAt: 9999, stats: { 'a/b': { stars: 1500, downloads: 50 } } }
+    await store.saveMarketStatsState(snapshot)
+    const reloaded = new SkillHubStore(file)
+    expect(await reloaded.getMarketStatsState()).toEqual(snapshot)
+    const raw = JSON.parse(await readFile(file, 'utf8')) as { marketStats?: unknown }
+    expect(raw.marketStats).toEqual(snapshot)
+    // 坏桶只丢 marketStats，不影响其它字段。
+    await writeFile(file, JSON.stringify({
+      version: 4,
+      disabled: [],
+      marketStats: { fetchedAt: 'x', stats: { 'a/b': { stars: 'many', downloads: null } } },
+    }), 'utf8')
+    const fresh = new SkillHubStore(file)
+    expect(await fresh.getMarketStatsState()).toBeUndefined()
+  })
+
 })

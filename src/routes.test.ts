@@ -469,6 +469,26 @@ describe('skill-hub routes', () => {
     expect(body.error).toContain('enabled must be a boolean or null')
   })
 
+  it('sets and clears the github token through the config route', async () => {
+    const patches: Array<Partial<HubConfig>> = []
+    const updateConfig = async (patch: Partial<HubConfig>): Promise<HubConfig> => {
+      patches.push(patch)
+      return { enabled: true, announceToAgent: true, showUseCount: true, showUseTime: true, showGroupSummary: true, statsWindowDays: 14, statsScanMinutes: 5 }
+    }
+    const routes = makeRoutes({ ...deps, updateConfig })
+    const set = new FakeResponse()
+    await routes.find((r) => r.path === SKILL_HUB_API.config)?.handler(fakeReq('POST', SKILL_HUB_API.config, { githubToken: 'ghp_1234567890abcdef' }), set as never)
+    expect(set.status).toBe(200)
+    expect(patches).toEqual([{ githubToken: 'ghp_1234567890abcdef' }])
+    const clear = new FakeResponse()
+    await routes.find((r) => r.path === SKILL_HUB_API.config)?.handler(fakeReq('POST', SKILL_HUB_API.config, { githubToken: null }), clear as never)
+    expect(clear.status).toBe(200)
+    expect(patches[1]).toEqual({ githubToken: undefined })
+    const bad = new FakeResponse()
+    await routes.find((r) => r.path === SKILL_HUB_API.config)?.handler(fakeReq('POST', SKILL_HUB_API.config, { githubToken: 'not a token!' }), bad as never)
+    expect(bad.status).toBe(400)
+  })
+
   it('keeps the config route up while the hub is disabled (business routes 503)', async () => {
     const routes = makeRoutes({
       ...deps,

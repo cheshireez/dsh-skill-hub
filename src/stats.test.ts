@@ -199,6 +199,29 @@ async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 20))
 }
 
+describe('scan read concurrency', () => {
+  it('reads session logs in parallel, not one by one', async () => {
+    const ids = Array.from({ length: 8 }, (_, i) => 's' + i)
+    let inFlight = 0
+    let peak = 0
+    const query: SessionQueryLike = {
+      listSessions: async () => ids.map((id) => record(id)),
+      readSession: async (id) => {
+        inFlight += 1
+        peak = Math.max(peak, inFlight)
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        inFlight -= 1
+        return { events: [invocationEvent(String(id))] }
+      },
+    }
+    // No checkpoint → full path, all 8 sessions read.
+    const stats = await readSkillStats(query)
+    expect(stats).toHaveLength(8)
+    expect(peak).toBeGreaterThan(1)
+    expect(peak).toBeLessThanOrEqual(6)
+  })
+})
+
 describe('frozen-bucket incremental scans', () => {
   it('skips frozen sessions and merges checkpoint totals with the recent window', async () => {
     const reads: string[] = []
@@ -221,15 +244,15 @@ describe('frozen-bucket incremental scans', () => {
       },
       onCheckpoint: () => { checkpoints += 1 },
     })
-    expect(await reader()).toEqual([]) // 首次调用不等待扫描
+    expect(await reader()).toEqual([]) // 首次调用不等待扫描（无上次总数可端）
     await flush()
     expect(await reader()).toEqual([
       { name: 'oldskill', count: 5, lastUsed: NOW - 20 * DAY },
       { name: 'tdd', count: 2, lastUsed: 0 },
     ])
-    // 冻结会话没有被重读；增量扫描不改检查点 → 不触发持久化回调。
+    // 冻结会话没有被重读；增量扫描也落盘（含新总数）→ 回调恰好一次。
     expect(reads).toEqual(['fresh'])
-    expect(checkpoints).toBe(0)
+    expect(checkpoints).toBe(1)
   })
 
   it('runs a full reconciliation when due: rebuilds the frozen bucket and advances the watermark', async () => {
@@ -263,7 +286,39 @@ describe('frozen-bucket incremental scans', () => {
       // 全历史模式（windowDays=0）：冻结会话进缓存且仍计入总数。
       frozenSessions: { ancient: { createdAt: NOW - 30 * DAY, counts: { a: { count: 1, lastUsed: 5 } } } },
       lastFullReconcile: NOW,
+      lastTotals: [
+        { name: 'a', count: 1, lastUsed: 5 },
+        { name: 'b', count: 2, lastUsed: 0 },
+      ],
     })
+  })
+
+  it('serves persisted lastTotals instantly on cold start, then merges the rescan', async () => {
+    const reads: string[] = []
+    const query = fakeQuery(
+      [record('fresh', NOW - 1 * DAY)],
+      { fresh: [invocationEvent('tdd', 1)] },
+      reads,
+    )
+    const saved: Array<Record<string, unknown>> = []
+    const reader = createSkillStatsReader(query, 60_000, {
+      now: () => NOW,
+      checkpoint: {
+        windowDays: 0,
+        frozenBefore: 0,
+        frozenSessions: {},
+        lastFullReconcile: NOW, // 对账刚做过 → 增量路径
+        lastTotals: [{ name: 'oldskill', count: 9, lastUsed: 7 }],
+      },
+      onCheckpoint: (cp) => { saved.push(cp as unknown as Record<string, unknown>) },
+    })
+    // 冷启动直接端上次总数，同时后台重扫；重扫后以新鲜值为准（旧数不复活）。
+    expect(await reader()).toEqual([{ name: 'oldskill', count: 9, lastUsed: 7 }])
+    await flush()
+    expect(await reader()).toEqual([{ name: 'tdd', count: 1, lastUsed: 0 }])
+    expect(reads).toEqual(['fresh'])
+    expect(saved).toHaveLength(1)
+    expect((saved[0] as { lastTotals: unknown }).lastTotals).toEqual([{ name: 'tdd', count: 1, lastUsed: 0 }])
   })
 
   it('re-reads sessions without createdAt on incremental scans (never freezes)', async () => {

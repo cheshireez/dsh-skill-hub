@@ -103,6 +103,24 @@ function isFrozen(record: { header: { createdAt?: number } }, watermark: number)
   return typeof created === 'number' && created > 0 && created < watermark
 }
 
+/** Bounded-concurrency map: session-log reads are independent decompressions, so wall time scales ~1/limit. Merge stays sequential in index order. */
+async function mapConcurrent<T, R>(items: readonly T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let cursor = 0
+  const runners = Array.from({ length: Math.min(Math.max(limit, 1), items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor
+      cursor += 1
+      results[index] = await worker(items[index], index)
+    }
+  })
+  await Promise.all(runners)
+  return results
+}
+
+/** Max parallel session-log reads per scan (read-only; merge is order-independent). */
+const SCAN_READ_CONCURRENCY = 6
+
 function mergeInto(totals: Totals, counted: Map<string, InvocationStat>): void {
   for (const [name, stat] of counted) {
     const total = totals[name]
@@ -153,19 +171,22 @@ async function scan(query: SessionQueryLike, checkpoint: SkillStatsCheckpoint, n
   if (dueFullScan) {
     const cache: SkillStatsCheckpoint['frozenSessions'] = {}
     const totals: Totals = {}
-    for (const record of sessions) {
-      let counted: Map<string, InvocationStat>
+    const countedList = await mapConcurrent(sessions, SCAN_READ_CONCURRENCY, async (record) => {
       try {
-        counted = countSkillInvocations((await query.readSession(record.header.id)).events)
+        return countSkillInvocations((await query.readSession(record.header.id)).events)
       } catch {
-        continue // unreadable sessions are skipped, never fatal
+        return undefined // unreadable sessions are skipped, never fatal
       }
+    })
+    sessions.forEach((record, index) => {
+      const counted = countedList[index]
+      if (counted === undefined) return
       const created = record.header.createdAt
       if (isFrozen(record, cutoff) && counted.size > 0 && typeof created === 'number') {
         cache[record.header.id as unknown as string] = { createdAt: created, counts: Object.fromEntries(counted) }
       }
       if (inWindow(created, windowDays, nowMs)) mergeInto(totals, counted)
-    }
+    })
     checkpoint.frozenSessions = cache
     checkpoint.frozenBefore = cutoff
     checkpoint.windowDays = windowDays
@@ -174,13 +195,17 @@ async function scan(query: SessionQueryLike, checkpoint: SkillStatsCheckpoint, n
   }
 
   const recent: Totals = {}
-  for (const record of sessions) {
-    if (isFrozen(record, checkpoint.frozenBefore)) continue
+  const unfrozen = sessions.filter((record) => !isFrozen(record, checkpoint.frozenBefore))
+  const recentList = await mapConcurrent(unfrozen, SCAN_READ_CONCURRENCY, async (record) => {
     try {
-      mergeInto(recent, countSkillInvocations((await query.readSession(record.header.id)).events))
+      return countSkillInvocations((await query.readSession(record.header.id)).events)
     } catch {
-      continue // unreadable sessions are skipped, never fatal
+      return undefined // unreadable sessions are skipped, never fatal
     }
+  })
+  for (const counted of recentList) {
+    if (counted === undefined) continue
+    mergeInto(recent, counted)
   }
   const totals: Totals = {}
   for (const [id, entry] of Object.entries(checkpoint.frozenSessions)) {
@@ -216,8 +241,9 @@ export interface SkillStatsReaderOptions {
   ttlMs?: number | (() => number)
   /** Rolling window in days; a getter reads the live config each scan. 0 = all history. */
   windowDays?: () => number
-  /** Called after a full reconciliation mutated the checkpoint (never after an
-   *  incremental scan) so the host can persist it to the sidecar. */
+  /** Called after every completed scan (full or incremental) so the host can
+   *  persist the checkpoint including the fresh totals. Cadence follows the
+   *  scan TTL (minutes, not days) — the payload is tiny and writes are atomic. */
   onCheckpoint?: (checkpoint: SkillStatsCheckpoint) => void
 }
 
@@ -238,7 +264,9 @@ export interface SkillStatsReaderOptions {
 export function createSkillStatsReader(query: SessionQueryLike, ttlMs: number | (() => number) = 300_000, options: SkillStatsReaderOptions = {}): SkillStatsReader {
   const checkpoint: SkillStatsCheckpoint = options.checkpoint ?? { windowDays: 0, frozenBefore: 0, frozenSessions: {}, lastFullReconcile: 0 }
   const now = options.now ?? (() => Date.now())
-  let cached: SkillStat[] | undefined
+  // Cold start serves the last persisted totals instantly (may be a window
+  // behind); cachedAt stays 0 so the first call still kicks a background rescan.
+  let cached: SkillStat[] | undefined = checkpoint.lastTotals !== undefined ? [...checkpoint.lastTotals] : undefined
   let cachedAt = 0
   let refreshing: Promise<void> | null = null
   let lastScanDurationMs = 0
@@ -248,16 +276,17 @@ export function createSkillStatsReader(query: SessionQueryLike, ttlMs: number | 
     const base = typeof ttlMs === 'function' ? ttlMs() : ttlMs
     const ttl = Math.max(base, lastScanDurationMs * STATS_TTL_SCAN_FACTOR)
     if (cached !== undefined && startedAt - cachedAt < ttl) return cached
-    // Expired (or first call): hand back the stale totals (empty on first
-    // call) and kick off one background rescan.
+    // Expired (or first call): hand back the stale totals (empty on a truly
+    // fresh start) and kick off one background rescan.
     if (refreshing === null) {
       const windowDays = options.windowDays?.() ?? 0
       refreshing = scan(query, checkpoint, startedAt, windowDays)
-        .then(({ stats, mutated }) => {
+        .then(({ stats }) => {
           cached = stats
           cachedAt = now()
           lastScanDurationMs = Math.max(0, cachedAt - startedAt)
-          if (mutated) options.onCheckpoint?.({ ...checkpoint, frozenSessions: { ...checkpoint.frozenSessions } })
+          checkpoint.lastTotals = stats
+          options.onCheckpoint?.({ ...checkpoint, frozenSessions: { ...checkpoint.frozenSessions } })
         })
         .catch(() => { /* keep the previous totals on scan failure */ })
         .finally(() => { refreshing = null })

@@ -51,6 +51,24 @@ export function colorField(field: string): FieldSpec {
 }
 
 /**
+ * A secret field (API token): the stored value is never echoed back into the
+ * draft (format always yields ''), so typing is always a fresh set and Reset
+ * always unsets. An empty draft stages nothing.
+ */
+export function secretField(field: string): FieldSpec {
+  return {
+    field,
+    format: () => '',
+    parse: (text) => {
+      const trimmed = text.trim()
+      if (trimmed === '') return undefined
+      if (!/^[A-Za-z0-9_-]{8,255}$/.test(trimmed)) return undefined
+      return { kind: 'set', value: trimmed }
+    },
+  }
+}
+
+/**
  * A numeric field with range clamping. Integer by default: a fractional draft
  * is truncated so "5.5 分钟" cannot sneak past an integer-only schema.
  */

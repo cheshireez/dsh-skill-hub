@@ -10,8 +10,8 @@ import { useEffect, useState, type ReactElement } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { SkillHubApi } from './api.ts'
-import { ColorField, NumberField, PluginSettingsCard, SwitchField } from './settings-card.tsx'
-import { booleanField, CardForm, colorField, numberField, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
+import { ColorField, NumberField, PluginSettingsCard, SecretField, SwitchField } from './settings-card.tsx'
+import { booleanField, CardForm, colorField, numberField, secretField, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
 // Single source for the TS-side dot defaults (the panel CSS mirrors these).
 import { DEFAULT_DOT_MODEL_COLOR, DEFAULT_DOT_USER_COLOR } from './panel/format.ts'
 
@@ -26,6 +26,7 @@ export interface SkillHubSettingsState extends CardShell {
   showGroupSummary: FieldState
   statsWindowDays: FieldState
   statsScanMinutes: FieldState
+  githubToken: FieldState
 }
 
 /** The business face the card's slot registration injects. */
@@ -51,7 +52,7 @@ export class SkillHubSettingsCardController {
 
   /** @param scope - the hub settings scope the card edits (FormScope-compatible). */
   constructor(scope: FormScope) {
-    this.form = new CardForm(scope, [booleanField('enabled'), booleanField('announceToAgent'), colorField('dotModelColor'), colorField('dotUserColor'), booleanField('showUseCount'), booleanField('showUseTime'), booleanField('showGroupSummary'), numberField('statsWindowDays', { min: 0, max: 3650 }), numberField('statsScanMinutes', { min: 1, max: 1440 })])
+    this.form = new CardForm(scope, [booleanField('enabled'), booleanField('announceToAgent'), colorField('dotModelColor'), colorField('dotUserColor'), booleanField('showUseCount'), booleanField('showUseTime'), booleanField('showGroupSummary'), numberField('statsWindowDays', { min: 0, max: 3650 }), numberField('statsScanMinutes', { min: 1, max: 1440 }), secretField('githubToken')])
     this.store = this.form.bind(() => this.projection())
   }
 
@@ -67,6 +68,7 @@ export class SkillHubSettingsCardController {
       showGroupSummary: this.form.field('showGroupSummary'),
       statsWindowDays: this.form.field('statsWindowDays'),
       statsScanMinutes: this.form.field('statsScanMinutes'),
+      githubToken: this.form.field('githubToken'),
     }
   }
 
@@ -200,6 +202,18 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
         invalid={state.statsScanMinutes.invalid}
         onEdit={(text) => { props.edit('statsScanMinutes', text) }}
         onReset={() => { props.resetField('statsScanMinutes') }}
+      />
+      <SecretField
+        id='skill-hub-github-token'
+        label={t('settings.githubToken')}
+        hint={t('settings.githubTokenHint')}
+        placeholder={t('settings.githubTokenPlaceholder')}
+        {...fieldProps}
+        text={state.githubToken.text}
+        overridden={state.githubToken.overridden}
+        invalid={state.githubToken.invalid}
+        onEdit={(text) => { props.edit('githubToken', text) }}
+        onReset={() => { props.resetField('githubToken') }}
       />
     </PluginSettingsCard>
   )

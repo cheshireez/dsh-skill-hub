@@ -13,6 +13,13 @@ import { ConfirmDialog } from './dialogs.tsx'
 import type { SkillHubState } from './useSkillHub.ts'
 import css from './panel.module.css'
 
+/** Compact count for stars/downloads (1234 → 1.2k). */
+function formatCount(n: number): string {
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
+  return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M'
+}
+
 /** Compact byte size for repo preview rows. */
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
@@ -31,6 +38,9 @@ export function MarketView(props: { hub: SkillHubState }): JSX.Element {
   const { marketState, marketCheck, sourceCheck, sourcesState, repoDiscoverState, scanningRepo, repoSelected, setRepoSelected, repoImporting, repoResult, newSourceName, setNewSourceName, syncingMarket, tagBusy, checkingSource, addSource, addMarketSource, removeMarketSource, scanRepo, checkMarket, checkSources, syncMarketSource, toggleRepoSelected, importRepo, cancelImport, updateAllDialog, setUpdateAllDialog, updateAll } = hub
   /** 有可更新技能的来源（全部更新按钮与确认列表共用）。 */
   const updatableRepos = Object.entries(sourceCheck).filter(([, check]) => check.changed && check.updated.length > 0)
+
+  // 打开市场 tab 即拉一次星星/下载数（服务端小时级缓存）。
+  useEffect(() => { void hub.loadMarketStats() }, [hub])
 
   // 276 列表本地状态：搜索 / 过滤 / 分页（精简：扁平列表，无 A-Z 分组）
   const [repoSearch, setRepoSearch] = useState('')
@@ -85,17 +95,28 @@ export function MarketView(props: { hub: SkillHubState }): JSX.Element {
               title={tt('market.versionHint')}
               onClick={() => { void hub.openVersionDialog(record.repo) }}
             >{record.ref ?? tt('market.unpinned')}</button>
-            {installedCount > 0 ? <span className={css.badge + ' ' + css.badgeCount}>{tt('market.installed', { count: installedCount })}</span> : null}
-            {hasSkillUpdate
-              ? <span className={css.badge + ' ' + css.statusUpdated}>{tt('market.updatable', { count: skillCheck!.updated.length })}</span>
-              : null}
-            {skillCheck !== undefined && skillCheck.deleted.length > 0
-              ? <span className={css.badge + ' ' + css.statusError}>{tt('market.deletedUpstream', { count: skillCheck.deleted.length })}</span>
-              : null}
-            {hasReleaseUpdate
-              ? <span className={css.badge + ' ' + css.statusUpdated}>{releaseCheck!.latestTag !== undefined ? tt('market.newRelease', { version: releaseCheck!.latestTag }) : tt('market.updated')}</span>
-              : null}
           </div>
+          {(() => {
+            const stats = hub.marketStats[record.repo]
+            const hasDeleted = skillCheck !== undefined && skillCheck.deleted.length > 0
+            if (stats === undefined && installedCount === 0 && !hasSkillUpdate && !hasDeleted && !hasReleaseUpdate) return null
+            return (
+              <div className={css.hintLine} style={{ display:'flex', gap:4, flexWrap:'wrap', marginTop:3 }}>
+                {hasSkillUpdate
+                  ? <span className={css.badge + ' ' + css.statusUpdated}>{tt('market.updatable', { count: skillCheck!.updated.length })}</span>
+                  : null}
+                {hasDeleted
+                  ? <span className={css.badge + ' ' + css.statusError}>{tt('market.deletedUpstream', { count: skillCheck!.deleted.length })}</span>
+                  : null}
+                {hasReleaseUpdate
+                  ? <span className={css.badge + ' ' + css.statusUpdated}>{releaseCheck!.latestTag !== undefined ? tt('market.newRelease', { version: releaseCheck!.latestTag }) : tt('market.updated')}</span>
+                  : null}
+                {installedCount > 0 ? <span className={css.badge + ' ' + css.badgeCount}>{tt('market.installed', { count: installedCount })}</span> : null}
+                {stats !== undefined ? <span className={css.badge + ' ' + css.badgeCount} title={tt('market.starsHint', { count: stats.stars })}>★ {formatCount(stats.stars)}</span> : null}
+                {stats !== undefined && stats.downloads > 0 ? <span className={css.badge + ' ' + css.badgeCount} title={tt('market.downloadsHint', { count: stats.downloads })}>⭳ {formatCount(stats.downloads)}</span> : null}
+              </div>
+            )
+          })()}
         </div>
         <button type='button' className={css.button + ' ' + css.primary} style={{ padding:'4px 10px', fontSize:12 }} disabled={scanning} onClick={() => { void scanRepo(record.repo) }}>
           {scanning ? tt('market.scanning') : tt('market.scan')}

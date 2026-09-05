@@ -15,6 +15,7 @@ import {
   type SourceGroupReorderRequest,
   type SourceGroupReorderResponse,
   type MarketCheckResponse,
+  type MarketStatsResponse,
   type MarketSourceRefRequest,
   type MarketSourceRequest,
   type MarketSourceResponse,
@@ -176,6 +177,13 @@ export class SkillHubApi {
       body: JSON.stringify({ repo } satisfies MarketSourceRequest),
     })
     return readJson<MarketSourceResponse>(response)
+  }
+
+  /** Stars + downloads per market source (hourly server-side cache; refresh=1 refetches stale entries). */
+  async marketStats(refresh = false): Promise<MarketStatsResponse> {
+    const url = refresh ? SKILL_HUB_API.marketStats + '?refresh=1' : SKILL_HUB_API.marketStats
+    const response = await fetchWithTimeout(url, undefined, refresh ? 60_000 : undefined)
+    return readJson<MarketStatsResponse>(response)
   }
 
   /** Check every market source for updates (throttled server-side). */

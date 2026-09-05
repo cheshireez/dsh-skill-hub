@@ -41,6 +41,7 @@ export const SKILL_HUB_API = {
   sourceTrashClear: '/api/skill-hub/sources/trash/clear',
   diagnosticFix: '/api/skill-hub/diagnostic/fix',
   marketSourceVersions: '/api/skill-hub/market/source/versions',
+  marketStats: '/api/skill-hub/market/stats',
 } as const
 
 /** User-level roots the hub may write to (matches dsh-skill-filesystem ranks 400/500). */
@@ -248,6 +249,11 @@ export interface SkillStatsCheckpoint {
   frozenSessions: Record<string, { createdAt: number; counts: Record<string, { count: number; lastUsed: number }> }>
   /** Epoch ms of the last full reconciliation (drives the daily cadence). */
   lastFullReconcile: number
+  /**
+   * Totals from the last completed scan (any kind). Served instantly on cold
+   * start so a restart still shows numbers while the background rescan runs.
+   */
+  lastTotals?: SkillStat[]
 }
 
 /** JSON error body shared by every route. */
@@ -275,6 +281,12 @@ export interface HubConfig {
   statsWindowDays?: number
   /** 自动统计扫描间隔（分钟，最小 1）。默认 5。 */
   statsScanMinutes?: number
+  /**
+   * GitHub personal access token for market/source API calls (anonymous quota
+   * is 60 req/h, authed 5000/hr). Stored in the local settings doc; absent
+   * means anonymous. Never logged.
+   */
+  githubToken?: string
 }
 
 /**
@@ -297,6 +309,8 @@ export type HubSettingsValue = {
   statsWindowDays?: number
   /** 自动统计扫描间隔（分钟）。 */
   statsScanMinutes?: number
+  /** GitHub token（明文存本地设置文档，仅回环可读；缺省为匿名）。 */
+  githubToken?: string
 }
 
 /**
@@ -324,6 +338,7 @@ export const HUB_CONFIG_DEFAULTS = {
 export function resolveHubConfig(saved: Partial<HubConfig>, base: Partial<HubConfig> = {}): HubConfig {
   const dotModelColor = saved.dotModelColor !== undefined ? saved.dotModelColor : base.dotModelColor
   const dotUserColor = saved.dotUserColor !== undefined ? saved.dotUserColor : base.dotUserColor
+  const githubToken = saved.githubToken !== undefined ? saved.githubToken : base.githubToken
   const windowDays = clampNumber(saved.statsWindowDays ?? base.statsWindowDays, 0) ?? HUB_CONFIG_DEFAULTS.statsWindowDays
   const scanMinutes = clampNumber(saved.statsScanMinutes ?? base.statsScanMinutes, 1) ?? HUB_CONFIG_DEFAULTS.statsScanMinutes
   return {
@@ -336,6 +351,7 @@ export function resolveHubConfig(saved: Partial<HubConfig>, base: Partial<HubCon
     statsScanMinutes: scanMinutes,
     ...(dotModelColor !== undefined ? { dotModelColor } : {}),
     ...(dotUserColor !== undefined ? { dotUserColor } : {}),
+    ...(githubToken !== undefined ? { githubToken } : {}),
   }
 }
 
@@ -379,7 +395,12 @@ export interface ConfigRequest {
   statsWindowDays?: number | null
   /** 自动统计扫描间隔（分钟）；null 清除覆盖回默认。 */
   statsScanMinutes?: number | null
+  /** Set the GitHub token; null/empty clears it back to anonymous. */
+  githubToken?: string | null
 }
+
+/** GitHub token validation shared by host routes and the settings card. */
+export const GITHUB_TOKEN_RE = /^[A-Za-z0-9_\-]{8,255}$/
 
 /** One market source: a tracked upstream repo plus its pinned version. */
 export interface MarketSourceRecord {
@@ -427,6 +448,29 @@ export interface MarketSourceVersionsResponse {
   releases: string[]
   /** Branch names, default branch first. */
   branches: string[]
+}
+
+/** Persisted market-stats snapshot (sidecar `marketStats` field): last fetched stars/downloads per repo. */
+export interface MarketStatsSnapshot {
+  /** Epoch ms of the fetch this snapshot was built from (drives the hourly TTL). */
+  fetchedAt: number
+  /** Per-repo numbers, keyed by repo slug. */
+  stats: Record<string, { stars: number; downloads: number }>
+}
+
+/** GET /api/skill-hub/market/stats — stars + release-asset downloads per market source. */
+export interface MarketStatsResponse {
+  ok: true
+  results: Array<{
+    repo: string
+    stars: number
+    downloads: number
+    /** Throttled: served from the hourly cache without a network round. */
+    throttled?: boolean
+    /** Stale: older than the hourly TTL, a background refresh is on its way. */
+    stale?: boolean
+    error?: string
+  }>
 }
 
 /** GET /api/skill-hub/market/check — update check over market sources. */

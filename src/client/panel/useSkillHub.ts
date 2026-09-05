@@ -15,6 +15,7 @@ import type {
   HubConfig,
   MarketCheckResponse,
   MarketSourceRecord,
+  MarketStatsResponse,
   RepoDiscoverResponse,
   RepoImportProgressResponse,
   RepoImportResponse,
@@ -255,6 +256,19 @@ export function useSkillHub(api: SkillHubApi) {
   // 统计/分组/来源/配置变化慢，60 秒一次足够；写操作本身会触发即时刷新。
   // 更新检查、来源检查、市场检查全部改为手动按钮触发，打开面板不再自动
   // 打三路 GitHub 请求。
+  // 统计是 SWR：首刷可能命中服务端冷启动（回空数组、后台扫描中）。
+  // 补捞轮询：空数时每 5 秒捞一次，有数即停（最多约 2 分钟），之后交给 60 秒轮询。
+  // 冷扫描要解压全部会话日志（数十 MB 级），固定一次补捞可能赶不上。
+  const usesCatchUp = useRef(0)
+  useEffect(() => {
+    if (uses.size > 0 || usesCatchUp.current >= 24) return
+    const timer = window.setInterval(() => {
+      usesCatchUp.current += 1
+      void loadUses()
+      if (usesCatchUp.current >= 24) window.clearInterval(timer)
+    }, 5_000)
+    return () => { window.clearInterval(timer) }
+  }, [uses.size, loadUses])
   useEffect(() => {
     void load()
     void loadUses()
@@ -941,6 +955,28 @@ export function useSkillHub(api: SkillHubApi) {
     }
   }, [api])
 
+  /** 市场源星星/下载数（SWR：先即时缓存渲染，后台刷新后合并，失败静默）。 */
+  const [marketStats, setMarketStats] = useState<Readonly<Record<string, { stars: number; downloads: number }>>>({})
+  const loadMarketStats = useCallback(async (): Promise<void> => {
+    const merge = (results: MarketStatsResponse['results']): void => {
+      const partial: Record<string, { stars: number; downloads: number }> = {}
+      for (const item of results) {
+        if (item.error === undefined) partial[item.repo] = { stars: item.stars, downloads: item.downloads }
+      }
+      if (Object.keys(partial).length > 0) setMarketStats((previous) => ({ ...previous, ...partial }))
+    }
+    try {
+      merge((await api.marketStats()).results)
+    } catch {
+      // 统计失败不打扰市场列表本身。
+    }
+    try {
+      merge((await api.marketStats(true)).results)
+    } catch {
+      // 后台刷新失败时保留缓存值。
+    }
+  }, [api])
+
   /** 市场源同步：版本对齐后询问是否批量更新本地技能。 */
   const syncMarketSource = useCallback(async (repo: string): Promise<void> => {
     setSyncingMarket(repo)
@@ -1084,7 +1120,7 @@ export function useSkillHub(api: SkillHubApi) {
     // state
     catalog, loading, loadError, successBanner, updateState, repoDiscoverState, scanningRepo, repoSelected, repoImporting, repoResult, importJobId,
     search, workspace, detail, detailLoading, busyNames, batchBusy, showForm, formName, formDesc, formRoot, formBusy, formMessage,
-    uses, hubConfig, tab, skillView, sourceFilter, invocationFilter, sortKey, marketState, marketCheck, branchChoice, branchBusy,
+    uses, hubConfig, tab, skillView, sourceFilter, invocationFilter, sortKey, marketState, marketCheck, marketStats, branchChoice, branchBusy,
     marketSyncDialog, syncingMarket, syncBusy, newSourceName, groupsState, sourcesState, sourceCheck, checkingSource, syncingSource,
     conflictDialog, confirmDialog, deleteSkillDialog, deleteGroupDialog, confirmClearTrash, updateAllDialog, editingTag, editName, membersDraft, newTagName, tagBusy,
     editSearch, collapsedGroups, subdividedProjects, showLegend, editMode, versionDialog, versionBusy,
@@ -1098,6 +1134,6 @@ export function useSkillHub(api: SkillHubApi) {
     toggleGroupCollapse, toggleSubdivide, checkUpdate, loadMarket, openDetail, toggle, enableDisabled, batchToggleNames, toggleGroup, resolveConflict,
     runConfirmed, checkSources, requestSync, requestDelete, restoreTrash, clearTrash, fixingPaths, fixDiagnostic, clearListFilters, openVersionDialog, confirmVersionDialog, requestDeleteSkill, runDeleteSkill, requestDeleteGroup, runDeleteGroup, createTag,
     deleteTag, saveTag, reorderTags, reorderCollections, reorderSourceGroups, addSource, addMarketSource, removeMarketSource, scanRepo, confirmBranchChoice, toggleRepoSelected, importRepo, cancelImport, clearScan,
-    checkMarket, syncMarketSource, confirmMarketSync, updateAll, create,
+    checkMarket, loadMarketStats, syncMarketSource, confirmMarketSync, updateAll, create,
   }
 }

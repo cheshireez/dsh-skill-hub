@@ -21,7 +21,7 @@ import { SkillHubProvider } from './provider.ts'
 import { makeRoutes } from './routes.ts'
 import { createSkillStatsReader, type SkillStatsReader } from './stats.ts'
 import { SkillHubStore } from './store.ts'
-import { cleanupLeftoverImportDirs } from './repo.ts'
+import { cleanupLeftoverImportDirs, setGithubToken } from './repo.ts'
 import { dshHome } from './store.ts'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -78,6 +78,7 @@ export const HubSettingsSchema: z<HubSettingsValue> = z.object({
   showGroupSummary: z.boolean().default(HUB_CONFIG_DEFAULTS.showGroupSummary),
   dotModelColor: z.string().pattern(HEX_COLOR_RE),
   dotUserColor: z.string().pattern(HEX_COLOR_RE),
+  githubToken: z.string(),
   statsWindowDays: z.number().min(0).max(3650).default(HUB_CONFIG_DEFAULTS.statsWindowDays),
   statsScanMinutes: z.number().min(1).max(1440).default(HUB_CONFIG_DEFAULTS.statsScanMinutes),
 })
@@ -162,6 +163,10 @@ export function apply(ctx: Context, config?: Config): void {
       disposeProvider = undefined
     }
     const value = current()
+    // GitHub auth for market/source API calls: env GITHUB_TOKEN/GH_TOKEN is the
+    // fallback (read at module load); an explicit settings value wins live and
+    // applies without a restart via the settings watcher below.
+    setGithubToken(value.githubToken)
     if (value.announceToAgent) {
       disposeSection = ctx.systemPrompt.section({
         name: 'plugin:dsh-skill-hub',
@@ -249,8 +254,8 @@ export function apply(ctx: Context, config?: Config): void {
   // runs).
   ctx.inject(['sessionQuery'], (sctx) => {
     // 恢复 sidecar 里的增量扫描检查点后再建 reader（异步、不阻塞注入回调）：
-    // 重启后无需重新解压全部历史日志；检查点只在全量对账后落盘（约每天一次，
-    // 或统计窗口配置变化后的下一次扫描）。扫描间隔与滚动窗口都从设置命名空间
+    // 重启后无需重新解压全部历史日志；每次扫描完都落盘（含上次总数），所以
+    // 重启后面板秒出旧数、后台重扫。扫描间隔与滚动窗口都从设置命名空间
     // 实时读取——卡片里改完即生效，无需重启。
     void (async () => {
       const saved = await store.getSkillStatsState().catch(() => undefined)

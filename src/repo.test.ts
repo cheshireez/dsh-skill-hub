@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { collectRepoSkillFiles, diffRemoteSkills, discoverRepoEntries, downloadGitHubFile, downloadRepoSkill, getLatestReleaseTag, listRepoBranches, normalizeRepoInput, originForRoot, repoSlug, skillDirOf } from './repo.ts'
+import { collectRepoSkillFiles, diffRemoteSkills, discoverRepoEntries, downloadGitHubFile, downloadRepoSkill, getLatestReleaseTag, getRepoStats, listRepoBranches, normalizeRepoInput, originForRoot, repoSlug, skillDirOf } from './repo.ts'
 import type { RepoTreeItem } from './repo.ts'
 import type { RepoSkillEntry } from './protocol.ts'
 
@@ -250,5 +250,28 @@ describe('listRepoBranches', () => {
   it('lists branch names from the branches endpoint', async () => {
     const fetchImpl = async () => new Response(JSON.stringify([{ name: 'main' }, { name: 'dev' }]), { status: 200 })
     expect(await listRepoBranches('a/b', fetchImpl as typeof fetch)).toEqual(['main', 'dev'])
+  })
+})
+
+describe('getRepoStats', () => {
+  it('sums stars and release asset downloads', async () => {
+    const fetchImpl = async (url: string) => {
+      if (url.includes('/releases')) {
+        return new Response(JSON.stringify([
+          { tag_name: 'v2', assets: [{ download_count: 30 }, { download_count: 12 }] },
+          { tag_name: 'v1', assets: [{ download_count: 8 }] },
+        ]), { status: 200 })
+      }
+      return new Response(JSON.stringify({ stargazers_count: 1500 }), { status: 200 })
+    }
+    expect(await getRepoStats('a/b', fetchImpl as typeof fetch)).toEqual({ stars: 1500, downloads: 50 })
+  })
+
+  it('tolerates a failing releases endpoint', async () => {
+    const fetchImpl = async (url: string) => {
+      if (url.includes('/releases')) return new Response('boom', { status: 500 })
+      return new Response(JSON.stringify({ stargazers_count: 7 }), { status: 200 })
+    }
+    expect(await getRepoStats('a/b', fetchImpl as typeof fetch)).toEqual({ stars: 7, downloads: 0 })
   })
 })

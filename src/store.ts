@@ -15,7 +15,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { DisabledSkill, HubConfig, MarketSourceRecord, RepoRoot, SkillStatsCheckpoint, SkillTag, SourceRecord, TrashEntry } from './protocol.ts'
+import type { DisabledSkill, HubConfig, MarketSourceRecord, MarketStatsSnapshot, RepoRoot, SkillStatsCheckpoint, SkillTag, SourceRecord, TrashEntry } from './protocol.ts'
 
 /** 默认场景名（系统预置的兜底场景，新技能自动归入）。 */
 export const DEFAULT_SCENE_NAME = '通用'
@@ -36,6 +36,8 @@ interface StoreFile {
   trash?: TrashEntry[]
   /** Usage-statistics incremental-scan checkpoint (frozen watermark + totals). */
   skillStats?: SkillStatsCheckpoint
+  /** Market-stats snapshot (stars/downloads per repo, hourly TTL). */
+  marketStats?: MarketStatsSnapshot
   /** Drag-reorder: collection name order for 来源分组 */
   collectionOrder?: string[]
   /** Drag-reorder: 来源顶层分组整体顺序（project / col:xxx / uncategorized-source） */
@@ -80,7 +82,7 @@ export class StoreError extends Error {
  * Returns null when the file claims a newer schema than this plugin
  * understands, so the caller starts empty instead of risking data loss.
  */
-function migrateStore(parsed: unknown): { version: number; disabled: unknown; config?: unknown; tags?: unknown; sources?: unknown; marketSources?: unknown; trash?: unknown; skillStats?: unknown; collectionOrder?: unknown; sourceGroupOrder?: unknown } | null {
+function migrateStore(parsed: unknown): { version: number; disabled: unknown; config?: unknown; tags?: unknown; sources?: unknown; marketSources?: unknown; trash?: unknown; skillStats?: unknown; marketStats?: unknown; collectionOrder?: unknown; sourceGroupOrder?: unknown } | null {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
   const record = parsed as Record<string, unknown>
   const version = typeof record.version === 'number' ? record.version : 0
@@ -128,7 +130,9 @@ function migrateStore(parsed: unknown): { version: number; disabled: unknown; co
     ...(trash !== undefined ? { trash } : {}),
     // v4 (skillStats) is a pure addition — older files simply lack the field,
     // and the loader validates its shape, so pass it through untouched.
+    // marketStats follows the same pattern (validated on load below).
     ...(record.skillStats !== undefined ? { skillStats: record.skillStats } : {}),
+    ...(record.marketStats !== undefined ? { marketStats: record.marketStats } : {}),
     ...(Array.isArray(record.collectionOrder) ? { collectionOrder: record.collectionOrder } : {}),
     ...(Array.isArray(record.sourceGroupOrder) ? { sourceGroupOrder: record.sourceGroupOrder } : {}),
   }
@@ -143,6 +147,7 @@ export class SkillHubStore {
   private marketSources: MarketSourceRecord[] = []
   private trashByName = new Map<string, TrashEntry>()
   private skillStats: SkillStatsCheckpoint | undefined = undefined
+  private marketStats: MarketStatsSnapshot | undefined = undefined
   private collectionOrder: string[] = []
   private sourceGroupOrder: string[] = []
   private loaded = false
@@ -270,12 +275,39 @@ export class SkillHubStore {
             }
             sessions[id] = { createdAt: entry.createdAt, counts }
           }
+          const rawTotals = (savedStats as { lastTotals?: unknown }).lastTotals
+          const lastTotals = Array.isArray(rawTotals)
+            ? rawTotals.filter((entry): entry is { name: string; count: number; lastUsed?: number } =>
+                entry !== null && typeof entry === 'object'
+                && typeof (entry as { name?: unknown }).name === 'string'
+                && typeof (entry as { count?: unknown }).count === 'number').map((entry) => ({
+                  name: (entry as { name: string }).name,
+                  count: (entry as { count: number }).count,
+                  ...(typeof (entry as { lastUsed?: unknown }).lastUsed === 'number' ? { lastUsed: (entry as { lastUsed: number }).lastUsed } : {}),
+                }))
+            : undefined
           this.skillStats = {
             windowDays: savedStats.windowDays,
             frozenBefore: savedStats.frozenBefore,
             frozenSessions: sessions,
             lastFullReconcile: savedStats.lastFullReconcile,
+            ...(lastTotals !== undefined ? { lastTotals } : {}),
           }
+        }
+        const savedMarketStats = migrated.marketStats as Partial<MarketStatsSnapshot> | null | undefined
+        if (savedMarketStats !== null && typeof savedMarketStats === 'object'
+          && typeof savedMarketStats.fetchedAt === 'number'
+          && typeof savedMarketStats.stats === 'object' && savedMarketStats.stats !== null) {
+          // A corrupt bucket degrades to no snapshot (one cold fetch), never to bad numbers.
+          const stats: MarketStatsSnapshot['stats'] = {}
+          for (const [repo, entry] of Object.entries(savedMarketStats.stats)) {
+            if (entry !== null && typeof entry === 'object'
+              && typeof (entry as { stars?: unknown }).stars === 'number'
+              && typeof (entry as { downloads?: unknown }).downloads === 'number') {
+              stats[repo] = { stars: (entry as { stars: number }).stars, downloads: (entry as { downloads: number }).downloads }
+            }
+          }
+          this.marketStats = { fetchedAt: savedMarketStats.fetchedAt, stats }
         }
         const rawColOrder = (migrated as Record<string, unknown>).collectionOrder as unknown
         if (Array.isArray(rawColOrder)) {
@@ -706,11 +738,15 @@ export class SkillHubStore {
   async getSkillStatsState(): Promise<SkillStatsCheckpoint | undefined> {
     await this.ensureLoaded()
     return this.skillStats !== undefined
-      ? { ...this.skillStats, frozenSessions: { ...this.skillStats.frozenSessions } }
+      ? {
+          ...this.skillStats,
+          frozenSessions: { ...this.skillStats.frozenSessions },
+          ...(this.skillStats.lastTotals !== undefined ? { lastTotals: [...this.skillStats.lastTotals] } : {}),
+        }
       : undefined
   }
 
-  /** Persist a usage-statistics checkpoint (written at most ~once a day, on full reconciliations). */
+  /** Persist a usage-statistics checkpoint (after every completed scan; cadence follows the scan TTL). */
   async saveSkillStatsState(state: SkillStatsCheckpoint): Promise<void> {
     await this.ensureLoaded()
     this.skillStats = {
@@ -718,7 +754,23 @@ export class SkillHubStore {
       frozenBefore: state.frozenBefore,
       frozenSessions: { ...state.frozenSessions },
       lastFullReconcile: state.lastFullReconcile,
+      ...(state.lastTotals !== undefined ? { lastTotals: [...state.lastTotals] } : {}),
     }
+    await this.persist()
+  }
+
+  /** The persisted market-stats snapshot (undefined until first saved). */
+  async getMarketStatsState(): Promise<MarketStatsSnapshot | undefined> {
+    await this.ensureLoaded()
+    return this.marketStats !== undefined
+      ? { fetchedAt: this.marketStats.fetchedAt, stats: { ...this.marketStats.stats } }
+      : undefined
+  }
+
+  /** Persist a market-stats snapshot (written when a refresh fetched anything new). */
+  async saveMarketStatsState(state: MarketStatsSnapshot): Promise<void> {
+    await this.ensureLoaded()
+    this.marketStats = { fetchedAt: state.fetchedAt, stats: { ...state.stats } }
     await this.persist()
   }
 
@@ -736,6 +788,7 @@ export class SkillHubStore {
         ...(this.marketSources.length > 0 ? { marketSources: [...this.marketSources] } : {}),
         ...(this.trashByName.size > 0 ? { trash: [...this.trashByName.values()] } : {}),
         ...(this.skillStats !== undefined ? { skillStats: this.skillStats } : {}),
+        ...(this.marketStats !== undefined ? { marketStats: this.marketStats } : {}),
         ...(this.collectionOrder.length > 0 ? { collectionOrder: [...this.collectionOrder] } : {}),
         ...(this.sourceGroupOrder.length > 0 ? { sourceGroupOrder: [...this.sourceGroupOrder] } : {}),
       }

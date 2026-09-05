@@ -53,7 +53,8 @@ export class RepoFetchError extends Error {
 /**
  * GitHub token for authenticated API calls. Read from GITHUB_TOKEN /
  * GH_TOKEN at module load; setGithubToken() overrides it at runtime (the
- * plugin config route calls it when a saved token exists).
+ * host calls it from the settings sync whenever the card value changes;
+ * an absent value falls back to the env var).
  */
 let githubToken = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 
@@ -425,6 +426,49 @@ export async function getLatestReleaseTag(repo: string, fetchImpl: typeof fetch 
   }
   const tag = typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>).tag_name : undefined
   return typeof tag === 'string' && tag !== '' ? tag : undefined
+}
+
+/** Stars + release-asset downloads of a repo (two GitHub API requests). */
+export async function getRepoStats(repo: string, fetchImpl: typeof fetch = fetch): Promise<{ stars: number; downloads: number }> {
+  const headers = { accept: 'application/vnd.github+json', ...githubAuthHeaders() }
+  let metaResponse: Response
+  try {
+    metaResponse = await fetchImpl(`https://api.github.com/repos/${repo}`, { headers })
+  } catch (error) {
+    throw new RepoFetchError('github repo request failed: ' + (error instanceof Error ? error.message : String(error)))
+  }
+  if (!metaResponse.ok) throw fetchError('github repo not found or unavailable', metaResponse)
+  let meta: unknown
+  try {
+    meta = await metaResponse.json()
+  } catch {
+    throw new RepoFetchError('invalid github repo response')
+  }
+  const stars = typeof meta === 'object' && meta !== null && typeof (meta as Record<string, unknown>).stargazers_count === 'number'
+    ? (meta as Record<string, unknown>).stargazers_count as number
+    : 0
+  let downloads = 0
+  try {
+    const relResponse = await fetchImpl(`https://api.github.com/repos/${repo}/releases?per_page=20`, { headers })
+    if (relResponse.ok) {
+      const releases: unknown = await relResponse.json()
+      if (Array.isArray(releases)) {
+        for (const item of releases) {
+          if (typeof item !== 'object' || item === null) continue
+          const assets = (item as Record<string, unknown>).assets
+          if (!Array.isArray(assets)) continue
+          for (const asset of assets) {
+            if (typeof asset === 'object' && asset !== null && typeof (asset as Record<string, unknown>).download_count === 'number') {
+              downloads += (asset as Record<string, unknown>).download_count as number
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // downloads stay 0; stars are the primary signal
+  }
+  return { stars, downloads }
 }
 
 /** Release tags of a repo, newest first (skips drafts, keeps prereleases). */

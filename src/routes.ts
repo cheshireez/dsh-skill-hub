@@ -27,6 +27,7 @@ import {
   downloadRepoSkill,
   getLatestCommit,
   getLatestReleaseTag,
+  getRepoStats,
   isAbortError,
   listRepoBranches,
   listRepoReleases,
@@ -62,6 +63,7 @@ import {
   type MarketSourceResponse,
   type MarketSourcesResponse,
   type MarketSourceVersionsResponse,
+  type MarketStatsResponse,
   type MarketSyncResponse,
   type SourceCheckRequest,
   type SourceCheckResponse,
@@ -97,6 +99,7 @@ import {
   type ToggleRequest,
   type ToggleResponse,
   type WritableRoot,
+  GITHUB_TOKEN_RE,
   HEX_COLOR_RE,
   isProjectSource,
   resolveHubConfig,
@@ -519,6 +522,28 @@ function toDetail(skill: SkillDefinition): SkillDetail {
 const lastSourceCheck = new Map<string, number>()
 /** Last successful market update check per repo (same throttle). */
 const lastMarketCheck = new Map<string, number>()
+/** Market stats (stars/downloads) throttle: hourly, plus a fallback cache. */
+const lastMarketStats = new Map<string, number>()
+const marketStatsCache = new Map<string, { stars: number; downloads: number }>()
+const MARKET_STATS_TTL_MS = 60 * 60_000
+/** One-time seed of the in-memory stats cache from the sidecar (survives restarts). */
+let marketStatsSeeded = false
+async function seedMarketStats(deps: SkillHubRouteDeps): Promise<void> {
+  if (marketStatsSeeded) return
+  marketStatsSeeded = true
+  try {
+    const saved = await deps.store.getMarketStatsState()
+    if (saved === undefined) return
+    for (const [repo, stats] of Object.entries(saved.stats)) {
+      if (!marketStatsCache.has(repo)) {
+        marketStatsCache.set(repo, stats)
+        lastMarketStats.set(repo, saved.fetchedAt)
+      }
+    }
+  } catch {
+    // A bad snapshot just means one cold fetch; never fail the request.
+  }
+}
 
 /** Async import job (B方案：jobId + 轮询，选项2后台继续) */
 interface ImportJob {
@@ -937,6 +962,13 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
           if (typeof value !== 'string' || !HEX_COLOR_RE.test(value)) { writeError(res, 400, key + ' must be a #rrggbb color or null'); return }
           patch[key] = value
         }
+        if (raw.githubToken !== undefined) {
+          const value = raw.githubToken
+          if (value === null) { patch.githubToken = undefined; /* cleared → anonymous/env */ }
+          else if (typeof value !== 'string' || value.trim() === '') { patch.githubToken = undefined }
+          else if (!GITHUB_TOKEN_RE.test(value.trim())) { writeError(res, 400, 'githubToken looks invalid (expected a personal access token)'); return }
+          else patch.githubToken = value.trim()
+        }
         let config: HubConfig
         if (deps.updateConfig === undefined) {
           const merged: HubConfig = { ...configOf(deps) }
@@ -1065,6 +1097,58 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
           }
         }
         writeJson(res, 200, { ok: true, results } satisfies MarketCheckResponse)
+      },
+    }),
+    // ------------------------------------------------------- market/stats
+    // Stars + release-asset downloads per market source. Stale-while-revalidate:
+    // the base call always answers from cache instantly (stale-flagged past the
+    // hourly TTL); `?refresh=1` refetches stale entries in that same round.
+    // Numbers barely move within a session, and each repo costs two GitHub requests.
+    route({
+      path: SKILL_HUB_API.marketStats,
+      methods: ['GET'],
+      handler: async ({ res, url }) => {
+        const refresh = queryParam(url, 'refresh') === '1'
+        await seedMarketStats(deps)
+        const sources = await deps.store.listMarketSources()
+        if (lastMarketStats.size > 500) lastMarketStats.clear()
+        const results: MarketStatsResponse['results'] = []
+        const now = Date.now()
+        let fetchedAny = false
+        for (const source of sources) {
+          const cached = marketStatsCache.get(source.repo)
+          const age = now - (lastMarketStats.get(source.repo) ?? 0)
+          if (cached !== undefined && (!refresh || age < MARKET_STATS_TTL_MS)) {
+            results.push({
+              repo: source.repo,
+              stars: cached.stars,
+              downloads: cached.downloads,
+              ...(age >= MARKET_STATS_TTL_MS ? { stale: true } : refresh ? { throttled: true } : {}),
+            })
+            continue
+          }
+          try {
+            const stats = await getRepoStats(source.repo)
+            marketStatsCache.set(source.repo, stats)
+            lastMarketStats.set(source.repo, now)
+            fetchedAny = true
+            results.push({ repo: source.repo, ...stats })
+          } catch (error) {
+            if (cached !== undefined) {
+              results.push({ repo: source.repo, stars: cached.stars, downloads: cached.downloads, stale: true })
+            } else {
+              results.push({ repo: source.repo, stars: 0, downloads: 0, error: error instanceof Error ? error.message : String(error) })
+            }
+          }
+        }
+        if (fetchedAny) {
+          // Persist the fresh snapshot so a restart still shows numbers instantly.
+          void deps.store.saveMarketStatsState({
+            fetchedAt: now,
+            stats: Object.fromEntries(marketStatsCache),
+          }).catch(() => { /* best-effort; memory cache already updated */ })
+        }
+        writeJson(res, 200, { ok: true, results } satisfies MarketStatsResponse)
       },
     }),
     // ------------------------------------------------------- market/source/sync
