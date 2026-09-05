@@ -35,6 +35,8 @@ import type { BranchChoiceState, ConfirmDialogState, ConflictDialogState, Market
 const POLL_MS = 5000
 /** Relaxed poll for slower-changing data (stats, groups, sources, config). */
 const SLOW_POLL_MS = 60_000
+/** 空统计补捞上限：冷启动全量扫描（数十 MB 会话日志）可能超过 2 分钟，72 次约 6 分钟内保持 5 秒粒度，之后交回 60 秒慢轮询。 */
+const USES_CATCH_UP_MAX = 72
 
 /** localStorage key of the last daily auto-check timestamp (survives sessions). */
 const AUTO_CHECK_KEY = 'skill-hub.last-auto-check'
@@ -257,15 +259,15 @@ export function useSkillHub(api: SkillHubApi) {
   // 更新检查、来源检查、市场检查全部改为手动按钮触发，打开面板不再自动
   // 打三路 GitHub 请求。
   // 统计是 SWR：首刷可能命中服务端冷启动（回空数组、后台扫描中）。
-  // 补捞轮询：空数时每 5 秒捞一次，有数即停（最多约 2 分钟），之后交给 60 秒轮询。
+  // 补捞轮询：空数时每 5 秒捞一次，有数即停（最多约 6 分钟，见 USES_CATCH_UP_MAX），之后交给 60 秒轮询。
   // 冷扫描要解压全部会话日志（数十 MB 级），固定一次补捞可能赶不上。
   const usesCatchUp = useRef(0)
   useEffect(() => {
-    if (uses.size > 0 || usesCatchUp.current >= 24) return
+    if (uses.size > 0 || usesCatchUp.current >= USES_CATCH_UP_MAX) return
     const timer = window.setInterval(() => {
       usesCatchUp.current += 1
       void loadUses()
-      if (usesCatchUp.current >= 24) window.clearInterval(timer)
+      if (usesCatchUp.current >= USES_CATCH_UP_MAX) window.clearInterval(timer)
     }, 5_000)
     return () => { window.clearInterval(timer) }
   }, [uses.size, loadUses])

@@ -267,7 +267,7 @@ export function apply(ctx: Context, config?: Config): void {
         const value = current().statsWindowDays
         return typeof value === 'number' && value >= 0 ? Math.floor(value) : HUB_CONFIG_DEFAULTS.statsWindowDays
       }
-      stats = createSkillStatsReader(sctx.sessionQuery, () => scanMinutes() * 60_000, {
+      const reader = createSkillStatsReader(sctx.sessionQuery, () => scanMinutes() * 60_000, {
         checkpoint: saved,
         windowDays,
         onCheckpoint: (next) => {
@@ -276,7 +276,12 @@ export function apply(ctx: Context, config?: Config): void {
           })
         },
       })
+      stats = reader
       sync()
+      // 冷启动预热：检查点无总数时，全量扫描（数十 MB 会话日志）在启动时就
+      // 开始，而不是等面板第一次打开才起跑；有总数时这次调用命中内存缓存，
+      // 开销可忽略。失败由 reader 内部吞掉（保留旧总数），不影响启动。
+      void reader()
     })()
   })
 }
