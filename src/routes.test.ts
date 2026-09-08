@@ -110,6 +110,38 @@ describe('skill-hub routes', () => {
     expect(res.status).toBe(403)
   })
 
+  it('reports stats unavailable without a reader, or when all usage displays are off', async () => {
+    // 无 reader：面板显示空统计，不触发任何扫描。
+    const empty = new FakeResponse()
+    await routeFor(SKILL_HUB_API.stats).handler(fakeReq('GET', SKILL_HUB_API.stats), empty as never)
+    expect(empty.json()).toEqual({ ok: true, available: false, stats: [] })
+
+    // 有 reader 但三个展示开关全关：同样不调用 reader（kill-switch，issue #7）。
+    let calls = 0
+    deps.stats = async () => {
+      calls += 1
+      return [{ name: 'tdd', count: 1 }]
+    }
+    deps.config = () => ({ showUseCount: false, showUseTime: false, showGroupSummary: false }) as HubConfig
+    const off = new FakeResponse()
+    await routeFor(SKILL_HUB_API.stats).handler(fakeReq('GET', SKILL_HUB_API.stats), off as never)
+    expect(off.json()).toEqual({ ok: true, available: false, stats: [] })
+    expect(calls).toBe(0)
+
+    // 默认开任意一个即正常服务。
+    deps.config = () => ({ showUseCount: true }) as HubConfig
+    const on = new FakeResponse()
+    await routeFor(SKILL_HUB_API.stats).handler(fakeReq('GET', SKILL_HUB_API.stats), on as never)
+    expect(on.json()).toEqual({ ok: true, available: true, stats: [{ name: 'tdd', count: 1 }] })
+    expect(calls).toBe(1)
+
+    // reader 自带的来源标记会透出（无标记时不加字段）。
+    deps.stats.source = 'cold'
+    const sourced = new FakeResponse()
+    await routeFor(SKILL_HUB_API.stats).handler(fakeReq('GET', SKILL_HUB_API.stats), sourced as never)
+    expect(sourced.json()).toEqual({ ok: true, available: true, source: 'cold', stats: [{ name: 'tdd', count: 1 }] })
+  })
+
   it('serves the catalog with writable flags and diagnostics', async () => {
     skills.snapshot = async () => ({
       skills: [summary({ source: 'user-dsh' }), summary({ name: 'bundled-x', source: 'bundled', provider: 'bundled' })],

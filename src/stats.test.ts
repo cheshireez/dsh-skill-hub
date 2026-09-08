@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { countSkillInvocations, createSkillStatsReader, readSkillStats, STATS_FREEZE_AFTER_MS, type SessionQueryLike } from './stats.ts'
+import { asPersistenceSeam, countSkillInvocations, createSkillStatsReader, readColdSkillStats, readSkillStats, STATS_FREEZE_AFTER_MS, type SessionPersistenceLike, type SessionQueryLike } from './stats.ts'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import type { SkillStatsCheckpoint } from './protocol.ts'
 
 /** Minimal user/message event carrying a skill-invocation source. */
 function invocationEvent(name: string, seq = 1, time = 0): SessionEvent {
@@ -148,7 +149,9 @@ describe('createSkillStatsReader', () => {
   it('serves stale totals after expiry and rescans only once', async () => {
     let reads = 0
     const query: SessionQueryLike = {
-      listSessions: async () => [{ header: { id: 'a' as never } }],
+      // 有时间戳的近期会话：增量扫描会重读，正好验证“过期触发且只刷一次”。
+      // （无时间戳会话首轮进冻结桶后不再重读，见下文增量测试。）
+      listSessions: async () => [{ header: { id: 'a' as never, createdAt: Date.now() } }],
       readSession: async () => {
         reads += 1
         return { events: [invocationEvent('tdd', 1)] }
@@ -200,7 +203,7 @@ async function flush(): Promise<void> {
 }
 
 describe('scan read concurrency', () => {
-  it('reads session logs in parallel, not one by one', async () => {
+  it('reads session logs sequentially (peak 1) to bound host restore memory', async () => {
     const ids = Array.from({ length: 8 }, (_, i) => 's' + i)
     let inFlight = 0
     let peak = 0
@@ -214,11 +217,11 @@ describe('scan read concurrency', () => {
         return { events: [invocationEvent(String(id))] }
       },
     }
-    // No checkpoint → full path, all 8 sessions read.
+    // No checkpoint → full path, all 8 sessions read, one at a time: a heavy
+    // corpus costs wall time (issue #7), never a memory spike.
     const stats = await readSkillStats(query)
     expect(stats).toHaveLength(8)
-    expect(peak).toBeGreaterThan(1)
-    expect(peak).toBeLessThanOrEqual(6)
+    expect(peak).toBe(1)
   })
 })
 
@@ -490,5 +493,240 @@ describe('rolling stats window (configurable days)', () => {
     const stats = await reader()
     expect(stats).toEqual([])
     expect(checkpoint.frozenSessions['stale-entry']).toBeUndefined() // 已被懒清理
+  })
+
+  it('keeps sessions without createdAt in the frozen bucket after the first read', async () => {
+    // 无时间戳会话按时间永远冻不住：首轮全量读到调用就进缓存，
+    // 增量扫描不再重读（issue #7：否则每轮都重读）。
+    const reads: string[] = []
+    const query = fakeQuery(
+      [record('no-stamp'), record('fresh', NOW - 1 * DAY)],
+      { 'no-stamp': [invocationEvent('x', 1)], fresh: [invocationEvent('y', 1)] },
+      reads,
+    )
+    let clock = NOW
+    const checkpoint: SkillStatsCheckpoint = { windowDays: 0, frozenBefore: 0, frozenSessions: {}, lastFullReconcile: 0 }
+    const reader = createSkillStatsReader(query, 60_000, { now: () => clock, checkpoint })
+    expect(await reader()).toEqual([])
+    await flush()
+    expect(reads).toEqual(['no-stamp', 'fresh']) // 首轮全量：两个都读
+    expect(checkpoint.frozenSessions['no-stamp']).not.toBeUndefined()
+    clock += 120_000 // TTL 过期 → 增量扫描
+    await reader()
+    await flush()
+    expect(reads).toEqual(['no-stamp', 'fresh', 'fresh']) // 只重读 fresh，no-stamp 不再读
+  })
+})
+
+// ------------------------------------------------ 冷路径（persistence seam）
+
+/** One fake persisted session. */
+function coldEntry(id: string, createdAt: number | undefined, rev: string, events: SessionEvent[] | 'corrupt'): { id: string; createdAt: number | undefined; rev: string; events: SessionEvent[] | 'corrupt' } {
+  return { id, createdAt, rev, events }
+}
+
+/** Fake persistence seam recording opens/closes (handles must always close). */
+function fakePersistence(
+  entries: ReturnType<typeof coldEntry>[],
+  trace: { lists: number; opens: string[]; closes: string[] },
+  failList = false,
+): SessionPersistenceLike {
+  return {
+    list: async () => {
+      trace.lists += 1
+      if (failList) throw new Error('backend down')
+      return entries.map((entry) => ({
+        header: { id: entry.id as never, ...(entry.createdAt !== undefined ? { createdAt: entry.createdAt } : {}) },
+        revision: entry.rev,
+      }))
+    },
+    open: async (id) => {
+      trace.opens.push(String(id))
+      const entry = entries.find((candidate) => candidate.id === String(id))
+      if (entry === undefined || entry.events === 'corrupt') throw new Error('unreadable')
+      const events = entry.events
+      return {
+        read: async () => ({ events }),
+        close: () => { trace.closes.push(String(id)) },
+      }
+    },
+  }
+}
+
+function coldTrace(): { lists: number; opens: string[]; closes: string[] } {
+  return { lists: 0, opens: [], closes: [] }
+}
+
+describe('readColdSkillStats', () => {
+  it('totals invocations across sessions and sorts by name', async () => {
+    const trace = coldTrace()
+    const persistence = fakePersistence([
+      coldEntry('a', NOW - 1 * DAY, 'r1', [invocationEvent('tdd', 1), invocationEvent('tdd', 2)]),
+      coldEntry('b', NOW - 2 * DAY, 'r1', [invocationEvent('code-review', 1), skillToolCall('tdd', 2)]),
+    ], trace)
+    expect(await readColdSkillStats(persistence)).toEqual([
+      { name: 'code-review', count: 1, lastUsed: 0 },
+      { name: 'tdd', count: 3, lastUsed: 0 },
+    ])
+    expect(trace.opens).toEqual(['a', 'b'])
+    expect(trace.closes).toEqual(['a', 'b']) // 每个 handle 都关闭
+  })
+
+  it('never opens out-of-window logs', async () => {
+    const trace = coldTrace()
+    const persistence = fakePersistence([
+      coldEntry('old', NOW - 10 * DAY, 'r1', [invocationEvent('oldskill', 1)]),
+      coldEntry('fresh', NOW - 1 * DAY, 'r1', [invocationEvent('tdd', 1)]),
+    ], trace)
+    const checkpoint = { windowDays: 7, frozenBefore: 0, frozenSessions: {}, lastFullReconcile: 0 }
+    const reader = createSkillStatsReader({ listSessions: async () => [], readSession: async () => ({ events: [] }) }, 60_000, {
+      now: () => NOW,
+      checkpoint,
+      windowDays: () => 7,
+      persistence,
+    })
+    expect(await reader()).toEqual([])
+    await flush()
+    expect(await reader()).toEqual([{ name: 'tdd', count: 1, lastUsed: 0 }])
+    expect(trace.opens).toEqual(['fresh']) // old 连开都没开
+  })
+
+  it('skips corrupt sessions without failing the scan', async () => {
+    const trace = coldTrace()
+    const persistence = fakePersistence([
+      coldEntry('bad', NOW - 1 * DAY, 'r1', 'corrupt'),
+      coldEntry('good', NOW - 1 * DAY, 'r1', [invocationEvent('tdd', 1)]),
+    ], trace)
+    expect(await readColdSkillStats(persistence)).toEqual([{ name: 'tdd', count: 1, lastUsed: 0 }])
+  })
+
+  it('re-reads only sessions whose revision changed', async () => {
+    const trace = coldTrace()
+    const entries = [
+      coldEntry('steady', NOW - 5 * DAY, 'r1', [invocationEvent('tdd', 1)]),
+      coldEntry('growing', NOW - 1 * DAY, 'r1', [invocationEvent('tdd', 1)]),
+    ]
+    const persistence = fakePersistence(entries, trace)
+    let clock = NOW
+    const query: SessionQueryLike = { listSessions: async () => [], readSession: async () => ({ events: [] }) }
+    const checkpoints: Array<Record<string, unknown>> = []
+    const reader = createSkillStatsReader(query, 60_000, {
+      now: () => clock,
+      persistence,
+      onCheckpoint: (cp) => { checkpoints.push(cp as unknown as Record<string, unknown>) },
+    })
+    expect(await reader()).toEqual([])
+    await flush()
+    expect(await reader()).toEqual([{ name: 'tdd', count: 2, lastUsed: 0 }])
+    expect(trace.opens).toEqual(['steady', 'growing'])
+
+    // growing 续写（revision 变化），steady 不变：第二轮只重读 growing。
+    entries[1]!.rev = 'r2'
+    entries[1]!.events = [invocationEvent('tdd', 1), invocationEvent('tdd', 2)]
+    clock += 120_000 // TTL 过期，触发后台重扫
+    expect(await reader()).toEqual([{ name: 'tdd', count: 2, lastUsed: 0 }]) // 先回 stale
+    await flush()
+    expect(await reader()).toEqual([{ name: 'tdd', count: 3, lastUsed: 0 }])
+    expect(trace.opens).toEqual(['steady', 'growing', 'growing'])
+    // 检查点里记了两个 revision，下次重启不用重读。
+    const saved = checkpoints.at(-1)?.['coldRevisions'] as Record<string, { rev: string }>
+    expect(saved['steady']?.rev).toBe('r1')
+    expect(saved['growing']?.rev).toBe('r2')
+  })
+
+  it('reads live sessions through the query seam without double-counting', async () => {
+    const trace = coldTrace()
+    const persistence = fakePersistence([
+      coldEntry('live-one', NOW - 1 * DAY, 'r1', [invocationEvent('persisted-part', 1)]),
+      coldEntry('calm', NOW - 2 * DAY, 'r1', [invocationEvent('tdd', 1)]),
+    ], trace)
+    const query: SessionQueryLike = {
+      listSessions: async () => [],
+      readSession: async (id) => ({
+        // live 会话的内存态比落盘新：全量当前日志（含已落盘部分）。
+        events: String(id) === 'live-one'
+          ? [invocationEvent('persisted-part', 1), invocationEvent('live-part', 2)]
+          : [],
+      }),
+    }
+    const reader = createSkillStatsReader(query, 60_000, {
+      now: () => NOW,
+      persistence,
+      listLiveIds: async () => ['live-one' as never],
+      readLiveSession: (id) => query.readSession(id),
+    })
+    expect(await reader()).toEqual([])
+    await flush()
+    // live-one 只按 live 读了一次（persisted-part 不翻倍），calm 走 revision 缓存。
+    expect(await reader()).toEqual([
+      { name: 'live-part', count: 1, lastUsed: 0 },
+      { name: 'persisted-part', count: 1, lastUsed: 0 },
+      { name: 'tdd', count: 1, lastUsed: 0 },
+    ])
+    expect(trace.opens).toEqual(['calm'])
+  })
+
+  it('keeps previous totals when the listing fails', async () => {
+    const trace = coldTrace()
+    const persistence = fakePersistence([coldEntry('a', NOW - 1 * DAY, 'r1', [invocationEvent('tdd', 1)])], trace, true)
+    const query: SessionQueryLike = { listSessions: async () => [], readSession: async () => ({ events: [] }) }
+    const reader = createSkillStatsReader(query, 60_000, {
+      now: () => NOW,
+      persistence,
+      checkpoint: {
+        windowDays: 0,
+        frozenBefore: 0,
+        frozenSessions: {},
+        lastFullReconcile: NOW,
+        lastTotals: [{ name: 'oldskill', count: 9, lastUsed: 7 }],
+      },
+    })
+    expect(await reader()).toEqual([{ name: 'oldskill', count: 9, lastUsed: 7 }])
+    await flush()
+    expect(await reader()).toEqual([{ name: 'oldskill', count: 9, lastUsed: 7 }]) // 失败保留旧数
+    expect(trace.opens).toEqual([])
+  })
+})
+
+describe('asPersistenceSeam', () => {
+  it('rejects non-service values without I/O', () => {
+    expect(asPersistenceSeam(undefined)).toBeUndefined()
+    expect(asPersistenceSeam(null)).toBeUndefined()
+    expect(asPersistenceSeam({})).toBeUndefined()
+    expect(asPersistenceSeam({ list: async () => [] })).toBeUndefined()
+    expect(asPersistenceSeam({ open: async () => ({}) })).toBeUndefined()
+  })
+
+  it('adapts list/open/read/close with shape validation', async () => {
+    const closes: string[] = []
+    const seam = asPersistenceSeam({
+      list: async () => [{ header: { id: 'a', createdAt: 5 }, revision: 42 }],
+      open: async (id: unknown) => ({
+        read: async (offset: unknown) => {
+          expect(offset).toBe(0)
+          return { events: [invocationEvent('tdd', 1)] }
+        },
+        close: () => { closes.push(String(id)) },
+      }),
+    })
+    expect(seam).not.toBeUndefined()
+    const snapshots = await seam!.list()
+    expect(snapshots).toEqual([{ header: { id: 'a', createdAt: 5 }, revision: '42' }])
+    const handle = await seam!.open('a' as never, 'read')
+    expect((await handle.read()).events).toHaveLength(1)
+    await handle.close()
+    expect(closes).toEqual(['a'])
+  })
+
+  it('throws on malformed snapshots, handles, and reads', async () => {
+    const badList = asPersistenceSeam({ list: async () => [{ nope: true }], open: async () => ({}) })!
+    await expect(badList.list()).rejects.toThrow()
+    const badOpen = asPersistenceSeam({ list: async () => [], open: async () => ({}) })!
+    await expect(badOpen.open('a' as never, 'read')).rejects.toThrow()
+    const badRead = asPersistenceSeam({
+      list: async () => [],
+      open: async () => ({ read: async () => ({ nope: 1 }), close: () => {} }),
+    })!
+    await expect((await badRead.open('a' as never, 'read')).read()).rejects.toThrow()
   })
 })

@@ -13,16 +13,27 @@
  * Counting is per-skill-name, not per-source: a name may resolve to different
  * files across projects, but the model-facing identity is the kebab-case name.
  *
- * Scaling (per-session checkpoint + incremental scans): a full scan
- * decompresses every session log, which grows linearly with total history.
- * Sessions older than the effective watermark are therefore treated as
- * finalized — their per-session counts live in the checkpoint (persisted by
- * the host via the sidecar) and are skipped on incremental scans; only the
- * recent window is re-read. A daily full reconciliation rebuilds the cache
- * and advances the watermark, so a resumed old session is eventually
- * re-counted. On top of that, the reader's TTL adapts to the measured scan
- * duration (STATS_TTL_SCAN_FACTOR), so a heavy scan also lowers its own
- * frequency.
+ * Two read paths, cheapest first:
+ *
+ * 1. Cold path (preferred): the host's `sessionPersistence` seam serves raw
+ *    stored logs — decompress + parse only, no Session restore, no
+ *    structuredClone-per-event, no deepFreeze. `list()` also reports an opaque
+ *    per-session revision token, so the checkpoint re-reads exactly the
+ *    sessions whose revision changed (plus live sessions via the query seam).
+ *    No time watermark, no daily full reconciliation.
+ * 2. Query fallback: `sessionQuery.readSession` restores + replay-validates a
+ *    full Session per call (structuredClone × 2 + deepFreeze). Reads are
+ *    strictly sequential (concurrency 1) so at most one restored log is
+ *    resident, and a per-session checkpoint + incremental scans keeps the
+ *    repeat cost to the recent window: a full scan decompresses every session
+ *    log, which grows linearly with total history. Sessions older than the
+ *    effective watermark are therefore treated as finalized — their
+ *    per-session counts live in the checkpoint (persisted by the host via the
+ *    sidecar) and are skipped on incremental scans; only the recent window is
+ *    re-read. A daily full reconciliation rebuilds the cache and advances the
+ *    watermark, so a resumed old session is eventually re-counted. On top of
+ *    that, the reader's TTL adapts to the measured scan duration
+ *    (STATS_TTL_SCAN_FACTOR), so a heavy scan also lowers its own frequency.
  *
  * Rolling window (statsWindowDays > 0): totals only include sessions created
  * within the last N days. The watermark then equals the window edge, so
@@ -51,6 +62,84 @@ const DAY_MS = 24 * 60 * 60 * 1000
 export interface SessionQueryLike {
   listSessions(signal?: AbortSignal): Promise<Array<{ header: { id: SessionId; createdAt?: number } }>>
   readSession(id: SessionId): Promise<{ events: SessionEvent[] }>
+}
+
+/**
+ * Narrow structural view of the host's session-persistence seam (kept loose
+ * so no runtime import of host packages is needed — the owner adapts the real
+ * service via {@link asPersistenceSeam}). Raw log reads here cost decompress +
+ * parse only: no Session restore, no per-event clone, no deep-freeze.
+ */
+export interface ColdSessionSnapshot {
+  header: { id: SessionId; createdAt?: number }
+  /** Opaque per-session change token, kept as its string form. */
+  revision: string
+}
+
+/** One read handle over a stored session log (always closed after counting). */
+export interface ColdSessionHandle {
+  read(): Promise<{ events: SessionEvent[] }>
+  close(): Promise<void> | void
+}
+
+/** Minimal persistence surface the cold scan needs. */
+export interface SessionPersistenceLike {
+  /** Lightweight listing: headers + revision tokens, no event logs. */
+  list(): Promise<readonly ColdSessionSnapshot[]>
+  open(id: SessionId, access: 'read'): Promise<ColdSessionHandle>
+}
+
+/**
+ * Adapt a host persistence service to {@link SessionPersistenceLike}.
+ * Shape-checked only (no I/O): returns undefined when the value is not a
+ * usable seam, so callers fall back to the query path. The adapter re-resolves
+ * nothing and holds no state — a replaced host service surfaces as ordinary
+ * per-call failures, which scans already tolerate.
+ */
+export function asPersistenceSeam(service: unknown): SessionPersistenceLike | undefined {
+  if (service === null || typeof service !== 'object') return undefined
+  const { list, open } = service as { list?: unknown; open?: unknown }
+  if (typeof list !== 'function' || typeof open !== 'function') return undefined
+  // Bind: host services read instance state (this.tracker, …) — an unbound
+  // destructured method throws inside list()/open().
+  const listFn = (list as () => Promise<unknown>).bind(service)
+  const openFn = (open as (id: SessionId, access: 'read') => Promise<unknown>).bind(service)
+  return {
+    list: async () => {
+      const rows = await listFn()
+      if (!Array.isArray(rows)) throw new Error('persistence list shape mismatch')
+      return rows.map((row) => {
+        const record = row as { header?: { id?: unknown; createdAt?: unknown }; revision?: unknown }
+        const id = record.header?.id
+        if (typeof id !== 'string' && typeof id !== 'number') throw new Error('persistence snapshot shape mismatch')
+        const created = record.header?.createdAt
+        return {
+          header: {
+            id: id as SessionId,
+            ...(typeof created === 'number' ? { createdAt: created } : {}),
+          },
+          revision: String(record.revision),
+        }
+      })
+    },
+    open: async (id, access) => {
+      const raw = await openFn(id, access)
+      if (raw === null || typeof raw !== 'object') throw new Error('persistence handle shape mismatch')
+      const { read, close } = raw as { read?: unknown; close?: unknown }
+      if (typeof read !== 'function' || typeof close !== 'function') throw new Error('persistence handle shape mismatch')
+      const readFn = (read as (offset: number, length: undefined) => Promise<unknown>).bind(raw)
+      const closeFn = (close as () => Promise<void> | void).bind(raw)
+      return {
+        read: async () => {
+          const out = await readFn(0, undefined)
+          const events = (out as { events?: unknown } | null)?.events
+          if (!Array.isArray(events)) throw new Error('persistence read shape mismatch')
+          return { events: events as SessionEvent[] }
+        },
+        close: () => closeFn(),
+      }
+    },
+  }
 }
 
 /** Per-skill invocation stats in one session's event log. */
@@ -98,8 +187,9 @@ type Totals = Record<string, InvocationStat>
 
 function isFrozen(record: { header: { createdAt?: number } }, watermark: number): boolean {
   const created = record.header.createdAt
-  // Missing or non-positive timestamps never freeze: the session stays on the
-  // re-read path, which is merely slower — never wrong.
+  // Missing or non-positive timestamps never freeze by time (full scans cache
+  // such sessions explicitly instead — see below). The re-read path is merely
+  // slower, never wrong.
   return typeof created === 'number' && created > 0 && created < watermark
 }
 
@@ -118,8 +208,11 @@ async function mapConcurrent<T, R>(items: readonly T[], limit: number, worker: (
   return results
 }
 
-/** Max parallel session-log reads per scan (read-only; merge is order-independent). */
-const SCAN_READ_CONCURRENCY = 6
+/** Max parallel session-log reads per scan. Reads on the query path restore +
+ * replay-validate a full Session each (structuredClone × 2 + deepFreeze), so
+ * this stays 1: at most one restored log is resident and a heavy corpus costs
+ * wall time, never a memory spike. The cold path reads sequentially anyway. */
+const SCAN_READ_CONCURRENCY = 1
 
 function mergeInto(totals: Totals, counted: Map<string, InvocationStat>): void {
   for (const [name, stat] of counted) {
@@ -182,8 +275,12 @@ async function scan(query: SessionQueryLike, checkpoint: SkillStatsCheckpoint, n
       const counted = countedList[index]
       if (counted === undefined) return
       const created = record.header.createdAt
-      if (isFrozen(record, cutoff) && counted.size > 0 && typeof created === 'number') {
-        cache[record.header.id as unknown as string] = { createdAt: created, counts: Object.fromEntries(counted) }
+      const id = record.header.id as unknown as string
+      // Sessions without a usable timestamp never freeze by time, so cache
+      // them explicitly once read — otherwise they are re-read on every
+      // incremental scan forever.
+      if (counted.size > 0 && (isFrozen(record, cutoff) || !(typeof created === 'number' && created > 0))) {
+        cache[id] = { createdAt: typeof created === 'number' ? created : 0, counts: Object.fromEntries(counted) }
       }
       if (inWindow(created, windowDays, nowMs)) mergeInto(totals, counted)
     })
@@ -195,7 +292,10 @@ async function scan(query: SessionQueryLike, checkpoint: SkillStatsCheckpoint, n
   }
 
   const recent: Totals = {}
-  const unfrozen = sessions.filter((record) => !isFrozen(record, checkpoint.frozenBefore))
+  const frozenIds = checkpoint.frozenSessions
+  const unfrozen = sessions.filter((record) =>
+    !Object.prototype.hasOwnProperty.call(frozenIds, record.header.id as unknown as string)
+    && !isFrozen(record, checkpoint.frozenBefore))
   const recentList = await mapConcurrent(unfrozen, SCAN_READ_CONCURRENCY, async (record) => {
     try {
       return countSkillInvocations((await query.readSession(record.header.id)).events)
@@ -209,14 +309,87 @@ async function scan(query: SessionQueryLike, checkpoint: SkillStatsCheckpoint, n
   }
   const totals: Totals = {}
   for (const [id, entry] of Object.entries(checkpoint.frozenSessions)) {
-    if (!inWindow(entry.createdAt, windowDays, nowMs)) {
-      delete checkpoint.frozenSessions[id] // lazily prune entries outside the window
+    if (entry.createdAt > 0 && !inWindow(entry.createdAt, windowDays, nowMs)) {
+      delete checkpoint.frozenSessions[id] // lazily prune entries provably outside the window
       continue
     }
     mergeInto(totals, new Map(Object.entries(entry.counts)))
   }
   mergeInto(totals, new Map(Object.entries(recent)))
   return { stats: toSorted(totals), mutated: false }
+}
+
+/**
+ * One pass over the corpus through the persistence seam. Reads are strictly
+ * sequential and each handle is closed before the next opens, so at most one
+ * raw log is resident. A session is re-read only when its revision token
+ * changed since the checkpoint; the rolling window is applied from the
+ * listing headers, so out-of-window logs are never even opened. Live sessions
+ * (in-memory, possibly newer than their persisted revision) are read through
+ * `readLive` and never enter the revision cache.
+ *
+ * A `list()` failure rejects — the reader keeps the previous totals, and the
+ * next poll retries. Per-session failures are skipped, never fatal.
+ */
+export async function scanCold(
+  persistence: SessionPersistenceLike,
+  checkpoint: SkillStatsCheckpoint,
+  nowMs: number,
+  windowDays: number,
+  liveIds: ReadonlySet<string> = new Set(),
+  readLive: (id: SessionId) => Promise<readonly SessionEvent[] | undefined> = async () => undefined,
+): Promise<SkillStat[]> {
+  const revisions = checkpoint.coldRevisions ?? (checkpoint.coldRevisions = {})
+  const totals: Totals = {}
+  const snapshots = await persistence.list()
+  const seen = new Set<string>()
+  for (const snapshot of snapshots) {
+    const id = snapshot.header.id as unknown as string
+    seen.add(id)
+    if (liveIds.has(id)) continue // covered by the live read below, never double-counted
+    const created = snapshot.header.createdAt
+    if (!inWindow(created, windowDays, nowMs)) {
+      delete revisions[id]
+      continue
+    }
+    const rev = snapshot.revision
+    const cached = revisions[id]
+    if (cached !== undefined && cached.rev === rev) {
+      mergeInto(totals, new Map(Object.entries(cached.counts)))
+      continue
+    }
+    let counted: Map<string, InvocationStat> | undefined
+    try {
+      const handle = await persistence.open(snapshot.header.id, 'read')
+      try {
+        counted = countSkillInvocations((await handle.read()).events)
+      } finally {
+        await handle.close()
+      }
+    } catch {
+      continue // unreadable sessions are skipped (and not cached), never fatal
+    }
+    revisions[id] = {
+      rev,
+      createdAt: typeof created === 'number' ? created : 0,
+      counts: Object.fromEntries(counted),
+    }
+    mergeInto(totals, counted)
+  }
+  for (const id of Object.keys(revisions)) {
+    if (!seen.has(id)) delete revisions[id] // sessions gone from the listing leave the cache
+  }
+  for (const id of liveIds) {
+    let events: readonly SessionEvent[] | undefined
+    try {
+      events = await readLive(id as unknown as SessionId)
+    } catch {
+      continue
+    }
+    if (events === undefined) continue
+    mergeInto(totals, countSkillInvocations(events))
+  }
+  return toSorted(totals)
 }
 
 /**
@@ -228,8 +401,20 @@ export async function readSkillStats(query: SessionQueryLike, windowDays = 0): P
   return (await scan(query, checkpoint, Date.now(), windowDays)).stats
 }
 
+/**
+ * Full-corpus totals in one shot through the persistence seam (no checkpoint
+ * reuse). Reference implementation for tests and one-off callers.
+ */
+export async function readColdSkillStats(persistence: SessionPersistenceLike, windowDays = 0): Promise<SkillStat[]> {
+  const checkpoint: SkillStatsCheckpoint = { windowDays, frozenBefore: 0, frozenSessions: {}, lastFullReconcile: 0 }
+  return scanCold(persistence, checkpoint, Date.now(), windowDays)
+}
+
 /** A memoized stats reader (the panel polls, but logs change slowly). */
-export type SkillStatsReader = () => Promise<SkillStat[]>
+export type SkillStatsReader = (() => Promise<SkillStat[]>) & {
+  /** Which read path this reader scans with (set at wiring; absent on test doubles). */
+  source?: 'cold' | 'query'
+}
 
 /** Optional wiring for {@link createSkillStatsReader}. */
 export interface SkillStatsReaderOptions {
@@ -245,6 +430,12 @@ export interface SkillStatsReaderOptions {
    *  persist the checkpoint including the fresh totals. Cadence follows the
    *  scan TTL (minutes, not days) — the payload is tiny and writes are atomic. */
   onCheckpoint?: (checkpoint: SkillStatsCheckpoint) => void
+  /** Preferred cheap seam: raw stored-log reads keyed by revision token. */
+  persistence?: SessionPersistenceLike
+  /** Live session ids (usually 0-2) read through the query seam, not the cache. */
+  listLiveIds?: () => Promise<readonly SessionId[]>
+  /** Full current log of one live session; undefined skips it for this scan. */
+  readLiveSession?: (id: SessionId) => Promise<{ events: SessionEvent[] } | undefined>
 }
 
 /**
@@ -271,7 +462,7 @@ export function createSkillStatsReader(query: SessionQueryLike, ttlMs: number | 
   let refreshing: Promise<void> | null = null
   let lastScanDurationMs = 0
 
-  return async () => {
+  const reader: SkillStatsReader = async () => {
     const startedAt = now()
     const base = typeof ttlMs === 'function' ? ttlMs() : ttlMs
     const ttl = Math.max(base, lastScanDurationMs * STATS_TTL_SCAN_FACTOR)
@@ -280,17 +471,37 @@ export function createSkillStatsReader(query: SessionQueryLike, ttlMs: number | 
     // fresh start) and kick off one background rescan.
     if (refreshing === null) {
       const windowDays = options.windowDays?.() ?? 0
-      refreshing = scan(query, checkpoint, startedAt, windowDays)
-        .then(({ stats }) => {
+      const task: Promise<SkillStat[]> = options.persistence !== undefined
+        ? (async () => {
+            let liveIds = new Set<string>()
+            if (options.listLiveIds !== undefined) {
+              try {
+                liveIds = new Set((await options.listLiveIds()).map((id) => String(id)))
+              } catch { /* live listing is best-effort; the cold cache still counts */ }
+            }
+            return scanCold(options.persistence as SessionPersistenceLike, checkpoint, startedAt, windowDays, liveIds, async (id) => {
+              const snapshot = await options.readLiveSession?.(id)
+              return snapshot?.events
+            })
+          })()
+        : scan(query, checkpoint, startedAt, windowDays).then(({ stats }) => stats)
+      refreshing = task
+        .then((stats) => {
           cached = stats
           cachedAt = now()
           lastScanDurationMs = Math.max(0, cachedAt - startedAt)
           checkpoint.lastTotals = stats
-          options.onCheckpoint?.({ ...checkpoint, frozenSessions: { ...checkpoint.frozenSessions } })
+          options.onCheckpoint?.({
+            ...checkpoint,
+            frozenSessions: { ...checkpoint.frozenSessions },
+            ...(checkpoint.coldRevisions !== undefined ? { coldRevisions: { ...checkpoint.coldRevisions } } : {}),
+          })
         })
         .catch(() => { /* keep the previous totals on scan failure */ })
         .finally(() => { refreshing = null })
     }
     return cached ?? []
   }
+  reader.source = options.persistence !== undefined ? 'cold' : 'query'
+  return reader
 }

@@ -470,6 +470,7 @@ export class SkillHubStore {
           ...this.skillStats,
           frozenSessions: { ...this.skillStats.frozenSessions },
           ...(this.skillStats.lastTotals !== undefined ? { lastTotals: [...this.skillStats.lastTotals] } : {}),
+          ...(this.skillStats.coldRevisions !== undefined ? { coldRevisions: { ...this.skillStats.coldRevisions } } : {}),
         }
       : undefined
   }
@@ -483,6 +484,7 @@ export class SkillHubStore {
       frozenSessions: { ...state.frozenSessions },
       lastFullReconcile: state.lastFullReconcile,
       ...(state.lastTotals !== undefined ? { lastTotals: [...state.lastTotals] } : {}),
+      ...(state.coldRevisions !== undefined ? { coldRevisions: { ...state.coldRevisions } } : {}),
     }
     await this.persist()
   }

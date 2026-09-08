@@ -25,6 +25,7 @@ import {
 import { createSkill, disableSkill, enableSkill, parseFrontmatter, readSkillInterface, rootPath, trashSkill } from '../skillfs.ts'
 import {
   buildCatalog,
+  configOf,
   homeOf,
   pathExists,
   queryParam,
@@ -301,8 +302,15 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           writeJson(res, 200, { ok: true, available: false, stats: [] } satisfies StatsResponse)
           return
         }
+        // All usage displays off means nobody reads statistics: answer
+        // unavailable without invoking the reader, so no scan is triggered.
+        const display = configOf(deps)
+        if (display.showUseCount === false && display.showUseTime === false && display.showGroupSummary === false) {
+          writeJson(res, 200, { ok: true, available: false, stats: [] } satisfies StatsResponse)
+          return
+        }
         const stats = await deps.stats()
-        writeJson(res, 200, { ok: true, available: true, stats } satisfies StatsResponse)
+        writeJson(res, 200, { ok: true, available: true, ...(deps.stats.source !== undefined ? { source: deps.stats.source } : {}), stats } satisfies StatsResponse)
       },
     },
   ]

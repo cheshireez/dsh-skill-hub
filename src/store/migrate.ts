@@ -206,6 +206,30 @@ export function hydrateMigratedState(migrated: MigratedStore): HydratedState {
     }
   }
 
+  /**
+   * Validate the cold-path revision bucket: corrupt entries degrade to a
+   * re-read (the revision simply misses), never to bad counts.
+   */
+  function cleanColdRevisions(raw: unknown): { coldRevisions?: SkillStatsCheckpoint['coldRevisions'] } {
+    if (raw === null || typeof raw !== 'object') return {}
+    const revisions: NonNullable<SkillStatsCheckpoint['coldRevisions']> = {}
+    for (const [id, entry] of Object.entries(raw as Record<string, unknown>)) {
+      if (entry === null || typeof entry !== 'object') continue
+      const { rev, createdAt, counts } = entry as { rev?: unknown; createdAt?: unknown; counts?: unknown }
+      if (typeof rev !== 'string' || typeof createdAt !== 'number' || counts === null || typeof counts !== 'object') continue
+      const clean: Record<string, { count: number; lastUsed: number }> = {}
+      for (const [name, stat] of Object.entries(counts as Record<string, unknown>)) {
+        if (stat !== null && typeof stat === 'object'
+          && typeof (stat as { count?: unknown }).count === 'number'
+          && typeof (stat as { lastUsed?: unknown }).lastUsed === 'number') {
+          clean[name] = { count: (stat as { count: number }).count, lastUsed: (stat as { lastUsed: number }).lastUsed }
+        }
+      }
+      revisions[id] = { rev, createdAt, counts: clean }
+    }
+    return { coldRevisions: revisions }
+  }
+
   let skillStats: SkillStatsCheckpoint | undefined = undefined
   const savedStats = migrated.skillStats as Partial<SkillStatsCheckpoint> | null | undefined
   if (savedStats !== null && typeof savedStats === 'object'
@@ -245,6 +269,7 @@ export function hydrateMigratedState(migrated: MigratedStore): HydratedState {
       frozenSessions: sessions,
       lastFullReconcile: savedStats.lastFullReconcile,
       ...(lastTotals !== undefined ? { lastTotals } : {}),
+      ...cleanColdRevisions((savedStats as { coldRevisions?: unknown }).coldRevisions),
     }
   }
 

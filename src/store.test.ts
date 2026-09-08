@@ -282,6 +282,35 @@ describe('SkillHubStore', () => {
     expect(await store.getSkillStatsState()).toBeUndefined()
   })
 
+  it('persists coldRevisions round-trip and drops corrupt revision entries', async () => {
+    await writeFile(file, JSON.stringify({
+      version: 4,
+      disabled: [],
+      skillStats: {
+        windowDays: 14,
+        frozenBefore: 1000,
+        frozenSessions: {},
+        lastFullReconcile: 1234,
+        coldRevisions: {
+          good: { rev: 'r1', createdAt: 900, counts: { tdd: { count: 3, lastUsed: 900 } } },
+          'bad-rev': { rev: 42, createdAt: 900, counts: {} },
+          'bad-counts': { rev: 'r1', createdAt: 900, counts: { tdd: { count: 'many', lastUsed: 1 } } },
+        },
+      },
+    }), 'utf8')
+    // 好条目保留并写盘回读一致；坏条目被清洗（重读一次即可恢复）。
+    expect(await store.getSkillStatsState()).toEqual({
+      windowDays: 14,
+      frozenBefore: 1000,
+      frozenSessions: {},
+      lastFullReconcile: 1234,
+      coldRevisions: {
+        good: { rev: 'r1', createdAt: 900, counts: { tdd: { count: 3, lastUsed: 900 } } },
+        'bad-counts': { rev: 'r1', createdAt: 900, counts: {} },
+      },
+    })
+  })
+
   it('persists a marketStats snapshot round-trip and drops corrupt buckets', async () => {
     expect(await store.getMarketStatsState()).toBeUndefined()
     const snapshot = { fetchedAt: 9999, stats: { 'a/b': { stars: 1500, downloads: 50 } } }
