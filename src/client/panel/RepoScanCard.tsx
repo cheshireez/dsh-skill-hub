@@ -11,6 +11,16 @@ import type { SkillHubState } from './useSkillHub.ts'
 import { formatBytes, formatSpeed } from './market-format.ts'
 import css from './panel.module.css'
 
+/**
+ * 已知技能根的显示名键；未知根直接显示目录名。
+ * zh 字典里这两项就是目录名本身（与接线前的硬编码文本一致）。
+ */
+function rootLabelKey(root: string): 'repo.root.skills' | 'repo.root.designTemplates' | 'repo.root.generic' {
+  if (root === 'skills') return 'repo.root.skills'
+  if (root === 'design-templates') return 'repo.root.designTemplates'
+  return 'repo.root.generic'
+}
+
 export function RepoScanCard(props: { hub: SkillHubState }): JSX.Element | null {
   const { hub } = props
   const { repoDiscoverState, scanningRepo, repoResult, repoSelected, setRepoSelected, repoImporting, toggleRepoSelected, importRepo, cancelImport } = hub
@@ -84,7 +94,7 @@ export function RepoScanCard(props: { hub: SkillHubState }): JSX.Element | null 
                   />
                   <button type='button' className={css.button + (repoFilter === 'all' ? ' ' + css.primary : '')} style={{ padding:'6px 10px', fontSize:12 }} onClick={() => setRepoFilter('all')}>全部 {entries.length}</button>
                   {roots.map((root) => (
-                    <button key={root} type='button' className={css.button + (repoFilter === root ? ' ' + css.primary : '')} style={{ padding:'6px 10px', fontSize:12 }} onClick={() => setRepoFilter(root)}>{root} {counts.get(root) ?? 0}</button>
+                    <button key={root} type='button' className={css.button + (repoFilter === root ? ' ' + css.primary : '')} style={{ padding:'6px 10px', fontSize:12 }} onClick={() => setRepoFilter(root)}>{tt(rootLabelKey(root), { root })} {counts.get(root) ?? 0}</button>
                   ))}
                 </div>
               )
@@ -92,8 +102,8 @@ export function RepoScanCard(props: { hub: SkillHubState }): JSX.Element | null 
             <div className={css.hintLine} style={{ display:'flex', justifyContent:'space-between', flexWrap:'wrap', gap:8 }}>
               <span>已选 {selected.length}/{entries.length} · {formatBytes(selectedBytes)} · 显示 {paged.length}/{filtered.length}（过滤后）</span>
               <span style={{ display:'flex', gap:6 }}>
-                <button type='button' className={css.button} style={{ padding:'4px 8px', fontSize:11 }} onClick={() => { setRepoSelected(new Set(filtered.filter((e)=>!isExisting(e)).slice(0, visibleCount).map((e)=>e.path))) }}>全选当前显示</button>
-                <button type='button' className={css.button} style={{ padding:'4px 8px', fontSize:11 }} onClick={() => { setRepoSelected(new Set(entries.filter((e)=>!isExisting(e)).map((e)=>e.path))) }}>全选全部 {entries.filter(e=>!isExisting(e)).length}</button>
+                <button type='button' className={css.button} style={{ padding:'4px 8px', fontSize:11 }} onClick={() => { setRepoSelected(new Set(filtered.filter((e)=>!isExisting(e)).slice(0, visibleCount).map((e)=>e.path))) }}>{tt('repo.selectVisible')}</button>
+                <button type='button' className={css.button} style={{ padding:'4px 8px', fontSize:11 }} onClick={() => { setRepoSelected(new Set(entries.filter((e)=>!isExisting(e)).map((e)=>e.path))) }}>{tt('repo.selectAllN', { count: entries.filter(e=>!isExisting(e)).length })}</button>
                 <button type='button' className={css.button} style={{ padding:'4px 8px', fontSize:11 }} onClick={() => { setRepoSelected(new Set()) }}>{tt('repo.clearAll')}</button>
               </span>
             </div>

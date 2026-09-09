@@ -1,7 +1,6 @@
 /** 面板框架与通用：入口/视图切换/面板/图例/报错/更新检查/新建表单/诊断修复。从 locales.ts 按前缀拆出，键集合不变。 */
 export const zhCommon = {
   'entry.label': '技能',
-  'entry.tooltip': '技能中枢：浏览、分组与同步管理本地技能',
   'view.sources': '来源',
   'view.scenes': '场景',
   'view.market': '市场',
@@ -15,7 +14,6 @@ export const zhCommon = {
   'legend.model': '模型可调 — Agent 可自动调用',
   'legend.user': '用户可调 — 仅显式点名时触发',
   'legend.hint': '每个技能最多一个圆点；无圆点 = 不可被调用。',
-  'panel.enabled': '已启用',
   'panel.disabled': '已禁用',
   'panel.diagnostics': '发现诊断',
   'panel.empty': '没有匹配的技能。',
@@ -30,7 +28,6 @@ export const zhCommon = {
   'update.upToDate': '已是最新版本 v{version}',
   'update.available': '发现新版本 v{version}（当前 v{current}）',
   'update.newVersion': '新版本 v{version}',
-  'update.viewRelease': '查看发布',
   'update.error': '检查更新失败：{error}',
   'update.unavailable': '暂无可用的发布版本',
   'diag.fix': '修复',
@@ -52,7 +49,6 @@ export const zhCommon = {
 
 export const enCommon: Record<keyof typeof zhCommon, string> = {
   'entry.label': 'Skills',
-  'entry.tooltip': 'Skill hub: browse, group, and sync local skills',
   'view.sources': 'Sources',
   'view.scenes': 'Scenes',
   'view.market': 'Market',
@@ -66,7 +62,6 @@ export const enCommon: Record<keyof typeof zhCommon, string> = {
   'legend.model': 'Model-invocable — agents may call automatically',
   'legend.user': 'User-invocable — explicit invocation only',
   'legend.hint': 'At most one dot per skill; no dot = not invocable.',
-  'panel.enabled': 'Enabled',
   'panel.disabled': 'Disabled',
   'panel.diagnostics': 'Discovery diagnostics',
   'panel.empty': 'No matching skills.',
@@ -81,7 +76,6 @@ export const enCommon: Record<keyof typeof zhCommon, string> = {
   'update.upToDate': 'Up to date: v{version}',
   'update.available': 'Update available: v{version} (current v{current})',
   'update.newVersion': 'New version v{version}',
-  'update.viewRelease': 'View release',
   'update.error': 'Update check failed: {error}',
   'update.unavailable': 'No release available',
   'diag.fix': 'Fix',

@@ -22,7 +22,6 @@ export interface SkillDetailViewProps {
   sourceCheck: Readonly<Record<string, SourceCheckResult>>
   checkingSource: string | null
   syncingSource: string | null
-  loading: boolean
   /** Whether the skill is currently hub-disabled (served from the .disabled file). */
   disabled?: boolean
   /** Re-enable a hub-disabled skill. */
@@ -37,7 +36,7 @@ export interface SkillDetailViewProps {
 }
 
 export function SkillDetailView(props: SkillDetailViewProps): JSX.Element {
-  const { detail, hubConfig, uses, groupsState, sourcesState, sourceCheck, checkingSource, syncingSource, loading, disabled, onEnable, onBack, onCheck, onSync, onFollowDelete } = props
+  const { detail, hubConfig, uses, groupsState, sourcesState, sourceCheck, checkingSource, syncingSource, disabled, onEnable, onBack, onCheck, onSync, onFollowDelete } = props
   const detailSource = sourcesState?.sources.find((source) => source.skills.includes(detail.name))
   const detailCheck = detailSource !== undefined ? sourceCheck[detailSource.repo] : undefined
   const [copied, setCopied] = useState<string | null>(null)
@@ -116,7 +115,6 @@ export function SkillDetailView(props: SkillDetailViewProps): JSX.Element {
       ) : (
         <p className={css.hintLine}>{tt('source.private')}</p>
       )}
-      {loading ? <div className={css.muted}>{tt('detail.loading')}</div> : null}
       <pre className={css.detailContent}>{detail.content}</pre>
     </div>
   )

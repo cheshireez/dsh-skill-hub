@@ -67,7 +67,6 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
         sourceCheck={sourceCheck}
         checkingSource={checkingSource}
         syncingSource={syncingSource}
-        loading={detailLoading}
         disabled={disabledRecord !== undefined}
         onEnable={disabledRecord !== undefined ? () => { void enableDisabled(disabledRecord).then(() => { setDetail(null) }) } : undefined}
         onBack={() => { setDetail(null) }}
