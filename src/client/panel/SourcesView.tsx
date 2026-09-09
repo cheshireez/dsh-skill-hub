@@ -9,12 +9,12 @@
 import { useMemo, useState, type JSX } from 'react'
 import { tt } from '../helpers.ts'
 import { filterBySource, groupSwitchView, isProjectSource, PRIVATE_SOURCE } from '../grouping.ts'
-import { SourceStatusBadge } from './SourceStatusBadge.tsx'
 import { SkillRow } from './SkillRow.tsx'
 import { DisabledRow } from './DisabledRow.tsx'
 import { GroupSummary } from './GroupSummary.tsx'
-import { GroupSwitchButton } from './GroupSwitchButton.tsx'
 import { useDragReorder } from './useDragReorder.ts'
+import { ProjectTree } from './ProjectTree.tsx'
+import { CollectionCard } from './CollectionCard.tsx'
 import type { SkillHubState } from './useSkillHub.ts'
 import css from './panel.module.css'
 
@@ -77,66 +77,17 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
       {topOrderedKeys.map((topKey) => {
         // Project 顶层卡片（可拖）
         if (topKey === 'project' && hasProject) {
-          const topCollapsed = collapsedGroups.has('project')
-          // 按 workspace 聚合，与 ProjectTree 逻辑一致
-          const byProject = new Map<string, { title: string; skills: typeof projectSkillsAll }>()
-          for (const skill of projectSkillsAll) {
-            const key = skill.workspace ?? skill.source
-            const entry = byProject.get(key)
-            if (entry === undefined) byProject.set(key, { title: skill.workspaceTitle ?? skill.workspace ?? tt('groups.project'), skills: [skill] })
-            else entry.skills.push(skill)
-          }
           return (
-            <section key="project" {...drag('project')}>
-              <div className={css.groupHead}>
-                <span className={css.dragHandle} aria-hidden title="拖拽调整顺序">⋮⋮</span>
-                <button type='button' className={css.disclosure} aria-expanded={!topCollapsed} onClick={() => { toggleGroupCollapse('project') }}>
-                  <span className={css.chevron + (topCollapsed ? ' ' + css.chevronCollapsed : '')} />
-                  <span className={css.groupTitle}>{tt('groups.project')} · {byProject.size}</span>
-                </button>
-              </div>
-              {!topCollapsed ? [...byProject.entries()].map(([key, proj]) => {
-                const projKey = 'project:' + key
-                const projCollapsed = collapsedGroups.has(projKey)
-                const subdivided = hub.subdividedProjects.has(key)
-                return (
-                  <div key={projKey} className={css.projectNest}>
-                    <div className={css.groupHead}>
-                      <button type='button' className={css.disclosure} aria-expanded={!projCollapsed} onClick={() => { toggleGroupCollapse(projKey) }}>
-                        <span className={css.chevron + (projCollapsed ? ' ' + css.chevronCollapsed : '')} />
-                        <span className={css.groupTitle}>{proj.title} · {proj.skills.length}<GroupSummary members={proj.skills.map((s) => s.name)} uses={hub.uses} hubConfig={hub.hubConfig} /></span>
-                      </button>
-                      <span className={css.groupOps}>
-                        <button type='button' className={css.opBtn} onClick={(event) => { event.stopPropagation(); hub.toggleSubdivide(key) }}>{subdivided ? tt('groups.merge') : tt('groups.subdivide')}</button>
-                      </span>
-                    </div>
-                    {!projCollapsed ? (
-                      subdivided ? (
-                        <div className={css.projectNest}>
-                          {(['project-dsh', 'project-agents'] as const).map((source) => {
-                            const list = proj.skills.filter((skill) => skill.source === source)
-                            if (list.length === 0) return null
-                            const srcKey = projKey + ':' + source
-                            const srcCollapsed = collapsedGroups.has(srcKey)
-                            return (
-                              <div key={srcKey} className={css.projectNest}>
-                                <div className={css.groupHead}>
-                                  <button type='button' className={css.disclosure} aria-expanded={!srcCollapsed} onClick={() => { toggleGroupCollapse(srcKey) }}>
-                                    <span className={css.chevron + (srcCollapsed ? ' ' + css.chevronCollapsed : '')} />
-                                    <span className={css.groupTitle}>{tt(('badge.source.' + source) as 'badge.source.project-dsh' | 'badge.source.project-agents')} · {list.length}</span>
-                                  </button>
-                                </div>
-                                {!srcCollapsed ? list.map((skill) => <SkillRow key={skill.name} skill={skill} {...rowProps} />) : null}
-                              </div>
-                            )
-                          })}
-                        </div>
-                      ) : proj.skills.map((skill) => <SkillRow key={skill.name} skill={skill} {...rowProps} />)
-                    ) : null}
-                  </div>
-                )
-              }) : null}
-            </section>
+            <ProjectTree
+              key="project"
+              skills={projectSkillsAll}
+              collapsedGroups={collapsedGroups}
+              toggleGroupCollapse={toggleGroupCollapse}
+              subdividedProjects={hub.subdividedProjects}
+              toggleSubdivide={hub.toggleSubdivide}
+              rowProps={rowProps}
+              dragProps={drag('project')}
+            />
           )
         }
         // Collection 卡片（可拖，归属顶层排序）
@@ -144,69 +95,41 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
           const colName = topKey.slice(4)
           const collection = collections.find((c) => c.name === colName)
           if (collection === undefined) return null
-        const skills = filterBySource(sorted, sourceFilter, origins).filter((skill) => collection.skillNames.includes(skill.name))
-        const disabledMembers = (catalog?.disabled ?? []).filter((record) =>
-          collection.skillNames.includes(record.name)
-          && (normalized.length === 0 || record.name.toLocaleLowerCase().includes(normalized) || record.description.toLocaleLowerCase().includes(normalized))
-          && (sourceFilter === 'all' || (origins[record.name] ?? PRIVATE_SOURCE) === sourceFilter))
-        const collapsed = collapsedGroups.has('col:' + collection.name)
-        const view = groupSwitchView(collection.skillNames, viewNames)
-        const check = sourceCheck[collection.name]
-        const hasWritable = collection.skillNames.some((name) => actionNames.has(name))
-        return (
-          <section key={'col:' + collection.name} {...drag(topKey)}>
-            <div className={css.groupHead}>
-              <span className={css.dragHandle} aria-hidden title="拖拽调整顺序">⋮⋮</span>
-              <button type='button' className={css.disclosure} aria-expanded={!collapsed} onClick={() => { toggleGroupCollapse('col:' + collection.name) }}>
-                <span className={css.chevron + (collapsed ? ' ' + css.chevronCollapsed : '')} />
-                <span className={css.groupTitle}>
-                  <a className={css.sourceLink} href={'https://github.com/' + collection.name} target='_blank' rel='noreferrer' onClick={(event) => { event.stopPropagation() }}>{collection.name}</a>
-                  {' · ' + collection.skillNames.length}
-                  <GroupSummary members={collection.skillNames} uses={hub.uses} hubConfig={hub.hubConfig} />
-                </span>
-              </button>
-              <span className={css.groupOps}>
-                <SourceStatusBadge
-                  check={check}
-                  checking={checkingSource === collection.name}
-                  onCheck={() => { void checkSources(collection.name) }}
-                />
-                {check !== undefined && check.changed && check.updated.length > 0
-                  ? <button type='button' className={css.opBtn} disabled={syncingSource !== null} onClick={(event) => { event.stopPropagation(); requestSync(collection.name, check.updated) }}>
-                      {syncingSource === collection.name ? tt('source.syncing') : tt('source.sync')}
-                    </button>
-                  : null}
-                {check !== undefined && check.deleted.length > 0
-                  ? <button type='button' className={css.opBtn + ' ' + css.opDanger} onClick={(event) => { event.stopPropagation(); requestDelete(collection.name, check.deleted) }}>{tt('source.followDelete')}</button>
-                  : null}
-                <GroupSwitchButton
-                  state={view.state}
-                  label={collection.name}
-                  memberCount={collection.skillNames.length}
-                  batchBusy={batchBusy}
-                  hasWritable={hasWritable}
-                  onToggle={() => { toggleGroup('col:' + collection.name, collection.name, view.state) }}
-                />
-                {hub.editMode ? <button
-                  type='button'
-                  className={css.opBtn + ' ' + css.opDanger}
-                  title={tt('source.deleteGroupHint', { count: collection.skillNames.length })}
-                  onClick={(event) => { event.stopPropagation(); requestDeleteGroup(collection.name, collection.skillNames) }}
-                >
-                  {tt('source.deleteGroup')}
-                </button> : null}
-              </span>
-            </div>
-            {!collapsed ? (
-              <>
-                {skills.map((skill) => <SkillRow key={skill.name} skill={skill} {...rowProps} />)}
-                {disabledMembers.map((record) => (
-                  <DisabledRow key={record.name} record={record} busy={busyNames.has(record.name)} duplicate={duplicateNames.has(record.name)} onEnable={() => { void enableDisabled(record) }} onOpen={() => { void hub.openDetail(record.name) }} />
-                ))}
-              </>
-            ) : null}
-          </section>
-        )
+          const skills = filterBySource(sorted, sourceFilter, origins).filter((skill) => collection.skillNames.includes(skill.name))
+          const disabledMembers = (catalog?.disabled ?? []).filter((record) =>
+            collection.skillNames.includes(record.name)
+            && (normalized.length === 0 || record.name.toLocaleLowerCase().includes(normalized) || record.description.toLocaleLowerCase().includes(normalized))
+            && (sourceFilter === 'all' || (origins[record.name] ?? PRIVATE_SOURCE) === sourceFilter))
+          const collapsed = collapsedGroups.has('col:' + collection.name)
+          const view = groupSwitchView(collection.skillNames, viewNames)
+          const check = sourceCheck[collection.name]
+          const hasWritable = collection.skillNames.some((name) => actionNames.has(name))
+          return (
+            <CollectionCard
+              key={'col:' + collection.name}
+              collection={collection}
+              skills={skills}
+              disabledMembers={disabledMembers}
+              collapsed={collapsed}
+              view={view}
+              check={check}
+              hasWritable={hasWritable}
+              editMode={hub.editMode}
+              checkingSource={checkingSource}
+              syncingSource={syncingSource}
+              batchBusy={batchBusy}
+              rowProps={rowProps}
+              dragProps={drag(topKey)}
+              toggleGroupCollapse={toggleGroupCollapse}
+              checkSources={checkSources}
+              requestSync={requestSync}
+              requestDelete={requestDelete}
+              toggleGroup={toggleGroup}
+              requestDeleteGroup={requestDeleteGroup}
+              enableDisabled={enableDisabled}
+              openDetail={hub.openDetail}
+            />
+          )
         }
         // Personal 顶层卡片（可拖）
         if (topKey === 'uncategorized-source' && hasPersonal) {

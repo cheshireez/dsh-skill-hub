@@ -6,10 +6,11 @@
  * detail inspection, and the new-skill scaffold form.
  *
  * Thin shell: state and flows live in useSkillHub, the tab contents live in
- * SourcesView / ScenesView / MarketView, and the dialog family lives in
- * dialogs.tsx. This component owns only the shared chrome (header, banners,
- * filter bar, shared sections) and the view routing — and holds no hooks,
- * so the detail / tag-editor early returns are safe.
+ * SourcesView / ScenesView / MarketView, the dialog family lives in
+ * dialogs.tsx, and their wiring lives in PanelDialogs.tsx. This component
+ * owns only the shared chrome (header, banners, filter bar, shared sections)
+ * and the view routing — and holds no hooks, so the detail / tag-editor
+ * early returns are safe.
  */
 
 import { useState } from 'react'
@@ -24,7 +25,7 @@ import { TagEditorView } from './TagEditorView.tsx'
 import { SourcesView } from './SourcesView.tsx'
 import { ScenesView } from './ScenesView.tsx'
 import { MarketView } from './MarketView.tsx'
-import { BranchChoiceDialog, ConfirmDialog, ConflictDialog, MarketSyncDialog, VersionChoiceDialog } from './dialogs.tsx'
+import { PanelDialogs } from './PanelDialogs.tsx'
 import { useSkillHub } from './useSkillHub.ts'
 import css from './panel.module.css'
 
@@ -303,98 +304,37 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
         </>
       ) : null}
 
-      {conflictDialog !== null ? (
-        <ConflictDialog
-          dialog={conflictDialog}
-          tags={groupsState?.tags ?? []}
-          collections={groupsState?.collections ?? []}
-          onClose={() => { setConflictDialog(null) }}
-          onKeepOn={() => { void resolveConflict(false) }}
-          onCloseAll={() => { void resolveConflict(true) }}
-        />
-      ) : null}
-
-      {confirmDialog !== null ? (
-        <ConfirmDialog
-          title={confirmDialog.kind === 'sync' ? tt('source.syncConfirmTitle') : tt('source.deleteConfirmTitle')}
-          text={confirmDialog.kind === 'sync' ? tt('source.syncConfirmText') : tt('source.deleteConfirmText')}
-          items={confirmDialog.skills}
-          confirmLabel={confirmDialog.kind === 'sync' ? tt('source.sync') : tt('source.followDelete')}
-          danger={confirmDialog.kind === 'delete'}
-          onCancel={() => { setConfirmDialog(null) }}
-          onConfirm={() => { void runConfirmed() }}
-        />
-      ) : null}
-
-      {branchChoice !== null ? (
-        <BranchChoiceDialog
-          choice={branchChoice}
-          busy={branchBusy}
-          onSelect={(selected) => { setBranchChoice({ ...branchChoice, selected }) }}
-          onCancel={() => { setBranchChoice(null) }}
-          onConfirm={() => { void confirmBranchChoice() }}
-        />
-      ) : null}
-
-      {hub.versionDialog !== null ? (
-        <VersionChoiceDialog
-          choice={hub.versionDialog}
-          busy={hub.versionBusy}
-          onSelect={(selected) => { hub.setVersionDialog({ ...hub.versionDialog!, selected }) }}
-          onCustom={(custom) => { hub.setVersionDialog({ ...hub.versionDialog!, custom }) }}
-          onCancel={() => { hub.setVersionDialog(null) }}
-          onConfirm={() => { void hub.confirmVersionDialog() }}
-        />
-      ) : null}
-
-      {marketSyncDialog !== null ? (
-        <MarketSyncDialog
-          dialog={marketSyncDialog}
-          busy={syncBusy}
-          onToggle={(name, checked) => {
-            const next = new Set(marketSyncDialog.selected)
-            if (checked) next.add(name)
-            else next.delete(name)
-            setMarketSyncDialog({ ...marketSyncDialog, selected: next })
-          }}
-          onCancel={() => { setMarketSyncDialog(null) }}
-          onConfirm={() => { void confirmMarketSync() }}
-        />
-      ) : null}
-
-      {deleteSkillDialog !== null ? (
-        <ConfirmDialog
-          title={tt('delete.confirmTitle')}
-          text={tt('delete.confirmText', { name: deleteSkillDialog })}
-          confirmLabel={tt('delete.confirm')}
-          danger
-          onCancel={() => { setDeleteSkillDialog(null) }}
-          onConfirm={() => { void runDeleteSkill() }}
-        />
-      ) : null}
-
-      {deleteGroupDialog !== null ? (
-        <ConfirmDialog
-          title={tt('source.deleteGroupTitle')}
-          text={tt('source.deleteGroupText', { name: deleteGroupDialog.name, count: deleteGroupDialog.skillNames.length })}
-          items={deleteGroupDialog.skillNames}
-          confirmLabel={tt('source.deleteGroup')}
-          danger
-          onCancel={() => { setDeleteGroupDialog(null) }}
-          onConfirm={() => { void runDeleteGroup() }}
-        />
-      ) : null}
-
-      {confirmClearTrash ? (
-        <ConfirmDialog
-          title={tt('source.clearTrashConfirmTitle')}
-          text={tt('source.clearTrashConfirmText')}
-          confirmLabel={tt('source.clearTrashConfirm')}
-          danger
-          onCancel={() => { setConfirmClearTrash(false) }}
-          onConfirm={() => { void clearTrash() }}
-        />
-      ) : null}
+      <PanelDialogs
+        conflictDialog={conflictDialog}
+        tags={groupsState?.tags ?? []}
+        collections={groupsState?.collections ?? []}
+        setConflictDialog={setConflictDialog}
+        resolveConflict={resolveConflict}
+        confirmDialog={confirmDialog}
+        setConfirmDialog={setConfirmDialog}
+        runConfirmed={runConfirmed}
+        branchChoice={branchChoice}
+        branchBusy={branchBusy}
+        setBranchChoice={setBranchChoice}
+        confirmBranchChoice={confirmBranchChoice}
+        versionDialog={hub.versionDialog}
+        versionBusy={hub.versionBusy}
+        setVersionDialog={hub.setVersionDialog}
+        confirmVersionDialog={hub.confirmVersionDialog}
+        marketSyncDialog={marketSyncDialog}
+        syncBusy={syncBusy}
+        setMarketSyncDialog={setMarketSyncDialog}
+        confirmMarketSync={confirmMarketSync}
+        deleteSkillDialog={deleteSkillDialog}
+        setDeleteSkillDialog={setDeleteSkillDialog}
+        runDeleteSkill={runDeleteSkill}
+        deleteGroupDialog={deleteGroupDialog}
+        setDeleteGroupDialog={setDeleteGroupDialog}
+        runDeleteGroup={runDeleteGroup}
+        confirmClearTrash={confirmClearTrash}
+        setConfirmClearTrash={setConfirmClearTrash}
+        clearTrash={clearTrash}
+      />
     </div>
   )
 }
