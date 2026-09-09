@@ -495,6 +495,32 @@ describe('rolling stats window (configurable days)', () => {
     expect(checkpoint.frozenSessions['stale-entry']).toBeUndefined() // 已被懒清理
   })
 
+  it('applies the window filter to incrementally re-read sessions that aged out', async () => {
+    // 增量路径同样要过窗口：会话在窗口内时被读过，之后时间推进使其滑出窗口
+    // （水位 frozenBefore 仍是上一次对账的边界）；若不过滤，它会被多算到
+    // 下一次全量对账（最多 24h）。
+    const created = NOW - 6 * DAY
+    const query = fakeQuery([record('aged', created)], { aged: [invocationEvent('oldskill', 1)] }, [])
+    let clock = NOW
+    const checkpoint: SkillStatsCheckpoint = {
+      windowDays: 7,
+      frozenBefore: NOW - 7 * DAY,
+      frozenSessions: {},
+      // 相对推进后的时钟仍在 24h 内 → 两次都走增量路径。
+      lastFullReconcile: NOW + 3 * DAY - 1000,
+    }
+    const reader = createSkillStatsReader(query, 3_600_000, { now: () => clock, checkpoint, windowDays: () => 7 })
+    expect(await reader()).toEqual([])
+    await flush()
+    expect((await reader()).map((stat) => stat.name)).toEqual(['oldskill'])
+
+    // 3 天后同一会话滑出 7 天窗口；TTL 过期触发增量重扫。
+    clock += 3 * DAY
+    expect((await reader()).map((stat) => stat.name)).toEqual(['oldskill']) // 先回旧缓存
+    await flush()
+    expect((await reader()).map((stat) => stat.name)).toEqual([])
+  })
+
   it('keeps sessions without createdAt in the frozen bucket after the first read', async () => {
     // 无时间戳会话按时间永远冻不住：首轮全量读到调用就进缓存，
     // 增量扫描不再重读（issue #7：否则每轮都重读）。

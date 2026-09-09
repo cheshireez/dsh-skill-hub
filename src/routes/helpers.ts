@@ -377,8 +377,10 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
     }
   }))
   // UI metadata from agents/openai.yaml (codex SkillInterface) — best-effort, no error if missing.
+  // 按逻辑键（name[+workspace+source]）而非技能名缓存：两个工作区的同名项目
+  // 技能是不同的行，否则会互相串显示最后读到的那份 interface。
   const interfaceByName = new Map<string, SkillInterface>()
-  await Promise.all([...byName.values()].map(async ({ skill, workspace }) => {
+  await Promise.all([...byName.entries()].map(async ([logicalKey, { skill, workspace }]) => {
     const candidates: string[] = []
     if (isWritableSource(skill.source as WritableRoot)) {
       candidates.push(join(rootPath(skill.source as WritableRoot, home), skill.name))
@@ -391,7 +393,7 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
       try {
         const iface = await readSkillInterface(dir)
         if (iface !== undefined) {
-          interfaceByName.set(skill.name, iface)
+          interfaceByName.set(logicalKey, iface)
           return
         }
       } catch {
@@ -399,7 +401,7 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
       }
     }
   }))
-  const skills: CatalogSkill[] = [...byName.values()].map(({ skill, workspace, workspaceTitle }) => {
+  const skills: CatalogSkill[] = [...byName.entries()].map(([logicalKey, { skill, workspace, workspaceTitle }]) => {
     const row: CatalogSkill = {
       name: skill.name,
       description: skill.description,
@@ -418,7 +420,7 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
       row.addedAt = times.addedAt
       row.updatedAt = times.updatedAt
     }
-    const iface = interfaceByName.get(skill.name)
+    const iface = interfaceByName.get(logicalKey)
     if (iface !== undefined) applyInterface(row, iface)
     return row
   })

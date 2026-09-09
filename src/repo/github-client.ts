@@ -42,9 +42,6 @@ export function apiHeaders(): Record<string, string> {
 /** ETag cache for GitHub API JSON (mirrors codex lib.rs marker+fingerprint). In-memory only, saves 304 for daily checks. */
 const etagCache = new Map<string, { etag: string; json: unknown }>()
 const ETAG_MAX = 200
-function etagCacheGet(url: string): { etag: string; json: unknown } | undefined {
-  return etagCache.get(url)
-}
 function etagCacheSet(url: string, etag: string, json: unknown): void {
   if (etagCache.size >= ETAG_MAX) {
     const first = etagCache.keys().next().value as string | undefined
@@ -52,10 +49,6 @@ function etagCacheSet(url: string, etag: string, json: unknown): void {
   }
   etagCache.set(url, { etag, json })
 }
-export function clearEtagCache(): void {
-  etagCache.clear()
-}
-
 /**
  * Build a RepoFetchError; when the response shows an exhausted rate limit,
  * report the reset time instead of a bare HTTP status.
@@ -107,7 +100,7 @@ export async function fetchJson(url: string, fetchImpl: typeof fetch, context: s
  * the exact same content a later download would fetch.
  */
 export async function fetchJsonCached(url: string, fetchImpl: typeof fetch, context: string): Promise<{ json: unknown; response: Response }> {
-  const cached = etagCacheGet(url)
+  const cached = etagCache.get(url)
   const headers: Record<string, string> = { ...apiHeaders() }
   if (cached !== undefined) headers['if-none-match'] = cached.etag
   let response: Response

@@ -237,13 +237,13 @@ export function apply(ctx: Context, config?: Config): void {
   })()
 
   void (async () => {
-    const legacy = await store.getConfig()
-    if (Object.keys(legacy).length > 0 && Object.keys(saved()).length === 0) {
-      try {
+    try {
+      const legacy = await store.getConfig()
+      if (Object.keys(legacy).length > 0 && Object.keys(saved()).length === 0) {
         await settingsScope.update(legacy as Record<string, unknown>)
-      } catch (error) {
-        ctx.logger.warn('[dsh-skill-hub] sidecar config migration into the settings namespace failed', error)
       }
+    } catch (error) {
+      ctx.logger.warn('[dsh-skill-hub] sidecar config migration into the settings namespace failed', error)
     }
   })()
 
@@ -278,7 +278,7 @@ export function apply(ctx: Context, config?: Config): void {
       // 重启后无需重新解压全部历史日志；每次扫描完都落盘（含上次总数），所以
       // 重启后面板秒出旧数、后台重扫。扫描间隔与滚动窗口都从设置命名空间
       // 实时读取——卡片里改完即生效，无需重启。
-      const saved = await store.getSkillStatsState().catch(() => undefined)
+      const checkpoint = await store.getSkillStatsState().catch(() => undefined)
       if (generation !== statsGeneration) return
       const scanMinutes = (): number => {
         const value = current().statsScanMinutes
@@ -289,7 +289,7 @@ export function apply(ctx: Context, config?: Config): void {
         return typeof value === 'number' && value >= 0 ? Math.floor(value) : HUB_CONFIG_DEFAULTS.statsWindowDays
       }
       const reader = createSkillStatsReader(query, () => scanMinutes() * 60_000, {
-        checkpoint: saved,
+        checkpoint,
         windowDays,
         ...(cold === undefined ? {} : {
           persistence: cold,

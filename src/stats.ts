@@ -289,10 +289,13 @@ async function scan(query: SessionQueryLike, checkpoint: SkillStatsCheckpoint, n
       return undefined // unreadable sessions are skipped, never fatal
     }
   })
-  for (const counted of recentList) {
-    if (counted === undefined) continue
-    mergeInto(recent, counted)
-  }
+  // 窗口过滤在增量路径同样生效：unfrozen 只代表"水位之后"，不等于"窗口之内"
+  // （时间推进会把它挤出去），否则滑出窗口的会话会被多算到下一次全量对账。
+  unfrozen.forEach((record, index) => {
+    const counted = recentList[index]
+    if (counted === undefined) return
+    if (inWindow(record.header.createdAt, windowDays, nowMs)) mergeInto(recent, counted)
+  })
   const totals: Totals = {}
   for (const [id, entry] of Object.entries(checkpoint.frozenSessions)) {
     if (entry.createdAt > 0 && !inWindow(entry.createdAt, windowDays, nowMs)) {

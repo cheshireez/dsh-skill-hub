@@ -18,6 +18,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { SkillCandidate, SkillDefinition, SkillProvider, SkillProviderControl } from '@deepseek-ai/dsh-skill'
+import { errorText } from './error-text.ts'
 import { dshHome } from './store.ts'
 import { findProjectRoot, parseFrontmatter, rootPath, scanRoot } from './skillfs.ts'
 
@@ -49,6 +50,8 @@ export class SkillHubProvider implements SkillProvider {
   private readonly control: SkillProviderControl
   private readonly watchTimer: ReturnType<typeof setInterval>
   private rootStamp = ''
+  /** 上一次 watch 失败的错误文案（同一错误只记一次，避免 5 秒定时器刷屏）。 */
+  private lastWatchError = ''
 
   constructor(control: SkillProviderControl, home = dshHome()) {
     this.control = control
@@ -57,10 +60,26 @@ export class SkillHubProvider implements SkillProvider {
     // The hub invalidates explicitly after its own mutations (see routes),
     // and this cheap mtime poll catches external top-level changes (manual
     // adds/removes/renames of skill dirs) so the GUI stays live.
-    this.watchTimer = setInterval(() => { void this.checkRoots() }, 5000)
+    this.watchTimer = setInterval(() => { this.watch() }, 5000)
     this.watchTimer.unref?.()
     control.signal.addEventListener('abort', () => { clearInterval(this.watchTimer) }, { once: true })
-    void this.checkRoots()
+    this.watch()
+  }
+
+  /**
+   * checkRoots 的守卫包装：某个根不可读（EACCES/ENOTDIR）时不能抛成未处理
+   * 拒绝——构造时一次、之后每 5 秒一次。错误按文案去重，恢复后清零。
+   */
+  private watch(): void {
+    void this.checkRoots().then(
+      () => { this.lastWatchError = '' },
+      (error: unknown) => {
+        const text = errorText(error)
+        if (text === this.lastWatchError) return
+        this.lastWatchError = text
+        console.warn('[dsh-skill-hub] skill root watch failed:', text)
+      },
+    )
   }
 
   /**

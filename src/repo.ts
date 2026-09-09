@@ -25,10 +25,7 @@ import {
 } from './repo/github-client.ts'
 
 // 后向兼容：老 `from './repo.ts'` 写法继续可用，新代码可直引 github-client。
-export { RepoFetchError, clearEtagCache, fetchError, fetchJson, fetchJsonCached, githubAuthHeaders, isAbortError, setGithubToken } from './repo/github-client.ts'
-
-/** Preferred display order for known roots; unknown roots sort alphabetically after these. */
-export const REPO_ROOTS: readonly RepoRoot[] = ['skills', 'design-templates']
+export { RepoFetchError, fetchError, fetchJson, fetchJsonCached, githubAuthHeaders, isAbortError, setGithubToken } from './repo/github-client.ts'
 
 /** Top-level directory pattern for a skill root: visible, non-dot, safe chars. First char must be alphanum. */
 const ROOT_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
@@ -252,8 +249,6 @@ export async function downloadRepoSkill(
     await rename(tempDir, targetDir)
     renamed = true
     return { targetDir, skillPath: join(targetDir, 'SKILL.md') }
-  } catch (error) {
-    throw error
   } finally {
     if (!renamed) {
       // 尽力清理临时目录，失败只打日志，不再静默吞掉；finally 保证 abort/异常都能清理

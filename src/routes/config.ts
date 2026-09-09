@@ -111,6 +111,8 @@ export function configRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           deps.invalidate?.()
           writeJson(res, 200, { ok: true, path: rawPath } satisfies DiagnosticFixResponse)
         } catch (error) {
+          // skillfs 的 TypeError = 路径不在可写根内 / 文件不可自动修复：用户错误 → 400。
+          if (error instanceof TypeError) { writeError(res, 400, error); return }
           writeRouteError(res, error)
         }
       },

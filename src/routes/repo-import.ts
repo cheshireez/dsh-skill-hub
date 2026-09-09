@@ -130,8 +130,6 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         const now = Date.now()
         const job: ImportJob = {
           jobId,
-          repo,
-          ref: resolvedRef,
           total: selected.length,
           done: 0,
           totalBytes,

@@ -18,7 +18,7 @@ import {
   type ToggleResponse,
   type WritableRoot,
 } from '../protocol.ts'
-import { createSkill, disableSkill, enableSkill, parseFrontmatter, readSkillInterface, rootPath, trashSkill } from '../skillfs.ts'
+import { createSkill, disableSkill, enableSkill, parseFrontmatter, readSkillInterface, rootOfPath, rootPath, trashSkill } from '../skillfs.ts'
 import { errorText } from '../error-text.ts'
 import {
   applyInterface,
@@ -148,6 +148,12 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         if (!resolved.ok) {
           const disabled = await deps.store.getDisabled(name)
           if (disabled !== undefined) {
+            // sidecar 里的路径可能是外部写入/损坏的：移动前必须确认它落在
+            // 可写根内（正常路径由 disableSkill 保证，这里只拦异常数据）。
+            if (rootOfPath(disabled.path, homeOf(deps)) === undefined) {
+              writeError(res, 409, 'disabled skill path is outside the hub writable roots')
+              return
+            }
             // 禁用态：SKILL.md.disabled 或 *.md.disabled，直接将其所在技能整体移入回收站
             const isBundleDisabled = disabled.path.endsWith('SKILL.md.disabled')
             const sourceToTrash = isBundleDisabled ? dirname(disabled.path) : disabled.path

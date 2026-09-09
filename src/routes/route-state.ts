@@ -5,6 +5,7 @@
 
 import { rm, rename } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
+import { errorText } from '../error-text.ts'
 import type { SkillHubRouteDeps } from './helpers.ts'
 
 /** Minimum interval between network update checks per source (GitHub rate limits). */
@@ -40,8 +41,6 @@ export async function seedMarketStats(deps: SkillHubRouteDeps): Promise<void> {
 /** Async import job (B方案：jobId + 轮询，选项2后台继续) */
 export interface ImportJob {
   jobId: string
-  repo: string
-  ref: string
   total: number
   done: number
   current?: string
@@ -61,14 +60,17 @@ export const importJobs = new Map<string, ImportJob>()
 export const IMPORT_JOB_TTL_MS = 5 * 60_000
 export const IMPORT_JOB_MAX = 100
 export function gcImportJobs(): void {
-  if (importJobs.size > 500) importJobs.clear()
   const now = Date.now()
   for (const [id, job] of importJobs) {
     if (job.status !== 'running' && now - job.createdAt > IMPORT_JOB_TTL_MS) importJobs.delete(id)
   }
   if (importJobs.size > IMPORT_JOB_MAX) {
-    const sorted = [...importJobs.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)
-    for (let i = 0; i < sorted.length - IMPORT_JOB_MAX; i++) importJobs.delete(sorted[i][0])
+    // 只淘汰已结束的任务：删掉运行中的任务会让 /progress、/cancel 变成 404，
+    // 而下载仍在后台跑。
+    const finished = [...importJobs.entries()]
+      .filter(([, job]) => job.status !== 'running')
+      .sort((a, b) => a[1].createdAt - b[1].createdAt)
+    for (let i = 0; i < finished.length && importJobs.size > IMPORT_JOB_MAX; i++) importJobs.delete(finished[i][0])
   }
 }
 
@@ -82,7 +84,10 @@ export async function replaceSkillDir(targetDir: string, download: () => Promise
   try {
     await download()
   } catch (error) {
-    await rename(backup, targetDir).catch(() => {})
+    await rename(backup, targetDir).catch((rollbackError) => {
+      // 回滚失败会让技能只剩点前缀的备份目录（发现扫描会跳过它）：必须留痕。
+      console.warn('[dsh-skill-hub] restoring ' + targetDir + ' from ' + backup + ' failed:', errorText(rollbackError))
+    })
     throw error
   }
   await rm(backup, { recursive: true, force: true })
