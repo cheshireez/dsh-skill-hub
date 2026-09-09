@@ -24,7 +24,7 @@ dsh plugin --profile web add dsh-skill-hub
 # 重启 dsh web → 设置 → 技能 → 市场 → 扫描 → 导入
 ```
 
-要求 `Node ^22.19 || >=24` + dsh web（`0.1.2-alpha.5`，兼容后续 `0.1.x`）。
+要求 `Node ^22.19 || >=24` + dsh web（`0.1.5-alpha.1`，兼容后续 `0.1.x`）。
 
 ## 功能
 
