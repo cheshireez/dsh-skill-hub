@@ -109,4 +109,20 @@ describe('SkillHubProvider', () => {
     await rm(join(home, 'skills', 'ghost-skill'), { recursive: true, force: true })
     expect(await provider.get(candidate)).toBeUndefined()
   })
+
+  it('logs an unreadable root once instead of rejecting (no unhandled rejection)', async () => {
+    // 根目录不可读（EACCES/ENOTDIR）时 scanRoot 会抛错；watch() 必须吞掉并留痕，
+    // 否则构造时与每 5 秒的定时器都会产生未处理拒绝。
+    await rm(join(home, 'skills'), { recursive: true, force: true })
+    await writeFile(join(home, 'skills'), 'not a directory', 'utf8')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      makeProvider(home)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0][0])).toContain('skill root watch failed')
+    } finally {
+      warn.mockRestore()
+    }
+  })
 })

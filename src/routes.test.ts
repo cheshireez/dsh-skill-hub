@@ -210,6 +210,34 @@ describe('skill-hub routes', () => {
     expect(byName.get('shared-user')?.workspace).toBeUndefined()
   })
 
+  it('reads interface metadata per workspace for same-named project skills', async () => {
+    // 两个工作区各有同名项目技能 dup：interface 必须按（名字+工作区）各取各的，
+    // 否则两行会串显示最后读到的那份 agents/openai.yaml。
+    const wsA = join(dir, 'ws-a')
+    const wsB = join(dir, 'ws-b')
+    for (const [ws, label] of [[wsA, 'A'], [wsB, 'B']] as const) {
+      const skillDir = join(ws, '.dsh', 'skills', 'dup')
+      await mkdir(join(skillDir, 'agents'), { recursive: true })
+      await writeFile(join(skillDir, 'agents', 'openai.yaml'), 'interface:\n  display_name: ' + label + '\n', 'utf8')
+    }
+    await mkdir(join(home, 'storages'), { recursive: true })
+    await writeFile(join(home, 'storages', 'workspace.json'), JSON.stringify({
+      tables: { workspaces: { a: { title: 'Alpha', path: wsA }, b: { title: 'Beta', path: wsB } } },
+    }), 'utf8')
+    skills.snapshot = async (options?: { cwd?: string }) => ({
+      skills: options?.cwd === wsA || options?.cwd === wsB
+        ? [summary({ name: 'dup', source: 'project-dsh', provider: 'skill-hub' })]
+        : [],
+      complete: true,
+    })
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.catalog).handler(fakeReq('GET', SKILL_HUB_API.catalog), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as CatalogResponse
+    const rows = body.skills.filter((skill) => skill.name === 'dup')
+    expect(rows.map((row) => [row.workspace, row.displayName])).toEqual([[wsA, 'A'], [wsB, 'B']])
+  })
+
   it('flags duplicate names only across distinct source/provider identities', async () => {
     // 两个工作区快照返回同一个用户级技能：同一来源+提供者，不算重名。
     await mkdir(join(home, 'storages'), { recursive: true })
@@ -408,6 +436,18 @@ describe('skill-hub routes', () => {
     const empty = new FakeResponse()
     await routeFor(SKILL_HUB_API.skillDelete).handler(fakeReq('POST', SKILL_HUB_API.skillDelete, {}), empty as never)
     expect(empty.status).toBe(400)
+  })
+
+  it('refuses to trash a hub-disabled record whose sidecar path is outside the writable roots', async () => {
+    // 防御损坏的 sidecar：禁用态删除走 disabled.path，必须先做包含性校验，
+    // 否则一条伪造路径就能把任意目录挪进 .trash。
+    skills.get = async () => undefined
+    await store.addDisabled({ name: 'evil', description: '', path: '/etc/passwd', root: 'user-dsh', disabledAt: Date.now() })
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.skillDelete).handler(fakeReq('POST', SKILL_HUB_API.skillDelete, { name: 'evil' }), res as never)
+    expect(res.status).toBe(409)
+    expect(res.json()).toEqual({ error: 'disabled skill path is outside the hub writable roots' })
+    expect(await store.listTrash()).toEqual([])
   })
 
   it('creates a skill scaffold and rejects bad names', async () => {

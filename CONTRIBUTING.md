@@ -9,20 +9,48 @@ Thanks for considering a contribution to **dsh-skill-hub**. This project is a
 
 Please keep both halves on official APIs — no dsh source patches.
 
+## Layout
+
+```
+src/index.ts            cordis plugin entry (config schema, settings namespace, stats wiring)
+src/routes.ts           route-family aggregator (wraps every domain handler in the shared fences)
+src/routes/             one file per domain + shared layers:
+                        http.ts (fences/JSON/error mapping), deps.ts (route deps + writable-skill
+                        resolution), catalog-data.ts (catalog/detail assembly), collection.ts
+                        (origin collections), route-state.ts (throttles + import-job table),
+                        helpers.ts (barrel)
+src/store.ts            sidecar store barrel (paths / migrate / store)
+src/skillfs.ts          writable-root file ops + barrel (skillfs/paths.ts, frontmatter.ts, scan.ts)
+src/repo.ts             GitHub repo helpers barrel (repo/types.ts, discovery.ts, api.ts, install.ts,
+                        github-client.ts = shared request layer)
+src/stats.ts            session-log statistics reader + barrel (stats/persistence.ts, stats/scan.ts)
+src/provider.ts         the hub's own ctx.skills provider (global layer)
+src/protocol.ts         wire contract barrel (protocol/<domain>.ts)
+src/concurrency.ts      bounded-concurrency map
+src/error-text.ts       unknown → one-line error text
+src/client/index.tsx    browser-half entry (slots + locale registration)
+src/client/api.ts       the panel's only data access path
+src/client/panel/       panel shell, views, dialogs, hooks/ (one hook per domain + aggregator)
+src/client/locales/     dictionaries by view (common/skills/market/sources/detail/settings)
+```
+
 ## Development setup
 
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (152 tests across 8 suites)
+npm test            # vitest (217 tests across 13 suites)
 npm run build       # tsc declarations + tsdown bundles (lib/index.js + lib/client.js)
 ```
 
 ## Before opening a pull request
 
 1. **Typecheck** — `npm run typecheck` must pass.
-2. **Tests** — `npm test` must pass; add/adjust tests for any behavior change. The suites live in
-   `src/*.test.ts` and mirror the real route/store/filesystem/provider behavior.
+2. **Tests** — `npm test` must pass; add/adjust tests for any behavior change. Suites sit next to the
+   code they cover (`src/*.test.ts`, `src/routes/*.test.ts`) and mirror the real
+   route/store/filesystem/provider behavior. The browser half has no component-test harness
+   (vitest runs in the node environment); keep browser changes mechanical and verify them in the
+   live GUI.
 3. **Build** — `npm run build` must produce `lib/index.js` and `lib/client.js`.
 4. **Keep the diff focused** — one logical change per PR, with a clear title and description.
 5. **Documentation** — update `README.md` (including the embedded Chinese collapsible section) when
