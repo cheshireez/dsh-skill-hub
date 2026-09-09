@@ -16,6 +16,7 @@ import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/p
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { dump, load } from 'js-yaml'
+import { errorText } from './error-text.ts'
 import { isSkillName } from '@deepseek-ai/dsh-skill'
 import { dshHome } from './store.ts'
 import type { DiagnosticEntry, TrashEntry, WritableRoot } from './protocol.ts'
@@ -181,10 +182,10 @@ export function parseFrontmatter(text: string): { value: FrontmatterValue } | { 
         data = load(repaired)
         rawFrontmatter = repaired
       } catch {
-        return { error: 'invalid YAML frontmatter: ' + (error instanceof Error ? error.message : String(error)) }
+        return { error: 'invalid YAML frontmatter: ' + (errorText(error)) }
       }
     } else {
-      return { error: 'invalid YAML frontmatter: ' + (error instanceof Error ? error.message : String(error)) }
+      return { error: 'invalid YAML frontmatter: ' + (errorText(error)) }
     }
   }
   if (typeof data !== 'object' || data === null || Array.isArray(data)) {
@@ -206,7 +207,7 @@ export function parseFrontmatter(text: string): { value: FrontmatterValue } | { 
     const userInvocable = frontmatterBoolean(record, 'user-invocable')
     invocation = { modelInvocable: disableModel !== true, userInvocable: userInvocable !== false }
   } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) }
+    return { error: errorText(error) }
   }
   return { value: { name, description, ...(whenToUse !== undefined ? { whenToUse } : {}), invocation, content: (match[2] ?? '').trim() } }
 }
@@ -392,8 +393,18 @@ export function listSkillEntries(root: WritableRoot, home = dshHome()): Promise<
   return scanRoot(rootPath(root, home))
 }
 
+/** UI metadata from `agents/openai.yaml` beside a directory skill (mirrors codex SkillInterface). */
+export interface SkillInterface {
+  displayName?: string
+  shortDescription?: string
+  brandColor?: string
+  iconSmall?: string
+  iconLarge?: string
+  defaultPrompt?: string
+}
+
 /** Read UI metadata from `agents/openai.yaml` beside a directory skill (mirrors codex SkillInterface). */
-export async function readSkillInterface(directory: string): Promise<{ displayName?: string; shortDescription?: string; brandColor?: string; iconSmall?: string; iconLarge?: string; defaultPrompt?: string } | undefined> {
+export async function readSkillInterface(directory: string): Promise<SkillInterface | undefined> {
   const yamlPath = join(directory, 'agents', 'openai.yaml')
   let text: string
   try {
@@ -471,7 +482,7 @@ export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Pro
       text = await readFile(entry.path, 'utf8')
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        diagnostics.push({ path: entry.path, root, reason: 'unreadable: ' + (error instanceof Error ? error.message : String(error)) })
+        diagnostics.push({ path: entry.path, root, reason: 'unreadable: ' + (errorText(error)) })
       }
       continue
     }

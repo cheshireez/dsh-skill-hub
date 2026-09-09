@@ -20,7 +20,8 @@ import {
   type SkillDetail,
   type WritableRoot,
 } from '../protocol.ts'
-import { rootOfPath, rootPath, readSkillInterface, scanDiagnostics } from '../skillfs.ts'
+import { rootOfPath, rootPath, readSkillInterface, scanDiagnostics, type SkillInterface } from '../skillfs.ts'
+import { errorText } from '../error-text.ts'
 import { CURRENT_VERSION } from '../update.ts'
 import { dshHome, StoreError, type SkillHubStore } from '../store.ts'
 import { RepoFetchError } from '../repo.ts'
@@ -60,7 +61,7 @@ export function writeJson(res: ServerResponse, status: number, body: unknown): v
 
 /** One JSON error response. */
 export function writeError(res: ServerResponse, status: number, error: unknown): void {
-  const body = { error: error instanceof Error ? error.message : String(error) }
+  const body = { error: errorText(error) }
   writeJson(res, status, body)
 }
 
@@ -102,6 +103,26 @@ export async function readJsonBody(req: IncomingMessage): Promise<Record<string,
 export function queryParam(url: URL, name: string): string | undefined {
   const value = url.searchParams.get(name)
   return value === null ? undefined : value
+}
+
+/**
+ * 读取请求体里的字符串字段（缺失或类型不符返回 ''）。替代各 handler 里
+ * `body as unknown as XRequest` 的断言 + 手写 typeof 收窄。
+ */
+export function readString(body: Record<string, unknown>, key: string): string {
+  const value = body[key]
+  return typeof value === 'string' ? value : ''
+}
+
+/**
+ * 读取请求体里的字符串数组：非数组返回 []，丢弃非字符串项；默认同时丢弃
+ * 空串（keepEmpty=true 时保留空串，由调用方决定语义）。
+ */
+export function readStrings(body: Record<string, unknown>, key: string, options?: { keepEmpty?: boolean }): string[] {
+  const value = body[key]
+  if (!Array.isArray(value)) return []
+  const keepEmpty = options?.keepEmpty === true
+  return value.filter((item): item is string => typeof item === 'string' && (keepEmpty || item !== ''))
 }
 
 /** Async existence check (import/sync use it on the user root). */
@@ -203,9 +224,11 @@ export async function resolveWritableSkill(deps: SkillHubRouteDeps, name: string
   return { ok: true, skill, path: skill.path, root }
 }
 
-/** 系统集合组 + 用户 tag + origin 映射（groups 路由的数据源）。 */
-export async function buildGroups(deps: SkillHubRouteDeps): Promise<GroupsResponse> {
-  const [tags, origins, collectionOrder, sourceGroupOrder] = await Promise.all([deps.store.listTags(), deps.store.listOrigins(), deps.store.getCollectionOrder(), deps.store.getSourceGroupOrder()])
+/**
+ * 由 origin 映射（skillName → 仓库）+ 集合顺序构建集合组。
+ * catalog/groups 与 sources 路由共用这一份排序语义。
+ */
+export function buildCollections(origins: Readonly<Record<string, string>>, collectionOrder: readonly string[]): CollectionGroup[] {
   const byCollection = new Map<string, string[]>()
   for (const [skillName, origin] of Object.entries(origins)) {
     const list = byCollection.get(origin)
@@ -213,7 +236,7 @@ export async function buildGroups(deps: SkillHubRouteDeps): Promise<GroupsRespon
     else list.push(skillName)
   }
   const orderIndex = new Map(collectionOrder.map((name, i) => [name, i] as const))
-  const collections: CollectionGroup[] = [...byCollection.entries()]
+  return [...byCollection.entries()]
     .map(([name, skillNames]) => ({ name, skillNames: [...skillNames].sort((a, b) => a.localeCompare(b)) }))
     .sort((a, b) => {
       const ai = orderIndex.has(a.name) ? orderIndex.get(a.name)! : Infinity
@@ -221,6 +244,12 @@ export async function buildGroups(deps: SkillHubRouteDeps): Promise<GroupsRespon
       if (ai !== bi) return ai - bi
       return a.name.localeCompare(b.name)
     })
+}
+
+/** 系统集合组 + 用户 tag + origin 映射（groups 路由的数据源）。 */
+export async function buildGroups(deps: SkillHubRouteDeps): Promise<GroupsResponse> {
+  const [tags, origins, collectionOrder, sourceGroupOrder] = await Promise.all([deps.store.listTags(), deps.store.listOrigins(), deps.store.getCollectionOrder(), deps.store.getSourceGroupOrder()])
+  const collections = buildCollections(origins, collectionOrder)
   return { ok: true, tags, collections, origins, ...(sourceGroupOrder.length > 0 ? { sourceGroupOrder } : {}), ...(collectionOrder.length > 0 ? { collectionOrder } : {}) }
 }
 
@@ -348,7 +377,7 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
     }
   }))
   // UI metadata from agents/openai.yaml (codex SkillInterface) — best-effort, no error if missing.
-  const interfaceByName = new Map<string, { displayName?: string; shortDescription?: string; brandColor?: string; iconSmall?: string; iconLarge?: string; defaultPrompt?: string }>()
+  const interfaceByName = new Map<string, SkillInterface>()
   await Promise.all([...byName.values()].map(async ({ skill, workspace }) => {
     const candidates: string[] = []
     if (isWritableSource(skill.source as WritableRoot)) {
@@ -390,14 +419,7 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
       row.updatedAt = times.updatedAt
     }
     const iface = interfaceByName.get(skill.name)
-    if (iface !== undefined) {
-      if (iface.displayName !== undefined) row.displayName = iface.displayName
-      if (iface.shortDescription !== undefined) row.shortDescription = iface.shortDescription
-      if (iface.brandColor !== undefined) row.brandColor = iface.brandColor
-      if (iface.iconSmall !== undefined) row.iconSmall = iface.iconSmall
-      if (iface.iconLarge !== undefined) row.iconLarge = iface.iconLarge
-      if (iface.defaultPrompt !== undefined) row.defaultPrompt = iface.defaultPrompt
-    }
+    if (iface !== undefined) applyInterface(row, iface)
     return row
   })
   const diagnostics = [
@@ -415,9 +437,18 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
   }
 }
 
+/** agents/openai.yaml 的 interface 元数据 → 目录行/详情行（catalog 与详情共用）。 */
+export function applyInterface<T extends SkillInterface>(row: T, iface: SkillInterface): void {
+  if (iface.displayName !== undefined) row.displayName = iface.displayName
+  if (iface.shortDescription !== undefined) row.shortDescription = iface.shortDescription
+  if (iface.brandColor !== undefined) row.brandColor = iface.brandColor
+  if (iface.iconSmall !== undefined) row.iconSmall = iface.iconSmall
+  if (iface.iconLarge !== undefined) row.iconLarge = iface.iconLarge
+  if (iface.defaultPrompt !== undefined) row.defaultPrompt = iface.defaultPrompt
+}
+
 /** Map a loaded definition onto the wire shape. */
-export function toDetail(skill: SkillDefinition): SkillDetail {
-  return {
+export function toDetail(skill: SkillDefinition): SkillDetail {  return {
     name: skill.name,
     description: skill.description,
     ...(skill.whenToUse !== undefined ? { whenToUse: skill.whenToUse } : {}),

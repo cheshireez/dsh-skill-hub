@@ -7,8 +7,6 @@
 import {
   SKILL_HUB_API,
   type MarketCheckResponse,
-  type MarketSourceRefRequest,
-  type MarketSourceRequest,
   type MarketSourceResponse,
   type MarketSourcesResponse,
   type MarketSourceVersionsResponse,
@@ -24,8 +22,10 @@ import {
   normalizeRepoInput,
   repoSlug,
 } from '../repo.ts'
+import { errorText } from '../error-text.ts'
 import {
   queryParam,
+  readString,
   writeError,
   writeJson,
   type RouteSpec,
@@ -58,13 +58,12 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as MarketSourceRequest
-        const input = typeof request.repo === 'string' ? request.repo.trim() : ''
+        const input = readString(body, 'repo').trim()
         const parsed = normalizeRepoInput(input)
         if (parsed === null) { writeError(res, 400, 'repo must be owner/repo or a github.com URL'); return }
         // An explicit @ref pins the source immediately (e.g. repo@v1.2.3);
         // otherwise the first scan resolves latest-release / branch choice.
-        const ref = parsed.ref !== undefined ? parsed.ref : undefined
+        const ref = parsed.ref
         writeJson(res, 200, { ok: true, repos: await deps.store.addMarketSource(repoSlug(parsed), ref) } satisfies MarketSourceResponse)
       },
     },
@@ -73,8 +72,7 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as MarketSourceRequest
-        const input = typeof request.repo === 'string' ? request.repo.trim() : ''
+        const input = readString(body, 'repo').trim()
         const parsed = normalizeRepoInput(input)
         if (parsed === null) { writeError(res, 400, 'repo must be owner/repo or a github.com URL'); return }
         writeJson(res, 200, { ok: true, repos: await deps.store.removeMarketSource(repoSlug(parsed)) } satisfies MarketSourceResponse)
@@ -88,9 +86,8 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as MarketSourceRefRequest
-        const parsed = normalizeRepoInput(typeof request.repo === 'string' ? request.repo : '')
-        const ref = typeof request.ref === 'string' ? request.ref.trim() : ''
+        const parsed = normalizeRepoInput(readString(body, 'repo'))
+        const ref = readString(body, 'ref').trim()
         if (parsed === null) { writeError(res, 400, 'repo must be owner/repo or a github.com URL'); return }
         if (ref === '') { writeError(res, 400, 'ref is required'); return }
         const record = await deps.store.setMarketSourceRef(repoSlug(parsed), ref)
@@ -153,7 +150,7 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             const newRelease = latestTag !== undefined && latestTag !== source.ref
             results.push({ ...base, updateAvailable: commitMoved || newRelease, commitSha: latest.commitSha, ...(newRelease ? { latestTag } : {}) })
           } catch (error) {
-            results.push({ ...base, updateAvailable: false, commitSha: source.commitSha ?? '', error: error instanceof Error ? error.message : String(error) })
+            results.push({ ...base, updateAvailable: false, commitSha: source.commitSha ?? '', error: errorText(error) })
           }
         }
         writeJson(res, 200, { ok: true, results } satisfies MarketCheckResponse)
@@ -197,7 +194,7 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             if (cached !== undefined) {
               results.push({ repo: source.repo, stars: cached.stars, downloads: cached.downloads, stale: true })
             } else {
-              results.push({ repo: source.repo, stars: 0, downloads: 0, error: error instanceof Error ? error.message : String(error) })
+              results.push({ repo: source.repo, stars: 0, downloads: 0, error: errorText(error) })
             }
           }
         }
@@ -222,8 +219,7 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as MarketSourceRefRequest
-        const parsed = normalizeRepoInput(typeof request.repo === 'string' ? request.repo : '')
+        const parsed = normalizeRepoInput(readString(body, 'repo'))
         if (parsed === null) { writeError(res, 400, 'repo must be owner/repo or a github.com URL'); return }
         const repo = repoSlug(parsed)
         const source = await deps.store.getMarketSource(repo)

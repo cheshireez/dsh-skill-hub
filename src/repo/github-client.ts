@@ -1,3 +1,5 @@
+import { errorText } from '../error-text.ts'
+
 /**
  * GitHub API 统一请求层：token 管理、鉴权头、ETag 缓存、错误映射、
  * 带缓存的 JSON GET。从 repo.ts 抽出，原 6 处重复的 try/catch +
@@ -88,7 +90,7 @@ export async function fetchJson(url: string, fetchImpl: typeof fetch, context: s
     response = await fetchImpl(url, { headers })
   } catch (error) {
     if (isAbortError(error)) throw error
-    throw new RepoFetchError(context + ': ' + (error instanceof Error ? error.message : String(error)))
+    throw new RepoFetchError(context + ': ' + (errorText(error)))
   }
   if (!response.ok) throw fetchError(context, response)
   try {
@@ -112,7 +114,7 @@ export async function fetchJsonCached(url: string, fetchImpl: typeof fetch, cont
   try {
     response = await fetchImpl(url, { headers })
   } catch (error) {
-    throw new RepoFetchError(context + ': ' + (error instanceof Error ? error.message : String(error)))
+    throw new RepoFetchError(context + ': ' + (errorText(error)))
   }
   if (response.status === 304 && cached !== undefined) {
     // Return cached JSON with a synthetic 200-like response for error mapping.

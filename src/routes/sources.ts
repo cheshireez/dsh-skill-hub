@@ -9,15 +9,10 @@ import { join } from 'node:path'
 import { isSkillName } from '@deepseek-ai/dsh-skill'
 import {
   SKILL_HUB_API,
-  type CollectionGroup,
-  type SourceCheckRequest,
   type SourceCheckResponse,
   type SourceCheckResult,
-  type SourceDeleteRequest,
   type SourceDeleteResponse,
-  type SourceRestoreRequest,
   type SourceRestoreResponse,
-  type SourceSyncRequest,
   type SourceSyncResponse,
   type SourcesResponse,
   type SourceTrashClearResponse,
@@ -35,9 +30,13 @@ import {
   skillManifest,
 } from '../repo.ts'
 import { clearTrash, restoreSkill, rootOfPath, rootPath, trashSkill } from '../skillfs.ts'
+import { errorText } from '../error-text.ts'
 import {
+  buildCollections,
   homeOf,
   pathExists,
+  readString,
+  readStrings,
   writeError,
   writeJson,
   type RouteSpec,
@@ -55,22 +54,7 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['GET'],
       handler: async ({ res }) => {
         const [sources, origins, trash, collectionOrder] = await Promise.all([deps.store.listSources(), deps.store.listOrigins(), deps.store.listTrash(), deps.store.getCollectionOrder()])
-        const byCollection = new Map<string, string[]>()
-        for (const [skillName, origin] of Object.entries(origins)) {
-          const list = byCollection.get(origin)
-          if (list === undefined) byCollection.set(origin, [skillName])
-          else list.push(skillName)
-        }
-        const orderIndex = new Map(collectionOrder.map((name, i) => [name, i] as const))
-        const collections: CollectionGroup[] = [...byCollection.entries()]
-          .map(([name, skillNames]) => ({ name, skillNames: [...skillNames].sort((a, b) => a.localeCompare(b)) }))
-          .sort((a, b) => {
-            const ai = orderIndex.has(a.name) ? orderIndex.get(a.name)! : Infinity
-            const bi = orderIndex.has(b.name) ? orderIndex.get(b.name)! : Infinity
-            if (ai !== bi) return ai - bi
-            return a.name.localeCompare(b.name)
-          })
-        writeJson(res, 200, { ok: true, sources, origins, collections, trash } satisfies SourcesResponse)
+        writeJson(res, 200, { ok: true, sources, origins, collections: buildCollections(origins, collectionOrder), trash } satisfies SourcesResponse)
       },
     },
     // -------------------------------------------------------- sources/check
@@ -81,12 +65,12 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as SourceCheckRequest
+        const rawRepo = readString(body, 'repo')
         let only: string | undefined
-        if (typeof request.repo === 'string' && request.repo !== '') {
+        if (rawRepo !== '') {
           // Normalize URLs/slugs the same way every other route does, so a
           // check for "https://github.com/a/b" finds the "a/b" record.
-          const parsedOnly = normalizeRepoInput(request.repo)
+          const parsedOnly = normalizeRepoInput(rawRepo)
           only = parsedOnly !== null ? repoSlug(parsedOnly) : undefined
         }
         const source = only !== undefined ? await deps.store.getSource(only) : undefined
@@ -121,7 +105,7 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             const diff = diffRemoteSkills(tree, item)
             results.push({ ...base, changed: true, commitSha: latest.commitSha, updated: diff.updated, deleted: diff.deleted })
           } catch (error) {
-            results.push({ ...base, changed: false, updated: [], deleted: [], error: error instanceof Error ? error.message : String(error) })
+            results.push({ ...base, changed: false, updated: [], deleted: [], error: errorText(error) })
           }
         }
         writeJson(res, 200, { ok: true, results } satisfies SourceCheckResponse)
@@ -134,10 +118,10 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as SourceSyncRequest
-        const repo = typeof request.repo === 'string' ? request.repo.trim() : ''
+        const repo = readString(body, 'repo').trim()
         if (repo === '') { writeError(res, 400, 'repo is required'); return }
-        const selected = Array.isArray(request.skills) ? request.skills.filter((n): n is string => typeof n === 'string' && n !== '') : undefined
+        // 未传 skills（不是数组）表示"全部"，空数组表示"一个都不选"。
+        const selected = Array.isArray(body.skills) ? readStrings(body, 'skills') : undefined
         const source = await deps.store.getSource(repo)
         if (source === undefined) { writeError(res, 404, 'source not found: ' + repo); return }
         const targets = selected !== undefined ? selected : source.skills
@@ -182,7 +166,7 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             await deps.store.mergeSourceManifest(repo, skillManifest(tree, entry.dir), entry.dir)
             synced.push(name)
           } catch (error) {
-            failed.push({ name, error: error instanceof Error ? error.message : String(error) })
+            failed.push({ name, error: errorText(error) })
           }
         }
         // Only advance the commit snapshot when every skill landed: a failed
@@ -202,9 +186,8 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as SourceDeleteRequest
-        const repo = typeof request.repo === 'string' ? request.repo.trim() : ''
-        const skills = Array.isArray(request.skills) ? request.skills.filter((n): n is string => typeof n === 'string' && n !== '') : []
+        const repo = readString(body, 'repo').trim()
+        const skills = readStrings(body, 'skills')
         if (repo === '') { writeError(res, 400, 'repo is required'); return }
         if (skills.length === 0) { writeError(res, 400, 'skills must be a non-empty array'); return }
         const source = await deps.store.getSource(repo)
@@ -247,7 +230,7 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             await deps.store.removeSkillFromTags(name)
             trashed.push(name)
           } catch (error) {
-            failed.push({ name, error: error instanceof Error ? error.message : String(error) })
+            failed.push({ name, error: errorText(error) })
           }
         }
         if (trashed.length > 0) {
@@ -264,8 +247,7 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as SourceRestoreRequest
-        const name = typeof request.name === 'string' ? request.name : ''
+        const name = readString(body, 'name')
         if (name === '') { writeError(res, 400, 'name is required'); return }
         const entry = await deps.store.getTrash(name)
         if (entry === undefined) { writeError(res, 404, 'trash entry not found: ' + name); return }
@@ -306,7 +288,7 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             await deps.store.removeSkillFromTags(entry.name)
             deleted.push(entry.name)
           } catch (error) {
-            failed.push({ name: entry.name, error: error instanceof Error ? error.message : String(error) })
+            failed.push({ name: entry.name, error: errorText(error) })
           }
         }
         for (const name of deleted) await deps.store.removeTrash(name)

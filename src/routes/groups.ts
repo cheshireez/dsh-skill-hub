@@ -5,24 +5,21 @@
 
 import {
   SKILL_HUB_API,
-  type CollectionReorderRequest,
   type CollectionReorderResponse,
-  type SourceGroupReorderRequest,
   type SourceGroupReorderResponse,
-  type TagDeleteRequest,
   type TagDeleteResponse,
-  type TagMembersRequest,
   type TagMembersResponse,
-  type TagReorderRequest,
   type TagReorderResponse,
   type TagSaveResponse,
 } from '../protocol.ts'
-import { StoreError } from '../store.ts'
 import {
   buildGroups,
   knownSkillNames,
+  readString,
+  readStrings,
   writeError,
   writeJson,
+  writeRouteError,
   type RouteSpec,
   type SkillHubRouteDeps,
 } from './helpers.ts'
@@ -46,10 +43,10 @@ export function groupRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const name = typeof body.name === 'string' ? body.name.trim() : ''
+        const name = readString(body, 'name').trim()
         if (name === '') { writeError(res, 400, 'tag name is required'); return }
-        const id = typeof body.id === 'string' && body.id !== '' ? body.id : undefined
-        await deps.store.saveTag({ id, name })
+        const rawId = readString(body, 'id')
+        await deps.store.saveTag({ ...(rawId !== '' ? { id: rawId } : {}), name })
         writeJson(res, 200, { ok: true, tags: await deps.store.listTags() } satisfies TagSaveResponse)
       },
     },
@@ -59,7 +56,7 @@ export function groupRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const id = typeof (body as unknown as TagDeleteRequest).id === 'string' ? (body as unknown as TagDeleteRequest).id : ''
+        const id = readString(body, 'id')
         if (id === '') { writeError(res, 400, 'tag id is required'); return }
         const tag = await deps.store.getTag(id)
         if (tag?.default === true) { writeError(res, 409, 'the default scene cannot be deleted'); return }
@@ -74,10 +71,10 @@ export function groupRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as TagMembersRequest
-        const id = typeof request.id === 'string' ? request.id : ''
+        const id = readString(body, 'id')
         if (id === '') { writeError(res, 400, 'tag id is required'); return }
-        const names = Array.isArray(request.skillNames) ? request.skillNames.filter((n): n is string => typeof n === 'string') : []
+        // 空串保留：store 侧统一去重并丢弃空白项（语义与原实现一致）。
+        const names = readStrings(body, 'skillNames', { keepEmpty: true })
         const known = await knownSkillNames(deps)
         const saved = await deps.store.setTagMembers(id, names.filter((n) => known.has(n)))
         if (saved === undefined) { writeError(res, 404, 'tag not found: ' + id); return }
@@ -91,14 +88,13 @@ export function groupRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as TagReorderRequest
-        const orderedIds = Array.isArray(request.orderedIds) ? request.orderedIds.filter((id): id is string => typeof id === 'string' && id !== '') : []
+        const orderedIds = readStrings(body, 'orderedIds')
         try {
           const tags = await deps.store.reorderTags(orderedIds)
           writeJson(res, 200, { ok: true, tags } satisfies TagReorderResponse)
         } catch (error) {
-          if (error instanceof StoreError) { writeError(res, error.kind === 'validation' ? 400 : error.kind === 'not-found' ? 404 : 409, error.message); return }
-          throw error
+          // StoreError 的业务错误码由统一映射处理（validation→400 / not-found→404 / conflict→409）。
+          writeRouteError(res, error)
         }
       },
     },
@@ -109,8 +105,7 @@ export function groupRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as CollectionReorderRequest
-        const orderedNames = Array.isArray(request.orderedNames) ? request.orderedNames.filter((n): n is string => typeof n === 'string' && n !== '') : []
+        const orderedNames = readStrings(body, 'orderedNames')
         const order = await deps.store.reorderCollections(orderedNames)
         const groups = await buildGroups(deps)
         writeJson(res, 200, { ok: true, collections: groups.collections, order } satisfies CollectionReorderResponse)
@@ -123,8 +118,7 @@ export function groupRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as SourceGroupReorderRequest
-        const orderedKeys = Array.isArray(request.orderedKeys) ? request.orderedKeys.filter((k): k is string => typeof k === 'string' && k !== '') : []
+        const orderedKeys = readStrings(body, 'orderedKeys')
         const order = await deps.store.reorderSourceGroups(orderedKeys)
         writeJson(res, 200, { ok: true, order } satisfies SourceGroupReorderResponse)
       },

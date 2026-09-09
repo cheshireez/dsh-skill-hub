@@ -9,10 +9,8 @@ import { randomUUID } from 'node:crypto'
 import {
   SKILL_HUB_API,
   type RepoDiscoverResponse,
-  type RepoImportCancelRequest,
   type RepoImportCancelResponse,
   type RepoImportProgressResponse,
-  type RepoImportRequest,
   type RepoImportResponse,
 } from '../protocol.ts'
 import {
@@ -30,11 +28,14 @@ import {
   skillManifest,
 } from '../repo.ts'
 import { rootPath } from '../skillfs.ts'
+import { errorText } from '../error-text.ts'
 import {
   homeOf,
   knownSkillNames,
   pathExists,
   queryParam,
+  readString,
+  readStrings,
   writeError,
   writeJson,
   type RouteSpec,
@@ -97,14 +98,14 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as RepoImportRequest
-        const input = typeof request.repo === 'string' ? request.repo.trim() : ''
-        const paths = Array.isArray(request.paths) ? request.paths.filter((path): path is string => typeof path === 'string' && path !== '') : []
+        const input = readString(body, 'repo').trim()
+        const paths = readStrings(body, 'paths')
         if (paths.length === 0) { writeError(res, 400, 'paths must be a non-empty array'); return }
         const parsed = normalizeRepoInput(input)
         if (parsed === null) { writeError(res, 400, 'repo must be owner/repo or a github.com URL'); return }
         const repo = repoSlug(parsed)
-        const ref = typeof request.ref === 'string' && request.ref !== '' ? request.ref : parsed.ref
+        const requestedRef = readString(body, 'ref')
+        const ref = requestedRef !== '' ? requestedRef : parsed.ref
         const { ref: resolvedRef, tree } = await loadRepoTree(repo, ref)
         const existing = await knownSkillNames(deps)
         const entries = discoverRepoEntries(tree, repo, existing)
@@ -189,7 +190,7 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
                 // 取消时不记为 failed，保留已完成的 imported/skipped，直接跳出
                 break
               }
-              job.failed.push({ name: entry.name, error: error instanceof Error ? error.message : String(error) })
+              job.failed.push({ name: entry.name, error: errorText(error) })
             } finally {
               job.done += 1
             }
@@ -208,7 +209,7 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           if (needInvalidate) deps.invalidate?.()
         })().catch((error) => {
           job.status = 'error'
-          job.error = error instanceof Error ? error.message : String(error)
+          job.error = errorText(error)
           job.current = undefined
           job.currentFile = undefined
         })
@@ -251,8 +252,7 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as RepoImportCancelRequest
-        const jobId = typeof request.jobId === 'string' ? request.jobId : ''
+        const jobId = readString(body, 'jobId')
         if (jobId === '') { writeError(res, 400, 'jobId is required'); return }
         const job = importJobs.get(jobId)
         if (job === undefined) { writeError(res, 404, 'import job not found: ' + jobId); return }

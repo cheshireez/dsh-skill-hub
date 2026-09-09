@@ -8,6 +8,7 @@
  */
 
 import { createRequire } from 'node:module'
+import { errorText } from './error-text.ts'
 import { githubAuthHeaders } from './repo.ts'
 import type { UpdateCheckResponse } from './protocol.ts'
 
@@ -44,6 +45,8 @@ export function isUpdateAvailable(currentVersion: string, latestVersion: string)
 /** Best-effort GitHub latest-release lookup. Always resolves with ok:true. */
 export async function checkLatestRelease(repo = UPDATE_REPO, fetchImpl: typeof fetch = fetch): Promise<UpdateCheckResponse> {
   const currentVersion = CURRENT_VERSION
+  /** 统一失败形状：查询失败不抛错，一律 ok:true + error 文案（调用方只看 error）。 */
+  const failure = (error: string): UpdateCheckResponse => ({ ok: true, currentVersion, latestVersion: null, updateAvailable: false, url: null, error })
   const url = `https://api.github.com/repos/${repo}/releases/latest`
   let response: Response
   try {
@@ -51,26 +54,10 @@ export async function checkLatestRelease(repo = UPDATE_REPO, fetchImpl: typeof f
       headers: { accept: 'application/vnd.github+json', ...githubAuthHeaders() },
     })
   } catch (error) {
-    return {
-      ok: true,
-      currentVersion,
-      latestVersion: null,
-      updateAvailable: false,
-      url: null,
-      error: error instanceof Error ? error.message : String(error),
-    }
+    return failure(errorText(error))
   }
 
-  if (response.status === 404) {
-    return {
-      ok: true,
-      currentVersion,
-      latestVersion: null,
-      updateAvailable: false,
-      url: null,
-      error: 'no release published yet',
-    }
-  }
+  if (response.status === 404) return failure('no release published yet')
 
   if (!response.ok) {
     // Rate-limit exhaustion gets a friendlier message with the reset time.
@@ -78,37 +65,16 @@ export async function checkLatestRelease(repo = UPDATE_REPO, fetchImpl: typeof f
     const reset = response.headers.get('x-ratelimit-reset')
     if ((response.status === 403 || response.status === 429) && remaining === '0' && reset !== null) {
       const at = new Date(Number(reset) * 1000)
-      return {
-        ok: true,
-        currentVersion,
-        latestVersion: null,
-        updateAvailable: false,
-        url: null,
-        error: 'github rate limit reached; retry after ' + at.toLocaleTimeString() + ' or set GITHUB_TOKEN',
-      }
+      return failure('github rate limit reached; retry after ' + at.toLocaleTimeString() + ' or set GITHUB_TOKEN')
     }
-    return {
-      ok: true,
-      currentVersion,
-      latestVersion: null,
-      updateAvailable: false,
-      url: null,
-      error: 'GitHub HTTP ' + response.status,
-    }
+    return failure('GitHub HTTP ' + response.status)
   }
 
   let payload: unknown
   try {
     payload = await response.json()
   } catch (error) {
-    return {
-      ok: true,
-      currentVersion,
-      latestVersion: null,
-      updateAvailable: false,
-      url: null,
-      error: error instanceof Error ? error.message : 'invalid GitHub response',
-    }
+    return failure(error instanceof Error ? error.message : 'invalid GitHub response')
   }
 
   const record = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : {}

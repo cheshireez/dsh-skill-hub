@@ -11,6 +11,8 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promise
 import { dirname, join } from 'node:path'
 import { isSkillName } from '@deepseek-ai/dsh-skill'
 import type { RepoRoot, RepoSkillEntry } from './protocol.ts'
+import { errorText } from './error-text.ts'
+import { mapConcurrent } from './concurrency.ts'
 import { parseFrontmatter } from './skillfs.ts'
 import {
   RepoFetchError,
@@ -159,21 +161,6 @@ export function discoverRepoEntries(tree: readonly RepoTreeItem[], repo: string,
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
-/** Run an async worker over items with a bounded concurrency. */
-export async function mapConcurrent<T, R>(items: readonly T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
-  const results = new Array<R>(items.length)
-  let cursor = 0
-  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (cursor < items.length) {
-      const index = cursor
-      cursor += 1
-      results[index] = await worker(items[index], index)
-    }
-  })
-  await Promise.all(runners)
-  return results
-}
-
 /**
  * Download one GitHub file as a buffer. Tries raw.githubusercontent.com
  * first (no API quota); on any failure falls back to the api.github.com
@@ -190,7 +177,7 @@ export async function downloadGitHubFile(repo: string, ref: string, path: string
     response = await fetchImpl(rawUrl, { headers: githubAuthHeaders(), ...(signal !== undefined ? { signal } : {}) })
   } catch (error) {
     if (isAbortError(error)) throw error
-    firstError = error instanceof Error ? error.message : String(error)
+    firstError = errorText(error)
   }
   if (response === null || !response.ok) {
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
@@ -200,7 +187,7 @@ export async function downloadGitHubFile(repo: string, ref: string, path: string
       response = await fetchImpl(apiUrl, { headers: { accept: 'application/vnd.github.raw', ...githubAuthHeaders() }, ...(signal !== undefined ? { signal } : {}) })
     } catch (error) {
       if (isAbortError(error)) throw error
-      throw new RepoFetchError('download failed: ' + (firstError ?? (error instanceof Error ? error.message : String(error))))
+      throw new RepoFetchError('download failed: ' + (firstError ?? (errorText(error))))
     }
   }
   if (response === null || !response.ok) {
@@ -210,7 +197,7 @@ export async function downloadGitHubFile(repo: string, ref: string, path: string
     return Buffer.from(await response.arrayBuffer())
   } catch (error) {
     if (isAbortError(error)) throw error
-    throw new RepoFetchError('download read failed: ' + (error instanceof Error ? error.message : String(error)))
+    throw new RepoFetchError('download read failed: ' + (errorText(error)))
   }
 }
 
@@ -278,7 +265,7 @@ export async function downloadRepoSkill(
         try {
           await rm(tempDir, { recursive: true, force: true })
         } catch (secondError) {
-          console.warn(`[skill-hub] cleanup tempDir failed ${tempDir}:`, secondError instanceof Error ? secondError.message : String(secondError), 'first:', firstError instanceof Error ? firstError.message : String(firstError))
+          console.warn(`[skill-hub] cleanup tempDir failed ${tempDir}:`, errorText(secondError), 'first:', errorText(firstError))
         }
       }
     }
@@ -305,7 +292,7 @@ export async function cleanupLeftoverImportDirs(targetRoot: string): Promise<num
       await rm2(full, { recursive: true, force: true })
       cleaned += 1
     } catch (error) {
-      console.warn(`[skill-hub] startup cleanup failed ${full}:`, error instanceof Error ? error.message : String(error))
+      console.warn(`[skill-hub] startup cleanup failed ${full}:`, errorText(error))
     }
   }
   if (cleaned > 0) console.warn(`[skill-hub] startup cleaned ${cleaned} leftover import temp dir(s) in ${targetRoot}`)

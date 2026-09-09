@@ -9,26 +9,27 @@ import type { SkillDefinition } from '@deepseek-ai/dsh-skill'
 import { isSkillName } from '@deepseek-ai/dsh-skill'
 import {
   SKILL_HUB_API,
-  type CreateRequest,
   type CreateResponse,
-  type SkillDeleteRequest,
   type SkillDeleteResponse,
   type SkillDetail,
   type SkillDetailResponse,
   type StatsResponse,
-  type ToggleBatchRequest,
   type ToggleBatchResponse,
-  type ToggleRequest,
   type ToggleResponse,
   type WritableRoot,
 } from '../protocol.ts'
 import { createSkill, disableSkill, enableSkill, parseFrontmatter, readSkillInterface, rootPath, trashSkill } from '../skillfs.ts'
+import { errorText } from '../error-text.ts'
 import {
+  applyInterface,
   buildCatalog,
   configOf,
   homeOf,
+  isWritableSource,
   pathExists,
   queryParam,
+  readString,
+  readStrings,
   resolveWritableSkill,
   toDetail,
   workspaceEntries,
@@ -37,6 +38,20 @@ import {
   type RouteSpec,
   type SkillHubRouteDeps,
 } from './helpers.ts'
+
+/**
+ * 文件创建/修改时间 → 详情行的 addedAt/updatedAt（读取失败时省略字段，
+ * 详情页不显示这两行）。禁用态与启用态详情共用。
+ */
+async function applyFileTimes(row: { addedAt?: number; updatedAt?: number }, path: string): Promise<void> {
+  try {
+    const times = await stat(path)
+    row.addedAt = times.birthtimeMs
+    row.updatedAt = times.mtimeMs
+  } catch {
+    // 文件不可读时省略时间字段。
+  }
+}
 
 /** 目录域全部路由 spec（由 routes.ts 经 createRoute 包上统一围栏）。 */
 export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
@@ -88,13 +103,7 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
                   path: record.path,
                   content: parsed.value.content,
                 }
-                try {
-                  const times = await stat(record.path)
-                  disabledDetail.addedAt = times.birthtimeMs
-                  disabledDetail.updatedAt = times.mtimeMs
-                } catch {
-                  // ignore
-                }
+                await applyFileTimes(disabledDetail, record.path)
                 writeJson(res, 200, { ok: true, skill: disabledDetail } satisfies SkillDetailResponse)
                 return
               }
@@ -107,27 +116,14 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         }
         const detail = toDetail(skill)
         if (skill.path !== undefined) {
-          try {
-            const times = await stat(skill.path)
-            detail.addedAt = times.birthtimeMs
-            detail.updatedAt = times.mtimeMs
-          } catch {
-            // 文件不可读时省略时间字段，详情页不显示这两行。
-          }
+          await applyFileTimes(detail, skill.path)
           // UI metadata from agents/openai.yaml beside the skill directory (codex).
           try {
             const rb = skill.resourceBase as { kind?: string; path?: string } | undefined
             const dir = rb?.kind === 'directory' && typeof rb.path === 'string' ? rb.path : (skill.path.endsWith('SKILL.md') ? dirname(skill.path) : undefined)
             if (dir !== undefined) {
               const iface = await readSkillInterface(dir)
-              if (iface !== undefined) {
-                if (iface.displayName !== undefined) detail.displayName = iface.displayName
-                if (iface.shortDescription !== undefined) detail.shortDescription = iface.shortDescription
-                if (iface.brandColor !== undefined) detail.brandColor = iface.brandColor
-                if (iface.iconSmall !== undefined) detail.iconSmall = iface.iconSmall
-                if (iface.iconLarge !== undefined) detail.iconLarge = iface.iconLarge
-                if (iface.defaultPrompt !== undefined) detail.defaultPrompt = iface.defaultPrompt
-              }
+              if (iface !== undefined) applyInterface(detail, iface)
             }
           } catch {
             // best-effort
@@ -143,10 +139,10 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as SkillDeleteRequest & { cwd?: string }
-        const name = typeof request.name === 'string' ? request.name : ''
+        const name = readString(body, 'name')
         if (name === '') { writeError(res, 400, 'name is required'); return }
-        const resolved = await resolveWritableSkill(deps, name, typeof request.cwd === 'string' ? request.cwd : undefined)
+        const cwd = readString(body, 'cwd')
+        const resolved = await resolveWritableSkill(deps, name, cwd !== '' ? cwd : undefined)
         // 已禁用的技能不在 registry 中，resolve 会 404，这里单独处理：允许整组删除未开启的技能
         let trashResult: { path: string; source: string } | null = null
         if (!resolved.ok) {
@@ -192,11 +188,11 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as ToggleRequest & { cwd?: string }
-        const name = typeof request.name === 'string' ? request.name : ''
+        const name = readString(body, 'name')
         if (name === '') { writeError(res, 400, 'name is required'); return }
-        const lookup = typeof request.cwd === 'string' && request.cwd !== '' ? { cwd: request.cwd } : undefined
-        if (request.enabled === true) {
+        const cwd = readString(body, 'cwd')
+        const lookup = cwd !== '' ? { cwd } : undefined
+        if (body.enabled === true) {
           const record = await deps.store.getDisabled(name)
           if (record === undefined) { writeError(res, 404, 'skill is not hub-disabled: ' + name); return }
           try {
@@ -212,7 +208,7 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           }
           await deps.store.removeDisabled(name)
         } else {
-          const resolved = await resolveWritableSkill(deps, name, typeof request.cwd === 'string' ? request.cwd : undefined)
+          const resolved = await resolveWritableSkill(deps, name, cwd !== '' ? cwd : undefined)
           if (!resolved.ok) { writeError(res, resolved.status, resolved.error); return }
           const disabledPath = await disableSkill(resolved.path)
           await deps.store.addDisabled({
@@ -236,11 +232,11 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as ToggleBatchRequest & { cwd?: string }
-        const names = Array.isArray(request.names) ? request.names.filter((n): n is string => typeof n === 'string' && n !== '') : []
+        const names = readStrings(body, 'names')
         if (names.length === 0) { writeError(res, 400, 'names must be a non-empty array'); return }
-        const enabled = request.enabled === true
-        const lookup = typeof request.cwd === 'string' && request.cwd !== '' ? { cwd: request.cwd } : undefined
+        const enabled = body.enabled === true
+        const cwd = readString(body, 'cwd')
+        const lookup = cwd !== '' ? { cwd } : undefined
         const failures: Array<{ name: string; error: string }> = []
         for (const name of names) {
           try {
@@ -250,13 +246,13 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
               await enableSkill(record.path)
               await deps.store.removeDisabled(name)
             } else {
-              const resolved = await resolveWritableSkill(deps, name, typeof request.cwd === 'string' ? request.cwd : undefined)
+              const resolved = await resolveWritableSkill(deps, name, cwd !== '' ? cwd : undefined)
               if (!resolved.ok) { failures.push({ name, error: resolved.error }); continue }
               const disabledPath = await disableSkill(resolved.path)
               await deps.store.addDisabled({ name, description: resolved.skill.description, path: disabledPath, root: resolved.root, disabledAt: Date.now() })
             }
           } catch (error) {
-            failures.push({ name, error: error instanceof Error ? error.message : String(error) })
+            failures.push({ name, error: errorText(error) })
           }
         }
         deps.invalidate?.()
@@ -269,11 +265,12 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       methods: ['POST'],
       jsonBody: true,
       handler: async ({ res, body }) => {
-        const request = body as unknown as CreateRequest
-        const name = typeof request.name === 'string' ? request.name.trim() : ''
+        const name = readString(body, 'name').trim()
         if (!isSkillName(name)) { writeError(res, 400, 'skill name must be kebab-case (lowercase letters, digits, dashes)'); return }
-        const root: WritableRoot = request.root ?? 'user-dsh'
-        if (root !== 'user-dsh' && root !== 'user-agents') { writeError(res, 400, 'root must be user-dsh or user-agents'); return }
+        // 缺省根 = user-dsh；给了但类型/取值不合法时保持原样交给下面的校验拒绝。
+        const rootText = body.root === undefined ? 'user-dsh' : readString(body, 'root')
+        if (!isWritableSource(rootText)) { writeError(res, 400, 'root must be user-dsh or user-agents'); return }
+        const root: WritableRoot = rootText
         const existing = await deps.skills.get(name)
         if (existing !== undefined) { writeError(res, 409, 'skill name already exists: ' + name); return }
         if (await deps.store.getDisabled(name) !== undefined) { writeError(res, 409, 'skill name is disabled: re-enable it from the disabled list first'); return }
@@ -285,7 +282,7 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           writeError(res, 409, 'skill directory already exists on disk: ' + name + ' (check the discovery diagnostics)')
           return
         }
-        const path = await createSkill(root, name, typeof request.description === 'string' ? request.description : '', homeOf(deps))
+        const path = await createSkill(root, name, readString(body, 'description'), homeOf(deps))
         // 新技能自动归入默认场景（「通用」）。
         const defaultTag = await deps.store.getDefaultTag()
         if (defaultTag !== undefined) await deps.store.addSkillToTag(defaultTag.id, name)

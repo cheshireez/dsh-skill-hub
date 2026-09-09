@@ -47,6 +47,7 @@
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 // Type-only: pulls the 'skill-invocation' MessageSourceMap augmentation.
 import type {} from '@deepseek-ai/dsh-skill'
+import { mapConcurrent } from './concurrency.ts'
 import type { SkillStat, SkillStatsCheckpoint } from './protocol.ts'
 
 /** Fallback freeze horizon when no rolling window is configured (14 days). */
@@ -191,21 +192,6 @@ function isFrozen(record: { header: { createdAt?: number } }, watermark: number)
   // such sessions explicitly instead — see below). The re-read path is merely
   // slower, never wrong.
   return typeof created === 'number' && created > 0 && created < watermark
-}
-
-/** Bounded-concurrency map: session-log reads are independent decompressions, so wall time scales ~1/limit. Merge stays sequential in index order. */
-async function mapConcurrent<T, R>(items: readonly T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
-  const results = new Array<R>(items.length)
-  let cursor = 0
-  const runners = Array.from({ length: Math.min(Math.max(limit, 1), items.length) }, async () => {
-    while (cursor < items.length) {
-      const index = cursor
-      cursor += 1
-      results[index] = await worker(items[index], index)
-    }
-  })
-  await Promise.all(runners)
-  return results
 }
 
 /** Max parallel session-log reads per scan. Reads on the query path restore +
