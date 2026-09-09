@@ -89,7 +89,7 @@ export function MarketSourceRow(props: { hub: SkillHubState; record: MarketSourc
         type='button'
         className={css.opBtn + (updateDanger ? ' ' + css.opDanger : '')}
         disabled={updateDisabled}
-        title={hasUpdate ? '将同步到上游最新版并提示可更新的本地技能' : undefined}
+        title={hasUpdate ? tt('market.syncHint') : undefined}
         onClick={updateAction}
       >
         {updateLabel}

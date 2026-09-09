@@ -63,7 +63,7 @@ export function CollectionCard(props: CollectionCardProps): JSX.Element {
   return (
     <section {...dragProps}>
       <div className={css.groupHead}>
-        <span className={css.dragHandle} aria-hidden title="拖拽调整顺序">⋮⋮</span>
+        <span className={css.dragHandle} aria-hidden title={tt('drag.reorder')}>⋮⋮</span>
         <button type='button' className={css.disclosure} aria-expanded={!collapsed} onClick={() => { toggleGroupCollapse('col:' + collection.name) }}>
           <span className={css.chevron + (collapsed ? ' ' + css.chevronCollapsed : '')} />
           <span className={css.groupTitle}>

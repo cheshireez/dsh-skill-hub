@@ -41,7 +41,7 @@ export function ProjectTree(props: ProjectTreeProps): JSX.Element {
   return (
     <section {...dragProps}>
       <div className={css.groupHead}>
-        <span className={css.dragHandle} aria-hidden title="拖拽调整顺序">⋮⋮</span>
+        <span className={css.dragHandle} aria-hidden title={tt('drag.reorder')}>⋮⋮</span>
         <button type='button' className={css.disclosure} aria-expanded={!topCollapsed} onClick={() => { toggleGroupCollapse('project') }}>
           <span className={css.chevron + (topCollapsed ? ' ' + css.chevronCollapsed : '')} />
           <span className={css.groupTitle}>{tt('groups.project')} · {byProject.size}</span>

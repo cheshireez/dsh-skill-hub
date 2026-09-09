@@ -1,5 +1,8 @@
 /** 技能浏览：行徽章/分组/场景/过滤排序/相对时间。从 locales.ts 按前缀拆出，键集合不变。 */
 export const zhSkills = {
+  'edit.start': '编辑',
+  'edit.hint': '开启后显示删除与排序操作',
+  'edit.done': '完成',
   'groups.new': '新建场景',
   'groups.namePlaceholder': '场景名',
   'groups.edit': '编辑',
@@ -51,6 +54,9 @@ export const zhSkills = {
 } as const
 
 export const enSkills: Record<keyof typeof zhSkills, string> = {
+  'edit.start': 'Edit',
+  'edit.hint': 'Show delete and reorder actions',
+  'edit.done': 'Done',
   'groups.new': 'New scene',
   'groups.namePlaceholder': 'Scene name',
   'groups.edit': 'Edit',

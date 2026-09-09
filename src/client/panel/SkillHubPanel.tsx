@@ -41,7 +41,7 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
     catalog, loading, loadError, successBanner, updateState, detail, detailLoading, showForm, formName, formDesc,
     formRoot, formBusy, formMessage, hubConfig, tab, skillView, sourceFilter, sortKey, search,
     workspace, setWorkspace,
-    sourcesState, tagBusy, busyNames, normalized, origins, sourceOptions, filtered,
+    sourcesState, tagBusy, batchBusy, busyNames, normalized, origins, sourceOptions, filtered,
     conflictDialog, confirmDialog, deleteSkillDialog, deleteGroupDialog, confirmClearTrash, branchChoice, branchBusy, marketSyncDialog,
     syncBusy, editingTag, editName, membersDraft, editSearch, uses, groupsState, sourceCheck, checkingSource, syncingSource,
     showLegend, editMode,
@@ -120,7 +120,7 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
   })()
 
   return (
-    <div className={css.panel}>
+    <div className={css.panel} aria-busy={batchBusy || tagBusy}>
       <div className={css.header}>
         <h2 className={css.title}><IconSkillOutline16 size={16} className={css.titleIcon} /> {tt('panel.title')}{catalog !== null ? <span className={css.pluginVersion}>v{catalog.pluginVersion}</span> : null}</h2>
         {catalog !== null
@@ -190,16 +190,16 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
       ) : null}
 
       {loadError !== null ? (
-        <div className={css.errorBanner}>
+        <div className={css.errorBanner} role='alert'>
           <span>{loadError}</span>
-          <button type='button' className={css.button} onClick={() => { setLoadError(null) }}>{tt('err.dismiss')}</button>
+          <button type='button' className={css.button} aria-label={tt('err.dismiss')} onClick={() => { setLoadError(null) }}>{tt('err.dismiss')}</button>
         </div>
       ) : null}
 
       {successBanner !== null ? (
-        <div className={css.successBanner}>
+        <div className={css.successBanner} role='status'>
           <span>{successBanner}</span>
-          <button type='button' className={css.button} onClick={() => { setSuccessBanner(null) }}>{tt('err.dismiss')}</button>
+          <button type='button' className={css.button} aria-label={tt('err.dismiss')} onClick={() => { setSuccessBanner(null) }}>{tt('err.dismiss')}</button>
         </div>
       ) : null}
 
@@ -245,7 +245,14 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
               <option value='user'>{tt('filter.userOnly')}</option>
             </select>
             <input className={css.search} value={search} onChange={(event) => { setSearch(event.target.value) }} placeholder={tt('panel.search')} />
-            <button type='button' className={css.button + (editMode ? ' ' + css.primary : '')} style={{ marginLeft:'auto' }} onClick={() => setEditMode((v) => !v)}>{editMode ? '完成' : '编辑'}</button>
+            <button
+              type='button'
+              className={css.button + (editMode ? ' ' + css.primary : '')}
+              style={{ marginLeft:'auto' }}
+              aria-pressed={editMode}
+              title={tt('edit.hint')}
+              onClick={() => setEditMode((v) => !v)}
+            >{tt(editMode ? 'edit.done' : 'edit.start')}</button>
           </div>
           {catalog !== null && (filtered.length !== catalog.skills.length || hub.invocationFilter !== 'all' || sourceFilter !== 'all') ? (
             <div className={css.hintLine} style={{ margin: '2px 2px 0', display:'flex', gap:8, flexWrap:'wrap' }}>

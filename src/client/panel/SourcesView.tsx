@@ -138,7 +138,7 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
           return (
             <section key="uncategorized-source" {...drag('uncategorized-source')}>
               <div className={css.groupHead}>
-                <span className={css.dragHandle} aria-hidden title="拖拽调整顺序">⋮⋮</span>
+                <span className={css.dragHandle} aria-hidden title={tt('drag.reorder')}>⋮⋮</span>
                 <button type='button' className={css.disclosure} aria-expanded={!collapsed} onClick={() => { toggleGroupCollapse('uncategorized-source') }}>
                   <span className={css.chevron + (collapsed ? ' ' + css.chevronCollapsed : '')} />
                   <span className={css.groupTitle}>{tt('groups.personal')} · {allPersonalNames.length}<GroupSummary members={allPersonalNames} uses={hub.uses} hubConfig={hub.hubConfig} /></span>

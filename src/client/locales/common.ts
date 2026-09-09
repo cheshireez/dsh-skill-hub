@@ -1,5 +1,6 @@
 /** 面板框架与通用：入口/视图切换/面板/图例/报错/更新检查/新建表单/诊断修复。从 locales.ts 按前缀拆出，键集合不变。 */
 export const zhCommon = {
+  'drag.reorder': '拖拽调整顺序',
   'entry.label': '技能',
   'view.sources': '来源',
   'view.scenes': '场景',
@@ -48,6 +49,7 @@ export const zhCommon = {
 } as const
 
 export const enCommon: Record<keyof typeof zhCommon, string> = {
+  'drag.reorder': 'Drag to reorder',
   'entry.label': 'Skills',
   'view.sources': 'Sources',
   'view.scenes': 'Scenes',

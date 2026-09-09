@@ -1,5 +1,6 @@
 /** 市场与仓库扫描导入。从 locales.ts 按前缀拆出，键集合不变。 */
 export const zhMarket = {
+  'market.syncHint': '将同步到上游最新版并提示可更新的本地技能',
   'market.addPlaceholder': 'owner/repo 或 https://github.com/…',
   'market.addSource': '添加源',
   'market.noSources': '还没有市场源。从下方内置市场添加，或输入一个 GitHub 仓库。',
@@ -49,6 +50,14 @@ export const zhMarket = {
   'market.syncNone': '该来源还没有导入本地技能。',
   'market.syncCancel': '跳过',
   'market.removeHint': '移除源不影响已安装的技能。',
+  'repo.scanTitle': '扫描结果',
+  'repo.close': '关闭',
+  'repo.searchPlaceholder': '搜索技能名…',
+  'repo.allRoots': '全部 {count}',
+  'repo.selection': '已选 {selected}/{total} · {size} · 显示 {shown}/{filtered}（过滤后）',
+  'repo.noMatch': '无匹配技能',
+  'repo.loadMore': '加载更多 {step} (剩余 {remaining})',
+  'repo.skillProgress': '{done}/{total} 个技能',
   'repo.ready': '发现 {count} 个可导入技能',
   'repo.truncated': '⚠ 仓库过大，仅展示部分技能（GitHub 截断），可缩小仓库或指定子目录',
   'repo.empty': '没有找到可导入技能。',
@@ -71,6 +80,7 @@ export const zhMarket = {
 } as const
 
 export const enMarket: Record<keyof typeof zhMarket, string> = {
+  'market.syncHint': 'Sync to the latest upstream and report local skills that can update',
   'market.addPlaceholder': 'owner/repo or https://github.com/…',
   'market.addSource': 'Add source',
   'market.noSources': 'No market sources yet. Add one from the built-in catalog below, or enter a GitHub repo.',
@@ -120,6 +130,14 @@ export const enMarket: Record<keyof typeof zhMarket, string> = {
   'market.syncNone': 'No local skills tracked from this repo yet.',
   'market.syncCancel': 'Skip',
   'market.removeHint': 'Removing a source does not affect installed skills.',
+  'repo.scanTitle': 'Scan result',
+  'repo.close': 'Close',
+  'repo.searchPlaceholder': 'Search skill name…',
+  'repo.allRoots': 'All {count}',
+  'repo.selection': 'Selected {selected}/{total} · {size} · showing {shown}/{filtered} (filtered)',
+  'repo.noMatch': 'No matching skills',
+  'repo.loadMore': 'Load {step} more ({remaining} left)',
+  'repo.skillProgress': '{done}/{total} skills',
   'repo.ready': '{count} importable skills found',
   'repo.truncated': '⚠ Repo too large, only partial skills shown (GitHub truncated)',
   'repo.empty': 'No importable skills found.',
