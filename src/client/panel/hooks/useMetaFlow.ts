@@ -7,7 +7,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { HubConfig } from '../../../protocol.ts'
 import type { SkillHubApi } from '../../api.ts'
 import { errorMessage } from '../../helpers.ts'
-import { USES_CATCH_UP_MAX, type UpdateState } from './shared.ts'
+import { POLL_MS, USES_CATCH_UP_MAX, type UpdateState } from './shared.ts'
 
 export function useMetaFlow(api: SkillHubApi) {
   const [updateState, setUpdateState] = useState<UpdateState>({ status: 'idle' })
@@ -50,7 +50,7 @@ export function useMetaFlow(api: SkillHubApi) {
       usesCatchUp.current += 1
       void loadUses()
       if (usesCatchUp.current >= USES_CATCH_UP_MAX) window.clearInterval(timer)
-    }, 5_000)
+    }, POLL_MS)
     return () => { window.clearInterval(timer) }
   }, [uses.size, loadUses])
 

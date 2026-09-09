@@ -10,6 +10,7 @@ import { useEffect, useState, type ReactElement } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { SkillHubApi } from './api.ts'
+import type { HubKey } from './locales.ts'
 import { ColorField, NumberField, PluginSettingsCard, SecretField, SwitchField } from './settings-card.tsx'
 import { booleanField, CardForm, colorField, numberField, secretField, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
 // Single source for the TS-side dot defaults (the panel CSS mirrors these).
@@ -28,6 +29,16 @@ export interface SkillHubSettingsState extends CardShell {
   statsScanMinutes: FieldState
   githubToken: FieldState
 }
+
+/** The card's editable config fields (every projected key beyond the CardShell). */
+type SkillHubField = Exclude<keyof SkillHubSettingsState, keyof CardShell>
+
+/** One staged field row: which control renders it and the copy keys it uses. */
+type FieldRow =
+  | { kind: 'switch'; field: SkillHubField; label: HubKey; hint: HubKey }
+  | { kind: 'color'; field: SkillHubField; id: string; label: HubKey; hint: HubKey; defaultColor: string }
+  | { kind: 'number'; field: SkillHubField; id: string; label: HubKey; hint: HubKey }
+  | { kind: 'secret'; field: SkillHubField; id: string; label: HubKey; hint: HubKey; placeholder: HubKey }
 
 /** The business face the card's slot registration injects. */
 export interface SkillHubSettingsCardFace {
@@ -84,6 +95,20 @@ export class SkillHubSettingsCardController {
   }
 }
 
+/** The card's field rows in render order; the rendered DOM order follows it. */
+const FIELD_ROWS: readonly FieldRow[] = [
+  { kind: 'switch', field: 'enabled', label: 'settings.enabled', hint: 'settings.enabledHint' },
+  { kind: 'switch', field: 'announceToAgent', label: 'settings.announceToAgent', hint: 'settings.announceToAgentHint' },
+  { kind: 'color', field: 'dotModelColor', id: 'skill-hub-dot-model-color', label: 'settings.dotModelColor', hint: 'settings.dotModelColorHint', defaultColor: DEFAULT_DOT_MODEL_COLOR },
+  { kind: 'color', field: 'dotUserColor', id: 'skill-hub-dot-user-color', label: 'settings.dotUserColor', hint: 'settings.dotUserColorHint', defaultColor: DEFAULT_DOT_USER_COLOR },
+  { kind: 'switch', field: 'showUseCount', label: 'settings.showUseCount', hint: 'settings.showUseCountHint' },
+  { kind: 'switch', field: 'showUseTime', label: 'settings.showUseTime', hint: 'settings.showUseTimeHint' },
+  { kind: 'switch', field: 'showGroupSummary', label: 'settings.showGroupSummary', hint: 'settings.showGroupSummaryHint' },
+  { kind: 'number', field: 'statsWindowDays', id: 'skill-hub-stats-window-days', label: 'settings.statsWindowDays', hint: 'settings.statsWindowDaysHint' },
+  { kind: 'number', field: 'statsScanMinutes', id: 'skill-hub-stats-scan-minutes', label: 'settings.statsScanMinutes', hint: 'settings.statsScanMinutesHint' },
+  { kind: 'secret', field: 'githubToken', id: 'skill-hub-github-token', label: 'settings.githubToken', hint: 'settings.githubTokenHint', placeholder: 'settings.githubTokenPlaceholder' },
+]
+
 /**
  * Render the dsh-skill-hub card.
  * @param props - locale copy, the card snapshot, and its form actions.
@@ -117,104 +142,21 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
       onSave={props.save}
       onDiscard={props.discard}
     >
-      <SwitchField
-        label={t('settings.enabled')}
-        hint={t('settings.enabledHint')}
-        {...fieldProps}
-        {...state.enabled}
-        onEdit={(text) => { props.edit('enabled', text) }}
-        onReset={() => { props.resetField('enabled') }}
-      />
-      <SwitchField
-        label={t('settings.announceToAgent')}
-        hint={t('settings.announceToAgentHint')}
-        {...fieldProps}
-        {...state.announceToAgent}
-        onEdit={(text) => { props.edit('announceToAgent', text) }}
-        onReset={() => { props.resetField('announceToAgent') }}
-      />
-      <ColorField
-        id='skill-hub-dot-model-color'
-        label={t('settings.dotModelColor')}
-        hint={t('settings.dotModelColorHint')}
-        inheritLabel={t('settings.inherit')}
-        defaultColor={DEFAULT_DOT_MODEL_COLOR}
-        {...fieldProps}
-        {...state.dotModelColor}
-        onEdit={(text) => { props.edit('dotModelColor', text) }}
-        onReset={() => { props.resetField('dotModelColor') }}
-      />
-      <ColorField
-        id='skill-hub-dot-user-color'
-        label={t('settings.dotUserColor')}
-        hint={t('settings.dotUserColorHint')}
-        inheritLabel={t('settings.inherit')}
-        defaultColor={DEFAULT_DOT_USER_COLOR}
-        {...fieldProps}
-        {...state.dotUserColor}
-        onEdit={(text) => { props.edit('dotUserColor', text) }}
-        onReset={() => { props.resetField('dotUserColor') }}
-      />
-      <SwitchField
-        label={t('settings.showUseCount')}
-        hint={t('settings.showUseCountHint')}
-        {...fieldProps}
-        {...state.showUseCount}
-        onEdit={(text) => { props.edit('showUseCount', text) }}
-        onReset={() => { props.resetField('showUseCount') }}
-      />
-      <SwitchField
-        label={t('settings.showUseTime')}
-        hint={t('settings.showUseTimeHint')}
-        {...fieldProps}
-        {...state.showUseTime}
-        onEdit={(text) => { props.edit('showUseTime', text) }}
-        onReset={() => { props.resetField('showUseTime') }}
-      />
-      <SwitchField
-        label={t('settings.showGroupSummary')}
-        hint={t('settings.showGroupSummaryHint')}
-        {...fieldProps}
-        {...state.showGroupSummary}
-        onEdit={(text) => { props.edit('showGroupSummary', text) }}
-        onReset={() => { props.resetField('showGroupSummary') }}
-      />
-      <NumberField
-        id='skill-hub-stats-window-days'
-        label={t('settings.statsWindowDays')}
-        hint={t('settings.statsWindowDaysHint')}
-        inheritLabel={t('settings.inherit')}
-        {...fieldProps}
-        text={state.statsWindowDays.text}
-        overridden={state.statsWindowDays.overridden}
-        invalid={state.statsWindowDays.invalid}
-        onEdit={(text) => { props.edit('statsWindowDays', text) }}
-        onReset={() => { props.resetField('statsWindowDays') }}
-      />
-      <NumberField
-        id='skill-hub-stats-scan-minutes'
-        label={t('settings.statsScanMinutes')}
-        hint={t('settings.statsScanMinutesHint')}
-        inheritLabel={t('settings.inherit')}
-        {...fieldProps}
-        text={state.statsScanMinutes.text}
-        overridden={state.statsScanMinutes.overridden}
-        invalid={state.statsScanMinutes.invalid}
-        onEdit={(text) => { props.edit('statsScanMinutes', text) }}
-        onReset={() => { props.resetField('statsScanMinutes') }}
-      />
-      <SecretField
-        id='skill-hub-github-token'
-        label={t('settings.githubToken')}
-        hint={t('settings.githubTokenHint')}
-        placeholder={t('settings.githubTokenPlaceholder')}
-        {...fieldProps}
-        text={state.githubToken.text}
-        overridden={state.githubToken.overridden}
-        invalid={state.githubToken.invalid}
-        onEdit={(text) => { props.edit('githubToken', text) }}
-        onReset={() => { props.resetField('githubToken') }}
-      />
+      {FIELD_ROWS.map((row) => {
+        const value = state[row.field]
+        const common = {
+          label: t(row.label),
+          hint: t(row.hint),
+          ...fieldProps,
+          ...value,
+          onEdit: (text: string) => { props.edit(row.field, text) },
+          onReset: () => { props.resetField(row.field) },
+        }
+        if (row.kind === 'switch') return <SwitchField key={row.field} {...common} />
+        if (row.kind === 'color') return <ColorField key={row.field} {...common} id={row.id} inheritLabel={t('settings.inherit')} defaultColor={row.defaultColor} />
+        if (row.kind === 'number') return <NumberField key={row.field} {...common} id={row.id} inheritLabel={t('settings.inherit')} />
+        return <SecretField key={row.field} {...common} id={row.id} placeholder={t(row.placeholder)} />
+      })}
     </PluginSettingsCard>
   )
 }

@@ -5,10 +5,6 @@
 import {
   SKILL_HUB_API,
   type CatalogResponse,
-  type CollectionGroup,
-  type CollectionReorderRequest,
-  type CollectionReorderResponse,
-  type ConfigRequest,
   type ConfigResponse,
   type CreateRequest,
   type CreateResponse,
@@ -227,11 +223,6 @@ export class SkillHubApi {
     return this.get<ConfigResponse>(SKILL_HUB_API.config)
   }
 
-  /** Patch the hub's runtime config (null clears a saved override). */
-  saveConfig(patch: ConfigRequest): Promise<ConfigResponse> {
-    return this.post<ConfigResponse>(SKILL_HUB_API.config, patch)
-  }
-
   /** 用户 tag 分组 + 系统集合组 + origin 映射。 */
   groups(): Promise<GroupsResponse> {
     return this.get<GroupsResponse>(SKILL_HUB_API.groups)
@@ -259,12 +250,6 @@ export class SkillHubApi {
   async reorderTags(orderedIds: string[]): Promise<SkillTag[]> {
     const body = await this.post<TagReorderResponse>(SKILL_HUB_API.tagReorder, { orderedIds } satisfies TagReorderRequest)
     return body.tags
-  }
-
-  /** 拖拽重排来源集合 */
-  async reorderCollections(orderedNames: string[]): Promise<CollectionGroup[]> {
-    const body = await this.post<CollectionReorderResponse>(SKILL_HUB_API.collectionReorder, { orderedNames } satisfies CollectionReorderRequest)
-    return body.collections
   }
 
   /** 拖拽重排来源顶层分组（project / collections / personal） */

@@ -4,24 +4,34 @@
  */
 
 import type { JSX } from 'react'
+import type { HubConfig } from '../../protocol.ts'
 import { relativeTimeText } from './format.ts'
-import type { SkillHubState } from './useSkillHub.ts'
 import css from './panel.module.css'
 
-export function GroupSummary(props: { members: readonly string[]; hub: SkillHubState }): JSX.Element {
-  const { members, hub } = props
+/** The narrowed hub surface one group summary consumes. */
+export interface GroupSummaryProps {
+  /** The group's member skill names. */
+  members: readonly string[]
+  /** skillName → usage stats. */
+  uses: ReadonlyMap<string, { count: number; lastUsed?: number }>
+  /** Effective hub config; null while it has not loaded. */
+  hubConfig: HubConfig | null
+}
+
+export function GroupSummary(props: GroupSummaryProps): JSX.Element {
+  const { members, uses, hubConfig } = props
   let total = 0
   let latest: number | undefined
   for (const name of members) {
-    const stat = hub.uses.get(name)
+    const stat = uses.get(name)
     if (stat === undefined) continue
     total += stat.count
     if (stat.lastUsed !== undefined && (latest === undefined || stat.lastUsed > latest)) latest = stat.lastUsed
   }
   return (
     <span className={css.groupTitleInner}>
-      {hub.hubConfig?.showGroupSummary !== false && total > 0 ? <span className={css.useCount}>{total}</span> : null}
-      {hub.hubConfig?.showGroupSummary !== false && latest !== undefined ? <span className={css.useTime + ' ' + css.groupTime}>{relativeTimeText(latest)}</span> : null}
+      {hubConfig?.showGroupSummary !== false && total > 0 ? <span className={css.useCount}>{total}</span> : null}
+      {hubConfig?.showGroupSummary !== false && latest !== undefined ? <span className={css.useTime + ' ' + css.groupTime}>{relativeTimeText(latest)}</span> : null}
     </span>
   )
 }

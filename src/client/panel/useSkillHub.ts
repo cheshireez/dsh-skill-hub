@@ -15,7 +15,7 @@ import { useCatalogFlow } from './hooks/useCatalogFlow.ts'
 import { useGroupFlow } from './hooks/useGroupFlow.ts'
 import { useSourceFlow } from './hooks/useSourceFlow.ts'
 import { useMarketFlow } from './hooks/useMarketFlow.ts'
-import { markAutoChecked, shouldAutoCheck, type FlowNotices } from './hooks/shared.ts'
+import { markAutoChecked, POLL_MS, shouldAutoCheck, SLOW_POLL_MS, type FlowNotices } from './hooks/shared.ts'
 
 /** The hook's result: the panel's complete state + action surface. */
 export type SkillHubState = ReturnType<typeof useSkillHub>
@@ -121,8 +121,8 @@ export function useSkillHub(api: SkillHubApi) {
     void groupFlow.loadGroups()
     void sourceFlow.loadSources()
     void meta.loadConfig()
-    const fast = window.setInterval(() => { void catalogFlow.load() }, 5000)
-    const slow = window.setInterval(() => { void meta.loadUses(); void groupFlow.loadGroups(); void sourceFlow.loadSources(); void meta.loadConfig() }, 60_000)
+    const fast = window.setInterval(() => { void catalogFlow.load() }, POLL_MS)
+    const slow = window.setInterval(() => { void meta.loadUses(); void groupFlow.loadGroups(); void sourceFlow.loadSources(); void meta.loadConfig() }, SLOW_POLL_MS)
     return () => { window.clearInterval(fast); window.clearInterval(slow) }
   }, [catalogFlow.load, meta.loadUses, groupFlow.loadGroups, sourceFlow.loadSources, meta.loadConfig])
 
@@ -199,7 +199,7 @@ export function useSkillHub(api: SkillHubApi) {
     runDeleteSkill: sourceFlow.runDeleteSkill, requestDeleteGroup: sourceFlow.requestDeleteGroup,
     runDeleteGroup: sourceFlow.runDeleteGroup, createTag: groupFlow.createTag,
     deleteTag: groupFlow.deleteTag, saveTag: groupFlow.saveTag, reorderTags: groupFlow.reorderTags,
-    reorderCollections: groupFlow.reorderCollections, reorderSourceGroups: groupFlow.reorderSourceGroups,
+    reorderSourceGroups: groupFlow.reorderSourceGroups,
     addSource: marketFlow.addSource, addMarketSource: marketFlow.addMarketSource,
     removeMarketSource: marketFlow.removeMarketSource, scanRepo: marketFlow.scanRepo,
     confirmBranchChoice: marketFlow.confirmBranchChoice, toggleRepoSelected: marketFlow.toggleRepoSelected,

@@ -89,22 +89,60 @@ export function PluginSettingsCard(props: PluginSettingsCardProps): ReactElement
   )
 }
 
+/** Fields every staged control shares: copy, draft text, override state and actions. */
+export interface FieldBaseProps {
+  label: string
+  hint: string
+  overriddenLabel: string
+  resetLabel: string
+  disabled: boolean
+  /** Draft text; '' means the field inherits its default. */
+  text: string
+  overridden: boolean
+  onEdit: (text: string) => void
+  onReset: () => void
+}
+
+/** Props the shared field head needs: identity, override badge and reset. */
+export interface FieldShellProps {
+  /** Control id for the label's htmlFor; omitted when the head labels no control. */
+  id?: string
+  label: string
+  overridden: boolean
+  overriddenLabel: string
+  resetLabel: string
+  disabled: boolean
+  onReset: () => void
+}
+
+/**
+ * The head row every staged field shares: the label (plain text when the
+ * control has no id) plus the overridden badge and its reset button.
+ */
+export function FieldShell(props: FieldShellProps): ReactElement {
+  return (
+    <div className={css.head}>
+      {props.id !== undefined
+        ? <label className={css.label} htmlFor={props.id}>{props.label}</label>
+        : <span className={css.label}>{props.label}</span>}
+      {props.overridden ? (
+        <span className={css.badges}>
+          <span className={css.badge}>{props.overriddenLabel}</span>
+          <button type='button' className={css.reset} disabled={props.disabled} onClick={props.onReset}>
+            {props.resetLabel}
+          </button>
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
 /**
  * A compact sliding switch for the card's master enable/disable control.
  * An empty text value means the field inherits its default; the switch still
  * reflects the effective default and becomes an explicit override on click.
  */
-export interface SwitchFieldProps {
-  label: string
-  hint: string
-  disabled: boolean
-  text: string
-  overridden: boolean
-  overriddenLabel: string
-  resetLabel: string
-  onEdit: (text: string) => void
-  onReset: () => void
-}
+export type SwitchFieldProps = FieldBaseProps
 
 export function SwitchField(props: SwitchFieldProps): ReactElement {
   const checked = props.text !== 'false'
@@ -112,17 +150,7 @@ export function SwitchField(props: SwitchFieldProps): ReactElement {
     <div className={css.field}>
       <div className={css.switchRow}>
         <div className={css.switchText}>
-          <div className={css.head}>
-            <span className={css.label}>{props.label}</span>
-            {props.overridden ? (
-              <span className={css.badges}>
-                <span className={css.badge}>{props.overriddenLabel}</span>
-                <button type='button' className={css.reset} disabled={props.disabled} onClick={props.onReset}>
-                  {props.resetLabel}
-                </button>
-              </span>
-            ) : null}
-          </div>
+          <FieldShell {...props} />
           <p className={css.hint}>{props.hint}</p>
         </div>
         <button
@@ -142,38 +170,18 @@ export function SwitchField(props: SwitchFieldProps): ReactElement {
 }
 
 /** One staged color field: a native color picker plus the hex draft text. */
-export interface ColorFieldProps {
+export interface ColorFieldProps extends FieldBaseProps {
   id: string
-  label: string
-  hint: string
   inheritLabel: string
-  overriddenLabel: string
-  resetLabel: string
-  disabled: boolean
-  /** Effective hex (#rrggbb) when overridden; empty string means inherit. */
-  text: string
   /** The default color the picker shows while inheriting (per-field). */
   defaultColor: string
-  overridden: boolean
-  onEdit: (text: string) => void
-  onReset: () => void
 }
 
 export function ColorField(props: ColorFieldProps): ReactElement {
   const value = /^#[0-9a-f]{6}$/i.test(props.text) ? props.text : props.defaultColor
   return (
     <div className={css.field}>
-      <div className={css.head}>
-        <label className={css.label} htmlFor={props.id}>{props.label}</label>
-        {props.overridden ? (
-          <span className={css.badges}>
-            <span className={css.badge}>{props.overriddenLabel}</span>
-            <button type='button' className={css.reset} disabled={props.disabled} onClick={props.onReset}>
-              {props.resetLabel}
-            </button>
-          </span>
-        ) : null}
-      </div>
+      <FieldShell {...props} />
       <div className={css.colorRow}>
         <input
           id={props.id}
@@ -201,36 +209,17 @@ export function ColorField(props: ColorFieldProps): ReactElement {
  * One staged secret field: a password input that never echoes the stored
  * value. Shows a "set" state via the overridden badge; Reset unsets it.
  */
-export interface SecretFieldProps {
+export interface SecretFieldProps extends FieldBaseProps {
   id: string
-  label: string
-  hint: string
   /** Placeholder shown while empty (never the stored token). */
   placeholder: string
-  overriddenLabel: string
-  resetLabel: string
-  disabled: boolean
-  text: string
-  overridden: boolean
   invalid?: boolean
-  onEdit: (text: string) => void
-  onReset: () => void
 }
 
 export function SecretField(props: SecretFieldProps): ReactElement {
   return (
     <div className={css.field}>
-      <div className={css.head}>
-        <label className={css.label} htmlFor={props.id}>{props.label}</label>
-        {props.overridden ? (
-          <span className={css.badges}>
-            <span className={css.badge}>{props.overriddenLabel}</span>
-            <button type='button' className={css.reset} disabled={props.disabled} onClick={props.onReset}>
-              {props.resetLabel}
-            </button>
-          </span>
-        ) : null}
-      </div>
+      <FieldShell {...props} />
       <input
         id={props.id}
         type='password'
@@ -249,37 +238,17 @@ export function SecretField(props: SecretFieldProps): ReactElement {
 }
 
 /** One staged numeric field: a numeric draft text input with inherit/reset semantics. */
-export interface NumberFieldProps {
+export interface NumberFieldProps extends FieldBaseProps {
   id: string
-  label: string
-  hint: string
   /** Placeholder shown while the field inherits its default. */
   inheritLabel: string
-  overriddenLabel: string
-  resetLabel: string
-  disabled: boolean
-  /** Effective number when overridden; empty string means inherit. */
-  text: string
-  overridden: boolean
   invalid?: boolean
-  onEdit: (text: string) => void
-  onReset: () => void
 }
 
 export function NumberField(props: NumberFieldProps): ReactElement {
   return (
     <div className={css.field}>
-      <div className={css.head}>
-        <label className={css.label} htmlFor={props.id}>{props.label}</label>
-        {props.overridden ? (
-          <span className={css.badges}>
-            <span className={css.badge}>{props.overriddenLabel}</span>
-            <button type='button' className={css.reset} disabled={props.disabled} onClick={props.onReset}>
-              {props.resetLabel}
-            </button>
-          </span>
-        ) : null}
-      </div>
+      <FieldShell {...props} />
       <input
         id={props.id}
         type='text'

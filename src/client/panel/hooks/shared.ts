@@ -4,6 +4,7 @@
  */
 
 import type { MarketCheckResponse, MarketSourceRecord, RepoDiscoverResponse, UpdateCheckResponse } from '../../../protocol.ts'
+import { errorMessage } from '../../helpers.ts'
 
 /**
  * 跨域共享的通知原语：聚合根用稳定的 setState setter 实现一次，
@@ -21,6 +22,23 @@ export interface FlowNotices {
   setTagBusy: (busy: boolean) => void
   /** 整组操作忙碌开关（toggle-batch 与全部更新共用）。 */
   setBatchBusy: (busy: boolean) => void
+}
+
+/**
+ * 统一异步动作外壳：清错 → 执行 → 异常转错误条幅 → 收尾（忙碌开关）。
+ * 只用于同形的 clearFail/try/catch/finally 站点；成功后清错、自定义收尾、
+ * 需要返回值的站点保持内联。
+ */
+export async function runFlow<T>(shared: FlowNotices, body: () => Promise<T>, settle: () => void = () => {}): Promise<T | undefined> {
+  shared.clearFail()
+  try {
+    return await body()
+  } catch (error) {
+    shared.fail(errorMessage(error))
+    return undefined
+  } finally {
+    settle()
+  }
 }
 
 /** Catalog poll interval while the panel is mounted (the provider watcher feeds this). */

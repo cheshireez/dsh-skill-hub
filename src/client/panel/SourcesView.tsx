@@ -6,13 +6,15 @@
  * "personal" card (project skills never count as personal).
  */
 
-import { useState, type JSX } from 'react'
+import { useMemo, useState, type JSX } from 'react'
 import { tt } from '../helpers.ts'
 import { filterBySource, groupSwitchView, isProjectSource, PRIVATE_SOURCE } from '../grouping.ts'
 import { SourceStatusBadge } from './SourceStatusBadge.tsx'
 import { SkillRow } from './SkillRow.tsx'
 import { DisabledRow } from './DisabledRow.tsx'
 import { GroupSummary } from './GroupSummary.tsx'
+import { GroupSwitchButton } from './GroupSwitchButton.tsx'
+import { useDragReorder } from './useDragReorder.ts'
 import type { SkillHubState } from './useSkillHub.ts'
 import css from './panel.module.css'
 
@@ -21,21 +23,19 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
   const { catalog, groupsState, skillView, sourceFilter, origins, sorted, normalized, collapsedGroups, viewNames, sourceCheck, actionNames, checkingSource, syncingSource, batchBusy, busyNames, toggleGroupCollapse, checkSources, requestSync, requestDelete, requestDeleteGroup, toggleGroup, enableDisabled } = hub
   const [topDragKey, setTopDragKey] = useState<string | null>(null)
   const [topOverKey, setTopOverKey] = useState<string | null>(null)
-
-  if (skillView === 'flat') {
-    return <>{filterBySource(sorted, sourceFilter, origins).map((skill) => <SkillRow key={skill.name} skill={skill} hub={hub} />)}</>
-  }
+  /** 重复技能名集合：整表只建一次，行内用 has 取代逐行线性 includes。 */
+  const duplicateNames = useMemo(() => new Set(catalog?.duplicateNames ?? []), [catalog])
 
   // ----- 顶层分组统一拖拽（project / col:xxx / personal 全部可拖） -----
   const projectSkillsAll = filterBySource(sorted, sourceFilter, origins).filter((skill) => isProjectSource(skill.source))
   const hasProject = projectSkillsAll.length > 0
   const collections = groupsState?.collections ?? []
   const uncategorized = filterBySource(sorted, sourceFilter, origins).filter((skill) => origins[skill.name] === undefined && !isProjectSource(skill.source))
-  const personalDisabledAll = (catalog?.disabled ?? []).filter((record) => origins[record.name] === undefined)
+  const personalDisabled = (catalog?.disabled ?? []).filter((record) => origins[record.name] === undefined)
     .filter((record) => normalized.length === 0 || record.name.toLocaleLowerCase().includes(normalized) || record.description.toLocaleLowerCase().includes(normalized))
     .filter((record) => sourceFilter === 'all' || sourceFilter === PRIVATE_SOURCE)
-  const allPersonalNamesAll = [...uncategorized.map((s) => s.name), ...personalDisabledAll.map((r) => r.name)]
-  const hasPersonal = allPersonalNamesAll.length > 0
+  const allPersonalNames = [...uncategorized.map((s) => s.name), ...personalDisabled.map((r) => r.name)]
+  const hasPersonal = allPersonalNames.length > 0
   const defaultTopKeys: string[] = [
     ...(hasProject ? ['project'] : []),
     ...collections.map((c) => 'col:' + c.name),
@@ -61,6 +61,13 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
     next.splice(to, 0, moved)
     void hub.reorderSourceGroups(next)
   }
+  const drag = useDragReorder({ dragKey: topDragKey, overKey: topOverKey, setDragKey: setTopDragKey, setOverKey: setTopOverKey, onDrop: handleTopDrop })
+  /** SkillRow 收窄后的 props：父组件统一传入它实际消费的字段。 */
+  const rowProps = { uses: hub.uses, hubConfig: hub.hubConfig, busyNames, editMode: hub.editMode, tagBusy: hub.tagBusy, duplicateNames, toggle: hub.toggle, openDetail: hub.openDetail, requestDeleteSkill: hub.requestDeleteSkill }
+
+  if (skillView === 'flat') {
+    return <>{filterBySource(sorted, sourceFilter, origins).map((skill) => <SkillRow key={skill.name} skill={skill} {...rowProps} />)}</>
+  }
 
   // 空状态：没有任何分组时提示
   const isEmptyTop = !hasProject && collections.length === 0 && !hasPersonal
@@ -71,8 +78,6 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
         // Project 顶层卡片（可拖）
         if (topKey === 'project' && hasProject) {
           const topCollapsed = collapsedGroups.has('project')
-          const isDragging = topDragKey === 'project'
-          const isOver = topOverKey === 'project' && topDragKey !== 'project'
           // 按 workspace 聚合，与 ProjectTree 逻辑一致
           const byProject = new Map<string, { title: string; skills: typeof projectSkillsAll }>()
           for (const skill of projectSkillsAll) {
@@ -82,16 +87,7 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
             else entry.skills.push(skill)
           }
           return (
-            <section
-              key="project"
-              className={css.section + (isDragging ? ' ' + css.dragging : '') + (isOver ? ' ' + css.dragOver : '')}
-              draggable
-              onDragStart={(e) => { setTopDragKey('project'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', 'project') }}
-              onDragOver={(e) => { e.preventDefault(); if (topOverKey !== 'project') setTopOverKey('project') }}
-              onDragLeave={() => { if (topOverKey === 'project') setTopOverKey(null) }}
-              onDrop={(e) => { e.preventDefault(); handleTopDrop('project'); setTopOverKey(null) }}
-              onDragEnd={() => { setTopDragKey(null); setTopOverKey(null) }}
-            >
+            <section key="project" {...drag('project')}>
               <div className={css.groupHead}>
                 <span className={css.dragHandle} aria-hidden title="拖拽调整顺序">⋮⋮</span>
                 <button type='button' className={css.disclosure} aria-expanded={!topCollapsed} onClick={() => { toggleGroupCollapse('project') }}>
@@ -108,7 +104,7 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
                     <div className={css.groupHead}>
                       <button type='button' className={css.disclosure} aria-expanded={!projCollapsed} onClick={() => { toggleGroupCollapse(projKey) }}>
                         <span className={css.chevron + (projCollapsed ? ' ' + css.chevronCollapsed : '')} />
-                        <span className={css.groupTitle}>{proj.title} · {proj.skills.length}<GroupSummary members={proj.skills.map((s) => s.name)} hub={hub} /></span>
+                        <span className={css.groupTitle}>{proj.title} · {proj.skills.length}<GroupSummary members={proj.skills.map((s) => s.name)} uses={hub.uses} hubConfig={hub.hubConfig} /></span>
                       </button>
                       <span className={css.groupOps}>
                         <button type='button' className={css.opBtn} onClick={(event) => { event.stopPropagation(); hub.toggleSubdivide(key) }}>{subdivided ? tt('groups.merge') : tt('groups.subdivide')}</button>
@@ -130,12 +126,12 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
                                     <span className={css.groupTitle}>{tt(('badge.source.' + source) as 'badge.source.project-dsh' | 'badge.source.project-agents')} · {list.length}</span>
                                   </button>
                                 </div>
-                                {!srcCollapsed ? list.map((skill) => <SkillRow key={skill.name} skill={skill} hub={hub} />) : null}
+                                {!srcCollapsed ? list.map((skill) => <SkillRow key={skill.name} skill={skill} {...rowProps} />) : null}
                               </div>
                             )
                           })}
                         </div>
-                      ) : proj.skills.map((skill) => <SkillRow key={skill.name} skill={skill} hub={hub} />)
+                      ) : proj.skills.map((skill) => <SkillRow key={skill.name} skill={skill} {...rowProps} />)
                     ) : null}
                   </div>
                 )
@@ -157,19 +153,8 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
         const view = groupSwitchView(collection.skillNames, viewNames)
         const check = sourceCheck[collection.name]
         const hasWritable = collection.skillNames.some((name) => actionNames.has(name))
-        const isDragging = topDragKey === topKey
-        const isOver = topOverKey === topKey && topDragKey !== topKey
         return (
-          <section
-            key={'col:' + collection.name}
-            className={css.section + (isDragging ? ' ' + css.dragging : '') + (isOver ? ' ' + css.dragOver : '')}
-            draggable
-            onDragStart={(e) => { setTopDragKey(topKey); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', topKey) }}
-            onDragOver={(e) => { e.preventDefault(); if (topOverKey !== topKey) setTopOverKey(topKey) }}
-            onDragLeave={() => { if (topOverKey === topKey) setTopOverKey(null) }}
-            onDrop={(e) => { e.preventDefault(); handleTopDrop(topKey); setTopOverKey(null) }}
-            onDragEnd={() => { setTopDragKey(null); setTopOverKey(null) }}
-          >
+          <section key={'col:' + collection.name} {...drag(topKey)}>
             <div className={css.groupHead}>
               <span className={css.dragHandle} aria-hidden title="拖拽调整顺序">⋮⋮</span>
               <button type='button' className={css.disclosure} aria-expanded={!collapsed} onClick={() => { toggleGroupCollapse('col:' + collection.name) }}>
@@ -177,7 +162,7 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
                 <span className={css.groupTitle}>
                   <a className={css.sourceLink} href={'https://github.com/' + collection.name} target='_blank' rel='noreferrer' onClick={(event) => { event.stopPropagation() }}>{collection.name}</a>
                   {' · ' + collection.skillNames.length}
-                  <GroupSummary members={collection.skillNames} hub={hub} />
+                  <GroupSummary members={collection.skillNames} uses={hub.uses} hubConfig={hub.hubConfig} />
                 </span>
               </button>
               <span className={css.groupOps}>
@@ -194,13 +179,14 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
                 {check !== undefined && check.deleted.length > 0
                   ? <button type='button' className={css.opBtn + ' ' + css.opDanger} onClick={(event) => { event.stopPropagation(); requestDelete(collection.name, check.deleted) }}>{tt('source.followDelete')}</button>
                   : null}
-                <button type='button' role='switch' aria-checked={view.state !== 'off'} aria-label={collection.name}
-                  className={css.switch + (view.state === 'on' ? ' ' + css.switchOn : view.state === 'mixed' ? ' ' + css.switchMixed : '')}
-                  disabled={batchBusy || collection.skillNames.length === 0 || (view.state !== 'off' && !hasWritable)}
-                  title={view.state !== 'off' && !hasWritable ? tt('groups.noWritable') : undefined}
-                  onClick={(event) => { event.stopPropagation(); toggleGroup('col:' + collection.name, collection.name, view.state) }}>
-                  <span className={css.switchThumb} />
-                </button>
+                <GroupSwitchButton
+                  state={view.state}
+                  label={collection.name}
+                  memberCount={collection.skillNames.length}
+                  batchBusy={batchBusy}
+                  hasWritable={hasWritable}
+                  onToggle={() => { toggleGroup('col:' + collection.name, collection.name, view.state) }}
+                />
                 {hub.editMode ? <button
                   type='button'
                   className={css.opBtn + ' ' + css.opDanger}
@@ -213,9 +199,9 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
             </div>
             {!collapsed ? (
               <>
-                {skills.map((skill) => <SkillRow key={skill.name} skill={skill} hub={hub} />)}
+                {skills.map((skill) => <SkillRow key={skill.name} skill={skill} {...rowProps} />)}
                 {disabledMembers.map((record) => (
-                  <DisabledRow key={record.name} record={record} busy={busyNames.has(record.name)} duplicate={catalog?.duplicateNames?.includes(record.name) === true} onEnable={() => { void enableDisabled(record) }} onOpen={() => { void hub.openDetail(record.name) }} />
+                  <DisabledRow key={record.name} record={record} busy={busyNames.has(record.name)} duplicate={duplicateNames.has(record.name)} onEnable={() => { void enableDisabled(record) }} onOpen={() => { void hub.openDetail(record.name) }} />
                 ))}
               </>
             ) : null}
@@ -224,31 +210,15 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
         }
         // Personal 顶层卡片（可拖）
         if (topKey === 'uncategorized-source' && hasPersonal) {
-          const uncategorized = filterBySource(sorted, sourceFilter, origins).filter((skill) => origins[skill.name] === undefined && !isProjectSource(skill.source))
-          const personalDisabled = (catalog?.disabled ?? []).filter((record) => origins[record.name] === undefined)
-            .filter((record) => normalized.length === 0 || record.name.toLocaleLowerCase().includes(normalized) || record.description.toLocaleLowerCase().includes(normalized))
-            .filter((record) => sourceFilter === 'all' || sourceFilter === PRIVATE_SOURCE)
-          const allPersonalNames = [...uncategorized.map((s) => s.name), ...personalDisabled.map((r) => r.name)]
           if (allPersonalNames.length === 0) return null
           const collapsed = collapsedGroups.has('uncategorized-source')
-          const isDragging = topDragKey === 'uncategorized-source'
-          const isOver = topOverKey === 'uncategorized-source' && topDragKey !== 'uncategorized-source'
           return (
-            <section
-              key="uncategorized-source"
-              className={css.section + (isDragging ? ' ' + css.dragging : '') + (isOver ? ' ' + css.dragOver : '')}
-              draggable
-              onDragStart={(e) => { setTopDragKey('uncategorized-source'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', 'uncategorized-source') }}
-              onDragOver={(e) => { e.preventDefault(); if (topOverKey !== 'uncategorized-source') setTopOverKey('uncategorized-source') }}
-              onDragLeave={() => { if (topOverKey === 'uncategorized-source') setTopOverKey(null) }}
-              onDrop={(e) => { e.preventDefault(); handleTopDrop('uncategorized-source'); setTopOverKey(null) }}
-              onDragEnd={() => { setTopDragKey(null); setTopOverKey(null) }}
-            >
+            <section key="uncategorized-source" {...drag('uncategorized-source')}>
               <div className={css.groupHead}>
                 <span className={css.dragHandle} aria-hidden title="拖拽调整顺序">⋮⋮</span>
                 <button type='button' className={css.disclosure} aria-expanded={!collapsed} onClick={() => { toggleGroupCollapse('uncategorized-source') }}>
                   <span className={css.chevron + (collapsed ? ' ' + css.chevronCollapsed : '')} />
-                  <span className={css.groupTitle}>{tt('groups.personal')} · {allPersonalNames.length}<GroupSummary members={allPersonalNames} hub={hub} /></span>
+                  <span className={css.groupTitle}>{tt('groups.personal')} · {allPersonalNames.length}<GroupSummary members={allPersonalNames} uses={hub.uses} hubConfig={hub.hubConfig} /></span>
                 </button>
                 <span className={css.groupOps}>
                   {hub.editMode ? <button type='button' className={css.opBtn + ' ' + css.opDanger} title={tt('source.deleteGroupHint', { count: allPersonalNames.length })} onClick={(event) => { event.stopPropagation(); requestDeleteGroup(tt('groups.personal'), allPersonalNames) }}>{tt('source.deleteGroup')}</button> : null}
@@ -256,8 +226,8 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
               </div>
               {!collapsed ? (
                 <>
-                  {uncategorized.map((skill) => <SkillRow key={skill.name} skill={skill} hub={hub} />)}
-                  {personalDisabled.map((record) => (<DisabledRow key={record.name} record={record} busy={busyNames.has(record.name)} duplicate={catalog?.duplicateNames?.includes(record.name) === true} onEnable={() => { void enableDisabled(record) }} onOpen={() => { void hub.openDetail(record.name) }} />))}
+                  {uncategorized.map((skill) => <SkillRow key={skill.name} skill={skill} {...rowProps} />)}
+                  {personalDisabled.map((record) => (<DisabledRow key={record.name} record={record} busy={busyNames.has(record.name)} duplicate={duplicateNames.has(record.name)} onEnable={() => { void enableDisabled(record) }} onOpen={() => { void hub.openDetail(record.name) }} />))}
                 </>
               ) : null}
             </section>

@@ -11,7 +11,7 @@ import type {
 } from '../../../protocol.ts'
 import type { SkillHubApi } from '../../api.ts'
 import { errorMessage } from '../../helpers.ts'
-import type { FlowNotices } from './shared.ts'
+import { runFlow, type FlowNotices } from './shared.ts'
 import type { ConfirmDialogState } from '../dialogs.tsx'
 
 export function useSourceFlow(
@@ -43,17 +43,12 @@ export function useSourceFlow(
   /** 检查全部来源的上游更新（服务端 5 分钟节流）。 */
   const checkSources = useCallback(async (repo?: string): Promise<void> => {
     setCheckingSource(repo ?? 'all')
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       const result = await api.checkSources(repo)
       const next: Record<string, SourceCheckResult> = { ...sourceCheck }
       for (const item of result.results) next[item.repo] = item
       setSourceCheck(next)
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
-      setCheckingSource(null)
-    }
+    }, () => setCheckingSource(null))
   }, [api, sourceCheck, shared])
 
   /** 请求同步某个来源的所选技能（弹确认，因为会覆盖本地修改）。 */
@@ -73,18 +68,13 @@ export function useSourceFlow(
     setConfirmDialog(null)
     if (dialog.kind === 'sync') {
       setSyncingSource(dialog.repo)
-      shared.clearFail()
-      try {
+      await runFlow(shared, async () => {
         const result = await api.syncSource(dialog.repo, dialog.skills)
         await Promise.all([reloadCatalog(), reloadGroups(), loadSources()])
         if (result.failed.length > 0) {
           shared.fail('sync: ' + result.failed.map((failure) => failure.name + ': ' + failure.error).join('; '))
         }
-      } catch (error) {
-        shared.fail(errorMessage(error))
-      } finally {
-        setSyncingSource(null)
-      }
+      }, () => setSyncingSource(null))
     } else {
       shared.clearFail()
       try {
@@ -99,33 +89,23 @@ export function useSourceFlow(
   /** 从回收站恢复一个技能。 */
   const restoreTrash = useCallback(async (name: string): Promise<void> => {
     shared.setTagBusy(true)
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       await api.restoreSource(name)
       await Promise.all([reloadCatalog(), reloadGroups(), loadSources()])
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
-      shared.setTagBusy(false)
-    }
+    }, () => shared.setTagBusy(false))
   }, [api, reloadCatalog, reloadGroups, loadSources, shared])
 
   /** 确认后永久删除回收站里的全部技能。 */
   const clearTrash = useCallback(async (): Promise<void> => {
     setConfirmClearTrash(false)
     shared.setTagBusy(true)
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       const result = await api.clearTrash()
       if (result.failed.length > 0) {
         shared.fail('clear trash: ' + result.failed.map((failure) => failure.name + ': ' + failure.error).join('; '))
       }
       await Promise.all([reloadCatalog(), loadSources()])
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
-      shared.setTagBusy(false)
-    }
+    }, () => shared.setTagBusy(false))
   }, [api, reloadCatalog, loadSources, shared])
 
   /** 打开单个技能的删除确认（移入回收站，可恢复）。 */
@@ -139,15 +119,10 @@ export function useSourceFlow(
     if (name === null) return
     setDeleteSkillDialog(null)
     shared.setTagBusy(true)
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       await api.deleteSkill(name)
       await Promise.all([reloadCatalog(), reloadGroups(), loadSources()])
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
-      shared.setTagBusy(false)
-    }
+    }, () => shared.setTagBusy(false))
   }, [api, deleteSkillDialog, reloadCatalog, reloadGroups, loadSources, shared])
 
   /** 打开整组删除确认（来源分组一键删除）。 */

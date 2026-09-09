@@ -15,7 +15,7 @@ import type {
 import type { SkillHubApi } from '../../api.ts'
 import { errorMessage, tt } from '../../helpers.ts'
 import { sortSkills, type SortKey } from '../../grouping.ts'
-import type { FlowNotices, UsesMap } from './shared.ts'
+import { runFlow, type FlowNotices, type UsesMap } from './shared.ts'
 
 export function useCatalogFlow(
   api: SkillHubApi,
@@ -64,86 +64,67 @@ export function useCatalogFlow(
 
   const openDetail = useCallback(async (name: string): Promise<void> => {
     setDetailLoading(true)
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       setDetail(await api.skill(name, workspace !== '' ? { cwd: workspace } : undefined))
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
-      setDetailLoading(false)
-    }
+    }, () => setDetailLoading(false))
   }, [api, workspace, shared])
 
   const toggle = useCallback(async (skill: CatalogSkill, enabled: boolean): Promise<void> => {
     setBusyNames((previous) => new Set(previous).add(skill.name))
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       const next = await api.toggle(skill.name, enabled)
       setCatalog(next)
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
+    }, () => {
       setBusyNames((previous) => {
         const next = new Set(previous)
         next.delete(skill.name)
         return next
       })
-    }
+    })
   }, [api, shared])
 
   const enableDisabled = useCallback(async (record: DisabledSkill): Promise<void> => {
     setBusyNames((previous) => new Set(previous).add(record.name))
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       const next = await api.toggle(record.name, true)
       setCatalog(next)
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
+    }, () => {
       setBusyNames((previous) => {
         const next = new Set(previous)
         next.delete(record.name)
         return next
       })
-    }
+    })
   }, [api, shared])
 
   /** Toggle an explicit name set in one write (enables disabled members too). */
   const batchToggleNames = useCallback(async (names: string[], enabled: boolean): Promise<void> => {
     if (names.length === 0) return
     shared.setBatchBusy(true)
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       const next = await api.toggleBatch(names, enabled)
       setCatalog(next.catalog)
       if (next.failures.length > 0) {
         shared.fail('toggle-batch: ' + next.failures.map((failure) => failure.name + ': ' + failure.error).join('; '))
       }
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
-      shared.setBatchBusy(false)
-    }
+    }, () => shared.setBatchBusy(false))
   }, [api, shared])
 
   const fixDiagnostic = useCallback(async (path: string): Promise<void> => {
     setFixingPaths((previous) => new Set(previous).add(path))
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       const confirmed = window.confirm(tt('diag.fixConfirm', { path }))
       if (!confirmed) return
       await api.fixDiagnostic(path)
       await load()
       shared.succeed(tt('diag.fixed'))
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
+    }, () => {
       setFixingPaths((previous) => {
         const next = new Set(previous)
         next.delete(path)
         return next
       })
-    }
+    })
   }, [api, load, shared])
 
   const create = useCallback(async (event: FormEvent): Promise<void> => {

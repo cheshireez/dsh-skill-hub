@@ -12,7 +12,7 @@ import type {
 } from '../../../protocol.ts'
 import type { SkillHubApi } from '../../api.ts'
 import { errorMessage, tt } from '../../helpers.ts'
-import type { FlowNotices, MarketCheckResult, MarketState, RepoDiscoverState } from './shared.ts'
+import { runFlow, type FlowNotices, type MarketCheckResult, type MarketState, type RepoDiscoverState } from './shared.ts'
 import type { BranchChoiceState, MarketSyncDialogState, VersionChoiceState } from '../dialogs.tsx'
 
 export function useMarketFlow(
@@ -99,15 +99,10 @@ export function useMarketFlow(
   /** 删除一个市场源（不影响已装技能）。 */
   const removeMarketSource = useCallback(async (repo: string): Promise<void> => {
     shared.setTagBusy(true)
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       const result = await api.removeMarketSource(repo)
       setMarketState({ status: 'ready', repos: result.repos })
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
-      shared.setTagBusy(false)
-    }
+    }, () => shared.setTagBusy(false))
   }, [api, shared])
 
   /** 扫描一个市场源（或手动输入）的仓库。 */
@@ -141,16 +136,11 @@ export function useMarketFlow(
   const confirmBranchChoice = useCallback(async (): Promise<void> => {
     if (branchChoice === null) return
     setBranchBusy(true)
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       await api.setMarketSourceRef(branchChoice.repo, branchChoice.selected)
       setBranchChoice(null)
       await scanRepo(branchChoice.repo)
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
-      setBranchBusy(false)
-    }
+    }, () => setBranchBusy(false))
   }, [api, branchChoice, scanRepo, shared])
 
   const openVersionDialog = useCallback(async (repo: string): Promise<void> => {
@@ -179,17 +169,12 @@ export function useMarketFlow(
     const ref = versionDialog.custom.trim() !== '' ? versionDialog.custom.trim() : versionDialog.selected
     if (ref === '') return
     setVersionBusy(true)
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       await api.setMarketSourceRef(versionDialog.repo, ref)
       setVersionDialog(null)
       await loadMarket()
       await scanRepo(versionDialog.repo)
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
-      setVersionBusy(false)
-    }
+    }, () => setVersionBusy(false))
   }, [api, versionDialog, loadMarket, scanRepo, shared])
 
   /** Toggle one repo preview row. */
@@ -342,16 +327,11 @@ export function useMarketFlow(
   /** 市场源同步：版本对齐后询问是否批量更新本地技能。 */
   const syncMarketSource = useCallback(async (repo: string): Promise<void> => {
     setSyncingMarket(repo)
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       const result = await api.marketSync(repo)
       setMarketSyncDialog({ repo: result.repo, ref: result.ref, skills: result.skills, selected: new Set(result.skills) })
       await loadMarket()
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
-      setSyncingMarket(null)
-    }
+    }, () => setSyncingMarket(null))
   }, [api, loadMarket, shared])
 
   /** 批量更新本地技能到市场源当前版本（复用来源同步路径）。 */
@@ -359,8 +339,7 @@ export function useMarketFlow(
     if (marketSyncDialog === null) return
     const selected = [...marketSyncDialog.selected]
     setSyncBusy(true)
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       if (selected.length > 0) {
         const result = await api.syncSource(marketSyncDialog.repo, selected)
         if (result.failed.length > 0) shared.fail(result.failed.map((item) => item.name + ': ' + item.error).join('\n'))
@@ -368,11 +347,7 @@ export function useMarketFlow(
       setMarketSyncDialog(null)
       await Promise.all([reloadCatalog(), reloadGroups(), reloadSources()])
       void checkMarket()
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
-      setSyncBusy(false)
-    }
+    }, () => setSyncBusy(false))
   }, [api, marketSyncDialog, reloadCatalog, reloadGroups, reloadSources, checkMarket, shared])
 
   /**

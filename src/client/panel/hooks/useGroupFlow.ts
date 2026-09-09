@@ -6,7 +6,6 @@
 
 import { useCallback, useState, type FormEvent } from 'react'
 import type {
-  CollectionReorderRequest,
   GroupsResponse,
   SkillTag,
   SourceGroupReorderRequest,
@@ -17,7 +16,7 @@ import type {
 import type { SkillHubApi } from '../../api.ts'
 import { errorMessage } from '../../helpers.ts'
 import { conflictsOnClose, type GroupSwitchState } from '../../grouping.ts'
-import type { FlowNotices } from './shared.ts'
+import { runFlow, type FlowNotices } from './shared.ts'
 import type { ConflictDialogState } from '../dialogs.tsx'
 
 export function useGroupFlow(
@@ -102,36 +101,25 @@ export function useGroupFlow(
     const name = newTagName.trim()
     if (name === '') return
     shared.setTagBusy(true)
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       applyTags(await api.saveTag({ name }))
       setNewTagName('')
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
-      shared.setTagBusy(false)
-    }
+    }, () => shared.setTagBusy(false))
   }, [api, applyTags, newTagName, shared])
 
   /** 删除一个 tag 分组（不影响技能文件）。 */
   const deleteTag = useCallback(async (id: string): Promise<void> => {
     shared.setTagBusy(true)
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       applyTags(await api.deleteTag(id))
       setEditingTag(null)
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
-      shared.setTagBusy(false)
-    }
+    }, () => shared.setTagBusy(false))
   }, [api, applyTags, shared])
 
   /** 重命名 tag，或保存成员勾选后回到列表。 */
   const saveTag = useCallback(async (id: string, name: string, memberNames: string[] | null): Promise<void> => {
     shared.setTagBusy(true)
-    shared.clearFail()
-    try {
+    await runFlow(shared, async () => {
       const safeName = name.trim()
       let tags: SkillTag[] | null = null
       if (safeName !== '') tags = await api.saveTag({ id, name: safeName })
@@ -139,11 +127,7 @@ export function useGroupFlow(
       if (tags === null) return
       applyTags(tags)
       setEditingTag(null)
-    } catch (error) {
-      shared.fail(errorMessage(error))
-    } finally {
-      shared.setTagBusy(false)
-    }
+    }, () => shared.setTagBusy(false))
   }, [api, applyTags, shared])
 
   /** 拖拽重排场景分组 */
@@ -172,35 +156,6 @@ export function useGroupFlow(
       shared.setTagBusy(false)
     }
   }, [api, applyTags, groupsState, shared])
-
-  /** 拖拽重排来源集合 */
-  const reorderCollections = useCallback(async (orderedNames: string[]): Promise<void> => {
-    shared.setTagBusy(true)
-    shared.clearFail()
-    try {
-      const collections = await api.reorderCollections(orderedNames)
-      setGroupsState((prev) => prev === null ? prev : { ...prev, collections })
-      void loadGroups()
-    } catch (error) {
-      const msg = errorMessage(error)
-      // 404 说明宿主仍在跑旧版（需重启后才有新路由），降级为本地即时生效
-      if (msg.includes('404') || msg.toLowerCase().includes('not found')) {
-        setGroupsState((prev) => {
-          if (prev === null) return prev
-          const map = new Map(prev.collections.map((c) => [c.name, c] as const))
-          const reordered = orderedNames.map((n) => map.get(n)).filter((c): c is NonNullable<typeof c> => c !== undefined)
-          // 补上未在 orderedNames 中的集合（新出现的）
-          for (const c of prev.collections) if (!reordered.some((r) => r.name === c.name)) reordered.push(c)
-          return { ...prev, collections: reordered }
-        })
-        shared.succeed('已临时调整顺序（本地生效，重启宿主后持久化）')
-      } else {
-        shared.fail(msg)
-      }
-    } finally {
-      shared.setTagBusy(false)
-    }
-  }, [api, loadGroups, shared])
 
   /** 拖拽重排来源顶层分组（project / col:xxx / personal 全量可拖） */
   const reorderSourceGroups = useCallback(async (orderedKeys: string[]): Promise<void> => {
@@ -235,6 +190,6 @@ export function useGroupFlow(
     groupsState, conflictDialog, editingTag, editName, membersDraft, newTagName, editSearch,
     setConflictDialog, setEditingTag, setEditName, setMembersDraft, setNewTagName, setEditSearch,
     loadGroups, applyTags, groupMap, toggleGroup, resolveConflict,
-    createTag, deleteTag, saveTag, reorderTags, reorderCollections, reorderSourceGroups,
+    createTag, deleteTag, saveTag, reorderTags, reorderSourceGroups,
   }
 }
