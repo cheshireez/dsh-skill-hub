@@ -1,109 +1,113 @@
 /* dsh-skill-hub panel — Apple-style: generous whitespace, inset grouped
-   cards, hairline separators, restrained accents. Theme-agnostic: all
-   surfaces are translucent greys + currentColor, so light/dark both work. */
+   cards, hairline separators, restrained accents.
+   Colours come from the host theme tokens (dsh-client-ui-theme defines them
+   on :root, with dark overrides on body[data-ds-dark-theme]). Every var()
+   keeps the colour this file used before the token pass as its fallback, so a
+   host without the theme package renders exactly as before. Sizes, spacing,
+   radii, fonts and layout are deliberately untouched. */
 
-.panel { padding: 28px 20px 44px; display: flex; flex-direction: column; gap: 14px; max-width: 720px; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; -webkit-font-smoothing: antialiased; color-scheme: light dark; /* Dot colors mirror src/client/SkillHubSettingsCard.tsx (DEFAULT_DOT_MODEL_COLOR / DEFAULT_DOT_USER_COLOR) — CSS cannot import TS, so keep the two in sync. */ --hub-model: #2f81f7; --hub-user: #3fb950; }
+.panel { padding: 28px 20px 44px; display: flex; flex-direction: column; gap: 14px; max-width: 720px; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; -webkit-font-smoothing: antialiased; color-scheme: light dark; /* Dot colors mirror src/client/SkillHubSettingsCard.tsx (DEFAULT_DOT_MODEL_COLOR / DEFAULT_DOT_USER_COLOR) — CSS cannot import TS, so keep the two in sync. */ --hub-model: #2f81f7; --hub-user: #3fb950; /* Host theme tokens (--dsw-alias-*, dsh-client-ui-theme). Each var() carries the pre-token colour of this file as its fallback, so a missing theme package changes nothing. */ --hub-accent: var(--dsw-alias-state-business-primary, #2f81f7); --hub-text: var(--dsw-alias-label-primary, currentColor); --hub-text-2: var(--dsw-alias-label-secondary, #61666b); --hub-text-3: var(--dsw-alias-label-tertiary, #81858c); --hub-text-4: var(--dsw-alias-label-caption, #adb2b8); --hub-surface: var(--dsw-alias-bg-module-platform, rgba(128,128,128,.06)); --hub-hover: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.08)); --hub-active: var(--dsw-alias-interactive-bg-active, rgba(128,128,128,.16)); --hub-border: var(--dsw-alias-border-l2, rgba(128,128,128,.13)); --hub-border-2: var(--dsw-alias-border-l3, rgba(128,128,128,.2)); --hub-danger: var(--dsw-alias-state-error-primary, #d1242f); --hub-success: var(--dsw-alias-state-success-primary, #3fb950); --hub-warn: var(--dsw-alias-state-warn-primary, #d29922); --hub-on-accent: var(--dsw-alias-label-primary-foreground, #fff); --hub-skeleton: var(--dsw-alias-bg-skeleton, rgba(128,128,128,.1)); }
 .header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .title { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
-.hint { font-size: 12px; opacity: .5; }
+.hint { font-size: 12px; color: var(--hub-text-3); }
 .actions { margin-left: auto; display: flex; gap: 8px; }
 
 /* Segmented control: soft capsule, neutral active fill. */
-.segmented { display: flex; background: rgba(128,128,128,.14); border-radius: 9px; padding: 2px; gap: 2px; }
-.segBtn { padding: 5px 13px; font-size: 12px; border: none; border-radius: 7px; background: transparent; color: inherit; opacity: .62; cursor: pointer; transition: background .15s ease, opacity .15s ease; }
-.segBtn:hover { opacity: .9; }
-.segBtnActive { background: rgba(128,128,128,.28); opacity: 1; font-weight: 600; }
+.segmented { display: flex; background: var(--hub-hover); border-radius: 9px; padding: 2px; gap: 2px; }
+.segBtn { padding: 5px 13px; font-size: 12px; border: none; border-radius: 7px; background: transparent; color: var(--hub-text-2); cursor: pointer; transition: background .15s ease, opacity .15s ease; }
+.segBtn:hover { color: var(--hub-text); }
+.segBtnActive { background: var(--hub-active); opacity: 1; font-weight: 600; }
 
 /* Search: filled rounded field, no border. */
-.search { width: 100%; padding: 10px 14px; border: none; border-radius: 10px; background: rgba(128,128,128,.12); color: inherit; font-size: 13px; outline: none; transition: background .15s ease; }
+.search { width: 100%; padding: 10px 14px; border: none; border-radius: 10px; background: var(--hub-surface); color: inherit; font-size: 13px; outline: none; transition: background .15s ease; }
 .search::placeholder { opacity: .45; }
-.search:focus { background: rgba(128,128,128,.18); }
+.search:focus { background: var(--hub-active); }
 
 /* Inset grouped list: one rounded card per group. */
-.section { display: flex; flex-direction: column; background: rgba(128,128,128,.06); border-radius: 12px; overflow: hidden; margin-top: 4px; box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 4px 12px rgba(0,0,0,.04); }
+.section { display: flex; flex-direction: column; background: var(--hub-surface); border-radius: 12px; overflow: hidden; margin-top: 4px; box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 4px 12px rgba(0,0,0,.04); }
 .sectionTitle { font-size: 13px; font-weight: 700; margin: 14px 16px 2px; }
 .groupHead { display: flex; align-items: center; gap: 8px; padding: 10px 14px; min-height: 44px; box-sizing: border-box; }
-.groupTitle { font-size: 13px; font-weight: 600; opacity: .92; flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; line-height: 1; }
+.groupTitle { font-size: 13px; font-weight: 600; color: var(--hub-text); flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; line-height: 1; }
 .groupOps { flex: none; display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
 /* Small neutral pill buttons (group-level actions). */
-.opBtn { font-size: 11px; padding: 3px 11px; border-radius: 999px; border: none; background: rgba(128,128,128,.13); color: inherit; cursor: pointer; transition: background .15s ease; }
-.opBtn:hover { background: rgba(128,128,128,.22); }
+.opBtn { font-size: 11px; padding: 3px 11px; border-radius: 999px; border: none; background: var(--hub-hover); color: inherit; cursor: pointer; transition: background .15s ease; }
+.opBtn:hover { background: var(--hub-active); }
 .opBtn:disabled { opacity: .4; cursor: default; }
 
 /* Rows: hairline separators inside a card, no outer borders. */
 .row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: transparent; cursor: pointer; transition: background .12s ease; }
-.row:hover { background: rgba(128,128,128,.08); }
+.row:hover { background: var(--hub-hover); }
 /* Keyboard focus ring for the div-as-button skill row (theme-agnostic). */
-.row:focus-visible { outline: 2px solid var(--hub-model); outline-offset: -2px; }
+.row:focus-visible { outline: 2px solid var(--hub-accent); outline-offset: -2px; }
 .rowStatic { cursor: default; }
 .rowStatic:hover { background: transparent; }
-.row + .row { border-top: 0.5px solid rgba(128,128,128,.13); }
+.row + .row { border-top: 0.5px solid var(--hub-border); }
 .rowMain { flex: 1; min-width: 0; }
 .rowName { display: flex; align-items: center; gap: 5px; font-size: 13.5px; }
 .rowNameText { font-weight: 600; }
-.rowDesc { font-size: 12.5px; opacity: .52; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rowDesc { font-size: 12.5px; color: var(--hub-text-3); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* No badge chips on list rows; keep only for the detail head. */
 .badges { display: flex; gap: 6px; align-items: center; flex: none; }
-.badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 0.5px solid rgba(128,128,128,.3); opacity: .8; white-space: nowrap; }
+.badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 0.5px solid var(--hub-border-2); color: var(--hub-text-2); white-space: nowrap; }
 .badgeReadonly { opacity: .5; }
 
 /* iOS-style switch (kept, already matches the system look). */
-.switch { flex: none; width: 36px; height: 21px; padding: 2px; border: none; border-radius: 999px; background: rgba(128,128,128,.3); cursor: pointer; transition: background .18s ease; }
+.switch { flex: none; width: 36px; height: 21px; padding: 2px; border: 1px solid var(--hub-border-2); border-radius: 999px; background: var(--dsw-alias-bg-module-platform, rgba(128,128,128,.3)); cursor: pointer; transition: background .18s ease; }
 .switch:disabled { opacity: .5; cursor: default; }
-.switchOn { background: #34c759; }
+.switchOn { background: var(--dsw-alias-state-business-primary, #34c759); }
 .switchThumb { display: block; width: 17px; height: 17px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transform: translateX(0); transition: transform .18s ease; }
 .switchOn .switchThumb { transform: translateX(15px); }
 
-.empty { font-size: 13px; opacity: .5; padding: 20px 0; text-align: center; }
-.diagRow { font-size: 12px; padding: 9px 14px; border-left: 3px solid #d29922; background: rgba(210,153,34,.06); }
-.diagPath { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; opacity: .75; word-break: break-all; }
-.diagReason { opacity: .65; margin-top: 1px; }
+.empty { font-size: 13px; color: var(--hub-text-3); padding: 20px 0; text-align: center; }
+.diagRow { font-size: 12px; padding: 9px 14px; border-left: 3px solid var(--hub-warn); background: rgba(210,153,34,.06); }
+.diagPath { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--hub-text-2); word-break: break-all; }
+.diagReason { color: var(--hub-text-3); margin-top: 1px; }
 .updateLink { color: inherit; font-weight: 600; text-decoration: underline; }
 
-.errorBanner { display: flex; align-items: flex-start; gap: 10px; font-size: 12.5px; color: #d1242f; background: rgba(209,36,47,.07); border-radius: 10px; padding: 10px 14px; white-space: pre-wrap; word-break: break-all; }
+.errorBanner { display: flex; align-items: flex-start; gap: 10px; font-size: 12.5px; color: var(--hub-danger); background: rgba(209,36,47,.07); border-radius: 10px; padding: 10px 14px; white-space: pre-wrap; word-break: break-all; }
 /* Green success banner (create finished); mirrors the error banner shape. */
-.successBanner { display: flex; align-items: flex-start; gap: 10px; font-size: 12.5px; color: #3fb950; background: rgba(63,185,80,.08); border-radius: 10px; padding: 10px 14px; white-space: pre-wrap; word-break: break-all; }
+.successBanner { display: flex; align-items: flex-start; gap: 10px; font-size: 12.5px; color: var(--hub-success); background: rgba(63,185,80,.08); border-radius: 10px; padding: 10px 14px; white-space: pre-wrap; word-break: break-all; }
 
 .detailHead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.back { background: rgba(128,128,128,.12); border: none; color: inherit; border-radius: 8px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; }
-.back:hover { background: rgba(128,128,128,.2); }
+.back { background: var(--hub-hover); border: none; color: inherit; border-radius: 8px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; }
+.back:hover { background: var(--hub-active); }
 .detailName { font-size: 19px; font-weight: 700; letter-spacing: -0.01em; }
-.detailMeta { display: flex; flex-direction: column; gap: 4px; font-size: 12px; opacity: .6; }
+.detailMeta { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--hub-text-3); }
 .detailMetaLine { word-break: break-all; }
-.detailContent { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; background: rgba(128,128,128,.05); border-radius: 12px; padding: 14px 16px; max-height: 62vh; overflow: auto; }
+.detailContent { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; background: var(--hub-surface); border-radius: 12px; padding: 14px 16px; max-height: 62vh; overflow: auto; }
 
-.form { display: flex; flex-direction: column; gap: 10px; background: rgba(128,128,128,.05); border-radius: 12px; padding: 14px 16px; box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 4px 12px rgba(0,0,0,.04); }
+.form { display: flex; flex-direction: column; gap: 10px; background: var(--hub-surface); border-radius: 12px; padding: 14px 16px; box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 4px 12px rgba(0,0,0,.04); }
 .formRow { display: flex; flex-direction: column; gap: 5px; }
-.formLabel { font-size: 12px; opacity: .6; }
-.input, .select { padding: 9px 12px; border: none; border-radius: 9px; background: rgba(128,128,128,.12); color: inherit; font-size: 13px; outline: none; }
-.input:focus, .select:focus { background: rgba(128,128,128,.18); }
+.formLabel { font-size: 12px; color: var(--hub-text-3); }
+.input, .select { padding: 9px 12px; border: none; border-radius: 9px; background: var(--hub-surface); color: inherit; font-size: 13px; outline: none; }
+.input:focus, .select:focus { background: var(--hub-active); }
 .buttons { display: flex; gap: 8px; align-items: center; }
-.button { padding: 6px 13px; border-radius: 8px; font-size: 12.5px; cursor: pointer; border: none; background: rgba(128,128,128,.12); color: inherit; transition: background .15s ease; }
-.button:hover { background: rgba(128,128,128,.2); }
-.primary { background: var(--hub-model); color: #fff; }
-.primary:hover { background: #2f81f7; opacity: .92; }
+.button { padding: 6px 13px; border-radius: 8px; font-size: 12.5px; cursor: pointer; border: none; background: var(--hub-hover); color: inherit; transition: background .15s ease; }
+.button:hover { background: var(--hub-active); }
+.primary { background: var(--hub-accent); color: var(--hub-on-accent); }
+.primary:hover { background: var(--hub-accent); opacity: .92; }
 .primary:disabled { opacity: .45; cursor: default; }
-.danger { background: #d1242f; color: #fff; }
-.danger:hover { background: #d1242f; opacity: .92; }
+.danger { background: var(--hub-danger); color: var(--hub-on-accent); }
+.danger:hover { background: var(--hub-danger); opacity: .92; }
 .danger:disabled { opacity: .45; cursor: default; }
-.formError { color: #d1242f; }
-.formSuccess { color: #3fb950; }
+.formError { color: var(--hub-danger); }
+.formSuccess { color: var(--hub-success); }
 
 /* Status dots (model/user invocable) — quiet circles, colors from settings. */
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-left: 5px; vertical-align: middle; }
 .dotModel { background: var(--hub-model); }
 .dotUser { background: var(--hub-user); }
-.displayName { font-size: 11px; opacity: .55; margin-left: 6px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; min-width: 0; flex-shrink: 1; }
-.legend { display: flex; align-items: center; gap: 12px; font-size: 11.5px; opacity: .55; flex-wrap: wrap; padding: 2px 2px 0; }
+.displayName { font-size: 11px; color: var(--hub-text-3); margin-left: 6px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; min-width: 0; flex-shrink: 1; }
+.legend { display: flex; align-items: center; gap: 12px; font-size: 11.5px; color: var(--hub-text-3); flex-wrap: wrap; padding: 2px 2px 0; }
 .legendItem { display: inline-flex; align-items: center; gap: 4px; }
 .legendItem .dot { margin-left: 0; }
 .legendHint { opacity: .8; }
 
 /* Chips become quiet text pills (no colored borders). */
-.badgeSource { background: rgba(128,128,128,.1); border: none; opacity: .72; }
-.badgeCount { background: rgba(128,128,128,.1); border: none; opacity: .72; }
+.badgeSource { background: var(--hub-hover); border: none; opacity: .72; }
+.badgeCount { background: var(--hub-hover); border: none; opacity: .72; }
 
 /* Collapsible drawer headers (groups view). */
 .disclosure { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 2px 0; border: none; background: none; color: inherit; cursor: pointer; text-align: left; min-height: 24px; }
@@ -112,29 +116,30 @@
 .chevronCollapsed { transform: rotate(-45deg) translateY(-1px); }
 
 /* Reduced header: title + quiet count on one line, controls on the next. */
-.headerCount { font-size: 12px; opacity: .5; margin-left: 2px; white-space: nowrap; }
-.pluginVersion { font-size: 12px; font-weight: 500; opacity: .45; margin-left: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.headerCount { font-size: 12px; color: var(--hub-text-3); margin-left: 2px; white-space: nowrap; }
+.pluginVersion { font-size: 12px; font-weight: 500; color: var(--hub-text-4); margin-left: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .subbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.legendToggle { flex: none; width: 22px; height: 22px; border-radius: 50%; border: none; background: rgba(128,128,128,.14); color: inherit; font-size: 12px; line-height: 1; cursor: pointer; opacity: .55; transition: opacity .15s ease, background .15s ease; }
+.legendToggle { flex: none; width: 22px; height: 22px; border-radius: 50%; border: none; background: var(--hub-hover); color: inherit; font-size: 12px; line-height: 1; cursor: pointer; opacity: .55; transition: opacity .15s ease, background .15s ease; }
 .legendToggle:hover { opacity: 1; }
-.legendToggleActive { opacity: 1; background: rgba(128,128,128,.28); }
+.legendToggleActive { opacity: 1; background: var(--hub-active); }
 
 /* Source filter row (分类 view). */
 .filterBar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .filterBar .formLabel { margin: 0; }
 
 /* Invocation count: amber chip beside the skill name. */
-.useCount { display: inline-block; margin-left: 6px; font-size: 11px; font-weight: 700; color: #d29922; background: rgba(210,153,34,.12); border-radius: 999px; padding: 0 6px; line-height: 1.6; vertical-align: 1px; }
+.useCount { display: inline-block; margin-left: 6px; font-size: 11px; font-weight: 700; color: var(--hub-warn); background: rgba(210,153,34,.12); border-radius: 999px; padding: 0 6px; line-height: 1.6; vertical-align: 1px; }
 /* Relative last-used time: right-aligned on the name row, above the description. */
-.useTime { margin-left: auto; font-size: 11px; opacity: .45; white-space: nowrap; }
+.useTime { margin-left: auto; font-size: 11px; color: var(--hub-text-4); white-space: nowrap; }
 
 
 
 /* ---- v0.3: tri-state switches, dialogs, source headers ---- */
 
-/* Tri-state group switch: mixed = half-filled (thumb centered, soft green).
-   The blue mirrors --hub-model at 45% (kept as rgba; see the .panel vars). */
-.switchMixed { background: rgba(47,129,247,.45); }
+/* Tri-state group switch: mixed = half-filled (thumb centered, soft accent).
+   The rgba is the pre-token blue (--hub-model at 45%), kept as the fallback
+   declaration for hosts/browsers without color-mix(). */
+.switchMixed { background: rgba(47,129,247,.45); background: color-mix(in srgb, var(--hub-accent) 45%, transparent); }
 .switchMixed .switchThumb { transform: translateX(7.5px); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
 
 /* Group title inner summary (count + last used) sits inline after the name. */
@@ -146,10 +151,10 @@
 
 /* Source status badges (check results). */
 .statusBadges { display: inline-flex; gap: 4px; align-items: center; flex: none; }
-.statusBadge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 0.5px solid rgba(128,128,128,.3); opacity: .8; white-space: nowrap; background: rgba(128,128,128,.1); }
-.statusOk { color: #3fb950; border-color: currentColor; background: transparent; }
-.statusUpdated { color: #d29922; border-color: currentColor; background: rgba(210,153,34,.08); }
-.statusError { color: #d1242f; border-color: currentColor; background: rgba(209,36,47,.08); }
+.statusBadge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 0.5px solid var(--hub-border-2); opacity: .8; white-space: nowrap; background: var(--hub-hover); }
+.statusOk { color: var(--hub-success); border-color: currentColor; background: transparent; }
+.statusUpdated { color: var(--hub-warn); border-color: currentColor; background: rgba(210,153,34,.08); }
+.statusError { color: var(--hub-danger); border-color: currentColor; background: rgba(209,36,47,.08); }
 
 /* Clickable status badge (group-header re-check affordance). */
 .statusWrap { display: inline-flex; gap: 4px; align-items: center; border: none; background: none; padding: 0; cursor: pointer; font-family: inherit; }
@@ -158,24 +163,21 @@
 .statusButton:hover { opacity: 1; }
 
 /* Danger pill (follow upstream deletion). */
-.opDanger { color: #d1242f; background: rgba(209,36,47,.1); }
+.opDanger { color: var(--hub-danger); background: rgba(209,36,47,.1); }
 .opDanger:hover { background: rgba(209,36,47,.18); }
 
 /* Icon-only pill button (fixed size so rows never shift). */
 .iconBtn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border-radius: 999px; }
 
 /* Source card in the detail view. */
-.sourceCard { display: flex; flex-direction: column; gap: 4px; font-size: 12px; background: rgba(128,128,128,.05); border-radius: 12px; padding: 12px 14px; }
+.sourceCard { display: flex; flex-direction: column; gap: 4px; font-size: 12px; background: var(--hub-surface); border-radius: 12px; padding: 12px 14px; }
 .sourceCardTitle { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* iOS-style centered dialog (conflict / sync confirm). */
 .dialogOverlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.35); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); padding: 24px; }
-.dialog { min-width: min(320px, 100%); max-width: 380px; background: var(--dsw-surface, #f5f5f7); color: var(--dsw-text, #1d1d1f); border-radius: 14px; padding: 18px 18px 14px; box-shadow: 0 12px 40px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.16); }
-@media (prefers-color-scheme: dark) {
-  .dialog { background: #2c2c2e; color: #f5f5f7; }
-}
+.dialog { min-width: min(320px, 100%); max-width: 380px; background: var(--dsw-alias-bg-layer-1, #f5f5f7); color: var(--dsw-alias-label-primary, #1d1d1f); border-radius: 14px; padding: 18px 18px 14px; box-shadow: 0 12px 40px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.16); }
 .dialogTitle { margin: 0 0 8px; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
-.dialogText { margin: 0 0 10px; font-size: 12.5px; opacity: .65; line-height: 1.5; }
+.dialogText { margin: 0 0 10px; font-size: 12.5px; color: var(--hub-text-3); line-height: 1.5; }
 .dialogList { margin: 0 0 14px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 5px; max-height: 200px; overflow: auto; }
 .dialogList li { font-size: 12.5px; opacity: .85; word-break: break-all; }
 .dialogActions { display: flex; justify-content: flex-end; gap: 8px; }
@@ -196,7 +198,7 @@
    .useTime) so the later rule wins at equal specificity. ---- */
 .grow { flex: 1; }
 /* Muted one-line hint (replaces <p class="muted" style="margin:0;font-size:11.5px">). */
-.hintLine { margin: 0; font-size: 11.5px; opacity: .55; }
+.hintLine { margin: 0; font-size: 11.5px; color: var(--hub-text-3); }
 .hintPadded { margin: 6px 12px 2px; }
 .hintInline { margin: 4px 2px; }
 /* Repo preview row for an already-installed skill (cursor default + dimmed). */
@@ -214,15 +216,60 @@
 .workspaceInput { width: 200px; padding: 6px 10px; font-size: 12px; }
 /* Project-level three-tier tree: outer card (the .section), inner levels are
    flat — indent + a hairline guide only, no nested card surfaces. */
-.projectNest { display: flex; flex-direction: column; margin: 2px 0 0 14px; border-left: 1px solid rgba(128,128,128,.14); }
+.projectNest { display: flex; flex-direction: column; margin: 2px 0 0 14px; border-left: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.14)); }
 
 /* Drag handle + reorder states — 窄版：尽量收窄占位，仍保留抓取感 */
 .dragHandle { cursor: grab; opacity: .28; font-size: 10px; letter-spacing: 0; padding: 0 1px; width: 8px; overflow: hidden; user-select: none; flex: none; display: inline-flex; align-items: center; justify-content: center; height: 16px; align-self: center; }
 .dragHandle:active { cursor: grabbing; }
 .dragging { opacity: .45; }
-.dragOver { outline: 2px dashed var(--hub-model, #2f81f7); outline-offset: -2px; background: rgba(47,129,247,.07); }
+.dragOver { outline: 2px dashed var(--hub-accent); outline-offset: -2px; background: rgba(47,129,247,.07); }
 
 /* Scan list for 276-skill import — theme-agnostic, replaces inline styles */
-.scanList { max-height: 360px; overflow: auto; border: 0.5px solid rgba(128,128,128,.13); border-radius: 12px; margin-top: 8px; background: rgba(128,128,128,.06); }
-.scanProgressTrack { flex: 1; height: 6px; background: rgba(128,128,128,.13); border-radius: 4px; overflow: hidden; }
-.scanProgressFill { height: 100%; background: var(--hub-model, #2f81f7); transition: width .2s; }
+.scanList { max-height: 360px; overflow: auto; border: 0.5px solid var(--hub-border-2); border-radius: 12px; margin-top: 8px; background: var(--hub-surface); }
+.scanProgressTrack { flex: 1; height: 6px; background: var(--hub-surface); border-radius: 4px; overflow: hidden; }
+.scanProgressFill { height: 100%; background: var(--hub-accent); transition: width .2s; }
+
+/* ---- 阶段3/4：筛选面板、列表工具、焦点环、点击区域、骨架屏、减少动效 ---- */
+
+/* 筛选面板：搜索/排序/视图切换常驻，「来源 + 调用方式」收进这里。 */
+.filterPanel { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 12px; background: var(--hub-surface); border-radius: 10px; }
+.filterField { display: inline-flex; align-items: center; gap: 6px; }
+.filterField .formLabel { margin: 0; }
+.filterField .select { max-width: 150px; }
+
+/* 列表工具行（全部折叠 / 全部展开）。 */
+.listTools { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 0 2px; }
+
+/* 键盘焦点环：只在 focus-visible（键盘操作）时出现，鼠标点击不打扰。 */
+.opBtn:focus-visible, .button:focus-visible, .segBtn:focus-visible, .disclosure:focus-visible,
+.switch:focus-visible, .legendToggle:focus-visible, .back:focus-visible, .statusWrap:focus-visible,
+.input:focus-visible, .select:focus-visible, .search:focus-visible, .sourceLink:focus-visible {
+  outline: 2px solid var(--hub-accent);
+  outline-offset: 2px;
+}
+
+/* 点击区域：小控件补到 28px（原 22-24px 偏小）。 */
+.opBtn { padding: 4px 12px; }
+.segBtn { padding: 6px 13px; }
+.iconBtn { width: 28px; height: 28px; }
+.legendToggle { width: 28px; height: 28px; }
+
+/* 拖拽把手：原 8px 宽 + 0.28 透明度太细太淡，鼠标不好抓。 */
+.dragHandle { width: 16px; opacity: .45; }
+.dragHandle:hover { opacity: 1; }
+
+/* 加载骨架屏（替代单行「加载中」）。 */
+.skeleton { display: flex; flex-direction: column; gap: 8px; padding: 14px; background: var(--hub-surface); border-radius: 12px; }
+.skeletonRow { height: 14px; border-radius: 7px; background: var(--hub-skeleton); animation: hubPulse 1.4s ease-in-out infinite; }
+.skeletonRow:nth-child(2) { width: 82%; }
+.skeletonRow:nth-child(3) { width: 64%; }
+@keyframes hubPulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+
+/* 系统「减少动效」偏好：关闭过渡与脉冲动画。 */
+@media (prefers-reduced-motion: reduce) {
+  .panel *, .panel *::before, .panel *::after {
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

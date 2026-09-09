@@ -37,6 +37,8 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
   const hub = useSkillHub(props.api)
   /** 工作区输入草稿：回车才应用，避免每次按键都触发目录重拉。 */
   const [workspaceDraft, setWorkspaceDraft] = useState('')
+  /** 「筛选」面板开合（来源 + 调用方式收进这里；搜索/排序/视图切换始终可见）。 */
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const {
     catalog, loading, loadError, successBanner, updateState, detail, detailLoading, showForm, formName, formDesc,
     formRoot, formBusy, formMessage, hubConfig, tab, skillView, sourceFilter, sortKey, search,
@@ -105,6 +107,9 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
     )
   }
 
+  /** 生效中的筛选条件数（来源 + 调用方式），显示在「筛选」按钮上。 */
+  const activeFilterCount = (sourceFilter !== 'all' ? 1 : 0) + (hub.invocationFilter !== 'all' ? 1 : 0)
+
   /** 检查结果的悬停提示：收敛到「检查更新」按钮上，不再占面板顶部横幅。 */
   const updateTitle = ((): string | undefined => {
     if (updateState.status === 'checking') return tt('update.checking')
@@ -132,6 +137,13 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
         {catalog !== null && !catalog.complete ? <span className={css.hint}>{tt('panel.incomplete')}</span> : null}
         {catalog !== null && (catalog.duplicateNames?.length ?? 0) > 0 ? <button type='button' className={css.opBtn} title={tt('row.duplicateHint')} onClick={() => { clearListFilters() }}>⚠ {tt('row.duplicate')}×{(catalog.duplicateNames ?? []).length}</button> : null}
         <span className={css.actions}>
+          <button
+            type='button'
+            className={css.button + (editMode ? ' ' + css.primary : '')}
+            aria-pressed={editMode}
+            title={tt('edit.hint')}
+            onClick={() => { setEditMode((value) => !value) }}
+          >{tt(editMode ? 'edit.done' : 'edit.start')}</button>
           <button type='button' className={css.button} disabled={updateState.status === 'checking'} title={updateTitle} onClick={() => { void checkUpdate() }}>{updateState.status === 'checking' ? tt('update.checking') : tt('update.check')}</button>
           {updateState.status === 'ready' && updateState.data.updateAvailable && updateState.data.url !== null
             ? <a className={css.updateLink} href={updateState.data.url} target='_blank' rel='noreferrer'>{tt('update.newVersion', { version: updateState.data.latestVersion ?? '' })}</a>
@@ -211,7 +223,13 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
         </div>
       ) : null}
 
-      {loading ? <div className={css.empty}>{tt('panel.loading')}</div> : null}
+      {loading ? (
+        <div className={css.skeleton} role='status' aria-label={tt('panel.loading')}>
+          <div className={css.skeletonRow} />
+          <div className={css.skeletonRow} />
+          <div className={css.skeletonRow} />
+        </div>
+      ) : null}
 
       {detailLoading ? <div className={css.empty}>{tt('detail.loading')}</div> : null}
 
@@ -221,39 +239,51 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
         <>
           <div className={css.filterBar}>
             {tab === 'sources' ? (
-              <>
-                <span className={css.segmented}>
-                  <button type='button' className={css.segBtn + (skillView === 'flat' ? ' ' + css.segBtnActive : '')} onClick={() => { setSkillView('flat') }}>{tt('view.flat')}</button>
-                  <button type='button' className={css.segBtn + (skillView === 'groups' ? ' ' + css.segBtnActive : '')} onClick={() => { setSkillView('groups') }}>{tt('view.grouped')}</button>
-                </span>
-                <select className={css.select} value={sourceFilter} onChange={(event) => { setSourceFilter(event.target.value) }}>
-                  <option value='all'>{tt('filter.allSources')}</option>
-                  {sourceOptions.map((source) => (
-                    <option key={source} value={source}>{source === PRIVATE_SOURCE ? tt('filter.private') : source}</option>
-                  ))}
-                </select>
-              </>
+              <span className={css.segmented}>
+                <button type='button' className={css.segBtn + (skillView === 'flat' ? ' ' + css.segBtnActive : '')} onClick={() => { setSkillView('flat') }}>{tt('view.flat')}</button>
+                <button type='button' className={css.segBtn + (skillView === 'groups' ? ' ' + css.segBtnActive : '')} onClick={() => { setSkillView('groups') }}>{tt('view.grouped')}</button>
+              </span>
             ) : null}
             <select className={css.select} value={sortKey} onChange={(event) => { setSortKey(event.target.value as SortKey) }}>
               <option value='name'>{tt('sort.name')}</option>
               <option value='added'>{tt('sort.added')}</option>
               <option value='uses'>{tt('sort.uses')}</option>
             </select>
-            <select className={css.select} value={hub.invocationFilter} onChange={(event) => { hub.setInvocationFilter(event.target.value as 'all' | 'model' | 'user') }}>
-              <option value='all'>{tt('filter.invocationAll')}</option>
-              <option value='model'>{tt('filter.modelOnly')}</option>
-              <option value='user'>{tt('filter.userOnly')}</option>
-            </select>
             <input className={css.search} value={search} onChange={(event) => { setSearch(event.target.value) }} placeholder={tt('panel.search')} />
             <button
               type='button'
-              className={css.button + (editMode ? ' ' + css.primary : '')}
-              style={{ marginLeft:'auto' }}
-              aria-pressed={editMode}
-              title={tt('edit.hint')}
-              onClick={() => setEditMode((v) => !v)}
-            >{tt(editMode ? 'edit.done' : 'edit.start')}</button>
+              className={css.button + (filtersOpen || activeFilterCount > 0 ? ' ' + css.primary : '')}
+              aria-expanded={filtersOpen}
+              aria-controls='skill-hub-filter-panel'
+              onClick={() => { setFiltersOpen((value) => !value) }}
+            >{tt('filter.title')}{activeFilterCount > 0 ? ' (' + activeFilterCount + ')' : ''}</button>
           </div>
+          {filtersOpen ? (
+            <div className={css.filterPanel} id='skill-hub-filter-panel'>
+              {tab === 'sources' ? (
+                <label className={css.filterField}>
+                  <span className={css.formLabel}>{tt('filter.source')}</span>
+                  <select className={css.select} value={sourceFilter} onChange={(event) => { setSourceFilter(event.target.value) }}>
+                    <option value='all'>{tt('filter.allSources')}</option>
+                    {sourceOptions.map((source) => (
+                      <option key={source} value={source}>{source === PRIVATE_SOURCE ? tt('filter.private') : source}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              <label className={css.filterField}>
+                <span className={css.formLabel}>{tt('filter.invocation')}</span>
+                <select className={css.select} value={hub.invocationFilter} onChange={(event) => { hub.setInvocationFilter(event.target.value as 'all' | 'model' | 'user') }}>
+                  <option value='all'>{tt('filter.invocationAll')}</option>
+                  <option value='model'>{tt('filter.modelOnly')}</option>
+                  <option value='user'>{tt('filter.userOnly')}</option>
+                </select>
+              </label>
+              {activeFilterCount > 0 ? (
+                <button type='button' className={css.opBtn} onClick={() => { setSourceFilter('all'); hub.setInvocationFilter('all') }}>{tt('filter.clear')}</button>
+              ) : null}
+            </div>
+          ) : null}
           {catalog !== null && (filtered.length !== catalog.skills.length || hub.invocationFilter !== 'all' || sourceFilter !== 'all') ? (
             <div className={css.hintLine} style={{ margin: '2px 2px 0', display:'flex', gap:8, flexWrap:'wrap' }}>
               <span>{tt('filter.showing', { shown: filtered.length, total: catalog.skills.length, filtered: hub.invocationFilter !== 'all' || sourceFilter !== 'all' ? tt('filter.filteredSuffix') : '' })}</span>

@@ -13,6 +13,7 @@ import { SkillRow } from './SkillRow.tsx'
 import { DisabledRow } from './DisabledRow.tsx'
 import { GroupSummary } from './GroupSummary.tsx'
 import { useDragReorder } from './useDragReorder.ts'
+import { ReorderButtons } from './ReorderButtons.tsx'
 import { ProjectTree } from './ProjectTree.tsx'
 import { CollectionCard } from './CollectionCard.tsx'
 import type { SkillHubState } from './useSkillHub.ts'
@@ -20,7 +21,7 @@ import css from './panel.module.css'
 
 export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
   const { hub } = props
-  const { catalog, groupsState, skillView, sourceFilter, origins, sorted, normalized, collapsedGroups, viewNames, sourceCheck, actionNames, checkingSource, syncingSource, batchBusy, busyNames, toggleGroupCollapse, checkSources, requestSync, requestDelete, requestDeleteGroup, toggleGroup, enableDisabled } = hub
+  const { catalog, groupsState, skillView, sourceFilter, origins, sorted, normalized, collapsedGroups, viewNames, sourceCheck, actionNames, checkingSource, syncingSource, batchBusy, busyNames, toggleGroupCollapse, setAllGroupsCollapsed, checkSources, requestSync, requestDelete, requestDeleteGroup, toggleGroup, enableDisabled } = hub
   const [topDragKey, setTopDragKey] = useState<string | null>(null)
   const [topOverKey, setTopOverKey] = useState<string | null>(null)
   /** 重复技能名集合：整表只建一次，行内用 has 取代逐行线性 includes。 */
@@ -62,6 +63,18 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
     void hub.reorderSourceGroups(next)
   }
   const drag = useDragReorder({ dragKey: topDragKey, overKey: topOverKey, setDragKey: setTopDragKey, setOverKey: setTopOverKey, onDrop: handleTopDrop })
+  /** 顶层分组是否已全部折叠（决定「全部折叠/展开」按钮的文案）。 */
+  const allTopCollapsed = topOrderedKeys.length > 0 && topOrderedKeys.every((key) => collapsedGroups.has(key))
+  /** 键盘可用的排序：与相邻项交换后落盘（与拖拽走同一条 store 路径）。 */
+  const moveTop = (key: string, direction: -1 | 1): void => {
+    const from = topOrderedKeys.indexOf(key)
+    const to = from + direction
+    if (from === -1 || to < 0 || to >= topOrderedKeys.length) return
+    const next = [...topOrderedKeys]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    void hub.reorderSourceGroups(next)
+  }
   /** SkillRow 收窄后的 props：父组件统一传入它实际消费的字段。 */
   const rowProps = { uses: hub.uses, hubConfig: hub.hubConfig, busyNames, editMode: hub.editMode, tagBusy: hub.tagBusy, duplicateNames, toggle: hub.toggle, openDetail: hub.openDetail, requestDeleteSkill: hub.requestDeleteSkill }
 
@@ -74,12 +87,23 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
   return (
     <>
       {isEmptyTop ? <div className={css.empty}>{tt('groups.noCollections')}</div> : null}
+      {topOrderedKeys.length > 1 ? (
+        <div className={css.listTools}>
+          <button type='button' className={css.opBtn} onClick={() => { setAllGroupsCollapsed(allTopCollapsed ? null : topOrderedKeys) }}>
+            {allTopCollapsed ? tt('groups.expandAll') : tt('groups.collapseAll')}
+          </button>
+        </div>
+      ) : null}
       {topOrderedKeys.map((topKey) => {
         // Project 顶层卡片（可拖）
         if (topKey === 'project' && hasProject) {
           return (
             <ProjectTree
               key="project"
+              editMode={hub.editMode}
+              canMoveUp={topOrderedKeys.indexOf(topKey) > 0}
+              canMoveDown={topOrderedKeys.indexOf(topKey) < topOrderedKeys.length - 1}
+              onMove={(direction) => { moveTop(topKey, direction) }}
               skills={projectSkillsAll}
               collapsedGroups={collapsedGroups}
               toggleGroupCollapse={toggleGroupCollapse}
@@ -115,6 +139,9 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
               check={check}
               hasWritable={hasWritable}
               editMode={hub.editMode}
+              canMoveUp={topOrderedKeys.indexOf(topKey) > 0}
+              canMoveDown={topOrderedKeys.indexOf(topKey) < topOrderedKeys.length - 1}
+              onMove={(direction) => { moveTop(topKey, direction) }}
               checkingSource={checkingSource}
               syncingSource={syncingSource}
               batchBusy={batchBusy}
@@ -144,7 +171,16 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
                   <span className={css.groupTitle}>{tt('groups.personal')} · {allPersonalNames.length}<GroupSummary members={allPersonalNames} uses={hub.uses} hubConfig={hub.hubConfig} /></span>
                 </button>
                 <span className={css.groupOps}>
-                  {hub.editMode ? <button type='button' className={css.opBtn + ' ' + css.opDanger} title={tt('source.deleteGroupHint', { count: allPersonalNames.length })} onClick={(event) => { event.stopPropagation(); requestDeleteGroup(tt('groups.personal'), allPersonalNames) }}>{tt('source.deleteGroup')}</button> : null}
+                  {hub.editMode ? (
+                    <>
+                      <ReorderButtons
+                        canMoveUp={topOrderedKeys.indexOf(topKey) > 0}
+                        canMoveDown={topOrderedKeys.indexOf(topKey) < topOrderedKeys.length - 1}
+                        onMove={(direction) => { moveTop(topKey, direction) }}
+                      />
+                      <button type='button' className={css.opBtn + ' ' + css.opDanger} title={tt('source.deleteGroupHint', { count: allPersonalNames.length })} onClick={(event) => { event.stopPropagation(); requestDeleteGroup(tt('groups.personal'), allPersonalNames) }}>{tt('source.deleteGroup')}</button>
+                    </>
+                  ) : null}
                 </span>
               </div>
               {!collapsed ? (

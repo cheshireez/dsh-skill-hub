@@ -67,6 +67,11 @@ export function useSkillHub(api: SkillHubApi) {
     })
   }, [])
 
+  /** 整组折叠/展开：传 null 全部展开，传键列表全部折叠（视图侧自己算键）。 */
+  const setAllGroupsCollapsed = useCallback((keys: readonly string[] | null): void => {
+    setCollapsedGroups(keys === null ? new Set() : new Set(keys))
+  }, [])
+
   const collapsePersonal = useCallback((): void => {
     setCollapsedGroups((previous) => new Set(previous).add('uncategorized-source'))
   }, [])
@@ -186,7 +191,7 @@ export function useSkillHub(api: SkillHubApi) {
     setMembersDraft: groupFlow.setMembersDraft, setNewTagName: groupFlow.setNewTagName,
     setEditSearch: groupFlow.setEditSearch, setShowLegend, setEditMode,
     setVersionDialog: marketFlow.setVersionDialog,
-    toggleGroupCollapse, toggleSubdivide, checkUpdate: meta.checkUpdate, loadMarket: marketFlow.loadMarket,
+    toggleGroupCollapse, toggleSubdivide, setAllGroupsCollapsed, checkUpdate: meta.checkUpdate, loadMarket: marketFlow.loadMarket,
     openDetail: catalogFlow.openDetail, toggle: catalogFlow.toggle, enableDisabled: catalogFlow.enableDisabled,
     toggleGroup: groupFlow.toggleGroup,
     resolveConflict: groupFlow.resolveConflict,

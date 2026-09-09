@@ -9,6 +9,7 @@ import type { CatalogSkill } from '../../protocol.ts'
 import { tt } from '../helpers.ts'
 import { SkillRow, type SkillRowProps } from './SkillRow.tsx'
 import { GroupSummary } from './GroupSummary.tsx'
+import { ReorderButtons } from './ReorderButtons.tsx'
 import type { DragReorderProps } from './useDragReorder.ts'
 import css from './panel.module.css'
 
@@ -25,10 +26,17 @@ export interface ProjectTreeProps {
   rowProps: Omit<SkillRowProps, 'skill'>
   /** 顶层拖拽 props（SourcesView 的 useDragReorder 产出）。 */
   dragProps: DragReorderProps
+  /** 编辑模式（显示上移/下移按钮）。 */
+  editMode: boolean
+  /** 顶层排序位置边界。 */
+  canMoveUp: boolean
+  canMoveDown: boolean
+  /** 键盘排序：-1 上移，1 下移。 */
+  onMove: (direction: -1 | 1) => void
 }
 
 export function ProjectTree(props: ProjectTreeProps): JSX.Element {
-  const { skills, collapsedGroups, toggleGroupCollapse, subdividedProjects, toggleSubdivide, rowProps, dragProps } = props
+  const { skills, collapsedGroups, toggleGroupCollapse, subdividedProjects, toggleSubdivide, rowProps, dragProps, editMode, canMoveUp, canMoveDown, onMove } = props
   const topCollapsed = collapsedGroups.has('project')
   // 按 workspace 聚合，与拆分前逻辑一致
   const byProject = new Map<string, { title: string; skills: CatalogSkill[] }>()
@@ -46,6 +54,11 @@ export function ProjectTree(props: ProjectTreeProps): JSX.Element {
           <span className={css.chevron + (topCollapsed ? ' ' + css.chevronCollapsed : '')} />
           <span className={css.groupTitle}>{tt('groups.project')} · {byProject.size}</span>
         </button>
+        {editMode ? (
+          <span className={css.groupOps}>
+            <ReorderButtons canMoveUp={canMoveUp} canMoveDown={canMoveDown} onMove={onMove} />
+          </span>
+        ) : null}
       </div>
       {!topCollapsed ? [...byProject.entries()].map(([key, proj]) => {
         const projKey = 'project:' + key

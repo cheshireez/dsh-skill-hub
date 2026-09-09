@@ -13,12 +13,13 @@ import { DisabledRow } from './DisabledRow.tsx'
 import { GroupSummary } from './GroupSummary.tsx'
 import { GroupSwitchButton } from './GroupSwitchButton.tsx'
 import { useDragReorder } from './useDragReorder.ts'
+import { ReorderButtons } from './ReorderButtons.tsx'
 import type { SkillHubState } from './useSkillHub.ts'
 import css from './panel.module.css'
 
 export function ScenesView(props: { hub: SkillHubState }): JSX.Element {
   const { hub } = props
-  const { catalog, groupsState, sorted, normalized, collapsedGroups, viewNames, actionNames, batchBusy, busyNames, newTagName, setNewTagName, tagBusy, createTag, toggleGroupCollapse, toggleGroup, setEditingTag, setEditName, setMembersDraft, setEditSearch, enableDisabled } = hub
+  const { catalog, groupsState, sorted, normalized, collapsedGroups, viewNames, actionNames, batchBusy, busyNames, newTagName, setNewTagName, tagBusy, createTag, toggleGroupCollapse, setAllGroupsCollapsed, toggleGroup, setEditingTag, setEditName, setMembersDraft, setEditSearch, enableDisabled } = hub
   const [dragId, setDragId] = useState<string | null>(null)
   const [overId, setOverId] = useState<string | null>(null)
   /** 重复技能名集合：整表只建一次，行内用 has 取代逐行线性 includes。 */
@@ -35,6 +36,19 @@ export function ScenesView(props: { hub: SkillHubState }): JSX.Element {
     void hub.reorderTags(next)
   }
   const drag = useDragReorder({ dragKey: dragId, overKey: overId, setDragKey: setDragId, setOverKey: setOverId, onDrop: handleDrop })
+  const tagKeys = (groupsState?.tags ?? []).map((tag) => 'tag:' + tag.id)
+  /** 所有场景是否已折叠（决定「全部折叠/展开」按钮的文案）。 */
+  const allTagsCollapsed = tagKeys.length > 0 && tagKeys.every((key) => collapsedGroups.has(key))
+  /** 键盘可用的排序：与拖拽同一条 store 路径。 */
+  const moveTag = (index: number, direction: -1 | 1): void => {
+    const ids = (groupsState?.tags ?? []).map((tag) => tag.id)
+    const to = index + direction
+    if (to < 0 || to >= ids.length) return
+    const next = [...ids]
+    const [moved] = next.splice(index, 1)
+    next.splice(to, 0, moved)
+    void hub.reorderTags(next)
+  }
   /** SkillRow 收窄后的 props：父组件统一传入它实际消费的字段。 */
   const rowProps = { uses: hub.uses, hubConfig: hub.hubConfig, busyNames, editMode: hub.editMode, tagBusy, duplicateNames, toggle: hub.toggle, openDetail: hub.openDetail, requestDeleteSkill: hub.requestDeleteSkill }
   return (
@@ -52,7 +66,14 @@ export function ScenesView(props: { hub: SkillHubState }): JSX.Element {
       </form>
 
       {groupsState !== null && groupsState.tags.length === 0 ? <div className={css.empty}>{tt('groups.empty')}</div> : null}
-      {groupsState?.tags.map((tag) => {
+      {tagKeys.length > 1 ? (
+        <div className={css.listTools}>
+          <button type='button' className={css.opBtn} onClick={() => { setAllGroupsCollapsed(allTagsCollapsed ? null : tagKeys) }}>
+            {allTagsCollapsed ? tt('groups.expandAll') : tt('groups.collapseAll')}
+          </button>
+        </div>
+      ) : null}
+      {groupsState?.tags.map((tag, index) => {
         const skills = sorted.filter((skill) => tag.skillNames.includes(skill.name))
         const disabledMembers = (catalog?.disabled ?? []).filter((record) => tag.skillNames.includes(record.name) && (normalized.length === 0 || record.name.toLocaleLowerCase().includes(normalized) || record.description.toLocaleLowerCase().includes(normalized)))
         const collapsed = collapsedGroups.has('tag:' + tag.id)
@@ -78,6 +99,13 @@ export function ScenesView(props: { hub: SkillHubState }): JSX.Element {
                   hasWritable={hasWritable}
                   onToggle={() => { toggleGroup('tag:' + tag.id, tag.name, view.state) }}
                 />
+                {hub.editMode ? (
+                  <ReorderButtons
+                    canMoveUp={index > 0}
+                    canMoveDown={index < (groupsState?.tags.length ?? 1) - 1}
+                    onMove={(direction) => { moveTag(index, direction) }}
+                  />
+                ) : null}
                 <button type='button' className={css.opBtn} onClick={() => { setEditingTag(tag); setEditName(tag.name); setMembersDraft(new Set(tag.skillNames)); setEditSearch('') }}>{tt('groups.edit')}</button>
               </span>
             </div>

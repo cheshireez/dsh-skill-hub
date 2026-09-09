@@ -13,6 +13,7 @@ import { SkillRow, type SkillRowProps } from './SkillRow.tsx'
 import { DisabledRow } from './DisabledRow.tsx'
 import { GroupSummary } from './GroupSummary.tsx'
 import { GroupSwitchButton } from './GroupSwitchButton.tsx'
+import { ReorderButtons } from './ReorderButtons.tsx'
 import type { DragReorderProps } from './useDragReorder.ts'
 import type { SkillHubState } from './useSkillHub.ts'
 import css from './panel.module.css'
@@ -33,6 +34,11 @@ export interface CollectionCardProps {
   hasWritable: boolean
   /** 编辑模式（显示删除分组）。 */
   editMode: boolean
+  /** 顶层排序位置边界（编辑模式显示上移/下移按钮）。 */
+  canMoveUp: boolean
+  canMoveDown: boolean
+  /** 键盘排序：-1 上移，1 下移。 */
+  onMove: (direction: -1 | 1) => void
   /** 正在检查的来源名。 */
   checkingSource: string | null
   /** 正在同步的来源名。 */
@@ -56,6 +62,7 @@ export interface CollectionCardProps {
 export function CollectionCard(props: CollectionCardProps): JSX.Element {
   const {
     collection, skills, disabledMembers, collapsed, view, check, hasWritable, editMode,
+    canMoveUp, canMoveDown, onMove,
     checkingSource, syncingSource, batchBusy, rowProps, dragProps,
     toggleGroupCollapse, checkSources, requestSync, requestDelete, toggleGroup, requestDeleteGroup, enableDisabled, openDetail,
   } = props
@@ -73,6 +80,7 @@ export function CollectionCard(props: CollectionCardProps): JSX.Element {
           </span>
         </button>
         <span className={css.groupOps}>
+          {editMode ? <ReorderButtons canMoveUp={canMoveUp} canMoveDown={canMoveDown} onMove={onMove} /> : null}
           <SourceStatusBadge
             check={check}
             checking={checkingSource === collection.name}
