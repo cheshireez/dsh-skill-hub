@@ -24,7 +24,7 @@ dsh plugin --profile web add dsh-skill-hub
 # restart dsh web → Settings → 技能 → Market → scan → import
 ```
 
-Requires `Node ^22.19 || >=24` + dsh web (`0.1.5-alpha.1`, `0.1.x` forward compatible).
+Requires `Node ^22.19 || >=24` + dsh web (`0.1.5-rc.2`, `0.1.x` forward compatible).
 
 ## Features
 
