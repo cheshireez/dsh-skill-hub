@@ -115,6 +115,7 @@ npm run build      # tsc + tsdown → lib/index.js + lib/client.js
 
 - `duplicate loader entry id: skill-hub` — 删掉重复安装（只留一种 `dsh plugin add`）。
 - 技能不出现 — 看诊断区（缺 frontmatter / 名称不一致 / 描述过短）。
+- 来源组空壳 — 组内技能已被删除、或禁用记录丢失（状态文件被恢复/手改）。启动时自动对账磁盘上的 `.disabled` 文件补记录；无可见成员的来源组不再渲染。
 - `/` 菜单圆点消失 — dsh 内部触发源变更，目录功能不受影响。
 
 ## 社区

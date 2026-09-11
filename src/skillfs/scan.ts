@@ -53,6 +53,44 @@ export function listSkillEntries(root: WritableRoot, home = dshHome()): Promise<
   return scanRoot(rootPath(root, home))
 }
 
+/**
+ * Scan one skills root for hub-disabled discovery files: directory bundles
+ * renamed to SKILL.md.disabled and flat <name>.md.disabled files. Used by
+ * the startup reconcile to rebuild sidecar records that were lost, which
+ * would otherwise leave the skill invisible in every view.
+ */
+export async function scanDisabledRoot(base: string): Promise<string[]> {
+  const paths: string[] = []
+  let names: string[]
+  try {
+    names = await readdir(base)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return paths
+    throw error
+  }
+  for (const name of names) {
+    if (name.startsWith('.')) continue
+    const absolute = join(base, name)
+    let stats
+    try {
+      stats = await stat(absolute)
+    } catch {
+      continue
+    }
+    if (stats.isDirectory()) {
+      const candidate = join(absolute, 'SKILL.md.disabled')
+      try {
+        if ((await stat(candidate)).isFile()) paths.push(candidate)
+      } catch {
+        // 目录里没有禁用的发现文件，跳过
+      }
+    } else if (name.endsWith('.md.disabled') && name !== 'SKILL.md.disabled') {
+      paths.push(absolute)
+    }
+  }
+  return paths.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+}
+
 /** UI metadata from `agents/openai.yaml` beside a directory skill (mirrors codex SkillInterface). */
 export interface SkillInterface {
   displayName?: string

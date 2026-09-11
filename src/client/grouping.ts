@@ -13,7 +13,7 @@
  * GUI resolves with a dialog; the helpers below compute both sides.
  */
 
-import type { CatalogSkill, CollectionGroup, SkillTag } from '../protocol.ts'
+import type { CatalogSkill, CollectionGroup, DisabledSkill, SkillTag } from '../protocol.ts'
 import { isProjectSource } from '../protocol.ts'
 
 export { isProjectSource }
@@ -85,6 +85,43 @@ export function filterBySource(skills: readonly CatalogSkill[], source: string, 
     if (isProjectSource(skill.source)) return false
     return (origins[skill.name] ?? PRIVATE_SOURCE) === source
   })
+}
+
+/** One origin collection with the members visible under the current filters. */
+export interface VisibleCollection {
+  collection: CollectionGroup
+  /** Enabled, currently visible members. */
+  skills: CatalogSkill[]
+  /** Disabled records passing the current name/description filter. */
+  disabledMembers: DisabledSkill[]
+}
+
+/**
+ * Match origin collections against the currently visible enabled skills and
+ * disabled records, dropping collections with no visible member. Without
+ * this, a stale origin (skill deleted on disk, or a `.disabled` file whose
+ * sidecar record was lost) renders a group header with zero rows — an empty
+ * shell the sources tab otherwise never shows (project/personal groups
+ * already disappear when they have nothing to display).
+ */
+export function visibleCollections(
+  collections: readonly CollectionGroup[],
+  visibleSkills: readonly CatalogSkill[],
+  disabledRecords: readonly DisabledSkill[],
+  normalized: string,
+  sourceFilter: string,
+  origins: Readonly<Record<string, string>>,
+): VisibleCollection[] {
+  const visible: VisibleCollection[] = []
+  for (const collection of collections) {
+    const skills = visibleSkills.filter((skill) => collection.skillNames.includes(skill.name))
+    const disabledMembers = disabledRecords.filter((record) =>
+      collection.skillNames.includes(record.name)
+      && (normalized.length === 0 || record.name.toLocaleLowerCase().includes(normalized) || record.description.toLocaleLowerCase().includes(normalized))
+      && (sourceFilter === 'all' || (origins[record.name] ?? PRIVATE_SOURCE) === sourceFilter))
+    if (skills.length > 0 || disabledMembers.length > 0) visible.push({ collection, skills, disabledMembers })
+  }
+  return visible
 }
 
 /** Catalog sort keys offered by the filter bar. */

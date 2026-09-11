@@ -21,6 +21,7 @@ import { SkillHubProvider } from './provider.ts'
 import { makeRoutes } from './routes.ts'
 import { createSkillStatsReader, asPersistenceSeam, type SessionPersistenceLike, type SessionQueryLike, type SkillStatsReader } from './stats.ts'
 import { SkillHubStore } from './store.ts'
+import { reconcileDisabledSkills } from './reconcile.ts'
 import { cleanupLeftoverImportDirs, setGithubToken } from './repo.ts'
 import { dshHome } from './store.ts'
 import { join } from 'node:path'
@@ -233,6 +234,16 @@ export function apply(ctx: Context, config?: Config): void {
       } catch (error) {
         ctx.logger.warn('[dsh-skill-hub] startup cleanup failed', error)
       }
+    }
+    // 对账：磁盘上已有 .disabled、sidecar 却无记录（状态文件被恢复/手改、旧版本
+    // 遗留）时补记录，否则这些技能在面板里既不算启用也不算禁用，来源组空壳。
+    try {
+      const reconciled = await reconcileDisabledSkills(store, home)
+      if (reconciled.length > 0) {
+        ctx.logger.info(`[dsh-skill-hub] startup reconciled ${reconciled.length} disabled skill record(s): ${reconciled.map((entry) => entry.name).join(', ')}`)
+      }
+    } catch (error) {
+      ctx.logger.warn('[dsh-skill-hub] startup disabled-skill reconcile failed', error)
     }
   })()
 

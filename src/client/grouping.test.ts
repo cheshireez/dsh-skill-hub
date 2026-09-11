@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { CatalogSkill, SkillTag } from '../protocol.ts'
-import { conflictsOnClose, filterBySource, formatRelativeTime, groupNamesOf, groupSwitchView, PRIVATE_SOURCE, sortSkills } from './grouping.ts'
+import type { CatalogSkill, CollectionGroup, DisabledSkill, SkillTag } from '../protocol.ts'
+import { conflictsOnClose, filterBySource, formatRelativeTime, groupNamesOf, groupSwitchView, PRIVATE_SOURCE, sortSkills, visibleCollections } from './grouping.ts'
 
 function skill(name: string, writable = true): CatalogSkill {
   return {
@@ -72,6 +72,39 @@ describe('filterBySource', () => {
     const skills = [skill('personal'), proj, projAgents]
     expect(filterBySource(skills, PRIVATE_SOURCE, origins).map((s) => s.name)).toEqual(['personal'])
     expect(filterBySource(skills, 'all', origins)).toHaveLength(3)
+  })
+})
+
+describe('visibleCollections', () => {
+  const collections: CollectionGroup[] = [
+    { name: 'repo/x', skillNames: ['enabled-one', 'disabled-one'] },
+    { name: 'repo/ghost', skillNames: ['gone'] },
+  ]
+  const disabledOne: DisabledSkill = { name: 'disabled-one', description: 'Paused skill', path: '/x/disabled-one/SKILL.md.disabled', root: 'user-dsh', disabledAt: 1 }
+  const origins = { 'enabled-one': 'repo/x', 'disabled-one': 'repo/x' }
+
+  it('keeps collections with visible members and drops empty shells', () => {
+    const visible = visibleCollections(collections, [skill('enabled-one')], [disabledOne], '', 'all', origins)
+    expect(visible.map((entry) => entry.collection.name)).toEqual(['repo/x'])
+    expect(visible[0].skills.map((s) => s.name)).toEqual(['enabled-one'])
+    expect(visible[0].disabledMembers.map((d) => d.name)).toEqual(['disabled-one'])
+  })
+
+  it('drops a collection when neither side passes the search filter', () => {
+    expect(visibleCollections(collections, [], [disabledOne], 'no-match', 'all', origins)).toEqual([])
+    expect(visibleCollections(collections, [], [disabledOne], 'paused', 'all', origins).map((e) => e.collection.name)).toEqual(['repo/x'])
+  })
+
+  it('applies the source filter to disabled-only collections', () => {
+    expect(visibleCollections(collections, [], [disabledOne], '', 'repo/other', origins)).toEqual([])
+    expect(visibleCollections(collections, [], [disabledOne], '', 'private', origins)).toEqual([])
+    expect(visibleCollections(collections, [], [disabledOne], '', 'repo/x', origins).map((e) => e.collection.name)).toEqual(['repo/x'])
+  })
+
+  it('treats a disabled record with no origin as private', () => {
+    const privateRecord = { ...disabledOne, name: 'private-one' }
+    const privateCollection: CollectionGroup = { name: 'repo/y', skillNames: ['private-one'] }
+    expect(visibleCollections([privateCollection], [], [privateRecord], '', PRIVATE_SOURCE, {}).map((e) => e.collection.name)).toEqual(['repo/y'])
   })
 })
 

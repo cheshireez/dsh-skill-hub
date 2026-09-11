@@ -115,6 +115,7 @@ npm run build      # tsc + tsdown → lib/index.js + lib/client.js
 
 - `duplicate loader entry id: skill-hub` — remove the duplicate install (keep one `dsh plugin add` method).
 - Skill missing — check the diagnostics section (frontmatter / name mismatch / short description).
+- Empty source group — its skills were deleted, or their disabled records were lost (sidecar restored/hand-edited). Startup reconciles `.disabled` files on disk; source groups with no visible member are no longer rendered.
 - Dots missing in `/` menu — dsh internals changed; catalog still works.
 
 ## Community

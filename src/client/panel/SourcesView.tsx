@@ -8,7 +8,7 @@
 
 import { useMemo, useState, type JSX } from 'react'
 import { tt } from '../helpers.ts'
-import { filterBySource, groupSwitchView, isProjectSource, PRIVATE_SOURCE } from '../grouping.ts'
+import { filterBySource, groupSwitchView, isProjectSource, PRIVATE_SOURCE, visibleCollections } from '../grouping.ts'
 import { SkillRow } from './SkillRow.tsx'
 import { DisabledRow } from './DisabledRow.tsx'
 import { GroupSummary } from './GroupSummary.tsx'
@@ -28,10 +28,14 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
   const duplicateNames = useMemo(() => new Set(catalog?.duplicateNames ?? []), [catalog])
 
   // ----- 顶层分组统一拖拽（project / col:xxx / personal 全部可拖） -----
-  const projectSkillsAll = filterBySource(sorted, sourceFilter, origins).filter((skill) => isProjectSource(skill.source))
+  const sourceFiltered = filterBySource(sorted, sourceFilter, origins)
+  const projectSkillsAll = sourceFiltered.filter((skill) => isProjectSource(skill.source))
   const hasProject = projectSkillsAll.length > 0
-  const collections = groupsState?.collections ?? []
-  const uncategorized = filterBySource(sorted, sourceFilter, origins).filter((skill) => origins[skill.name] === undefined && !isProjectSource(skill.source))
+  // 无可见成员的来源组不渲染：来源记录指向的技能可能已被删除，或禁用记录
+  // 丢失导致技能既非启用也非禁用，留下一个组头有数字、展开 0 行的空壳。
+  const visible = visibleCollections(groupsState?.collections ?? [], sourceFiltered, catalog?.disabled ?? [], normalized, sourceFilter, origins)
+  const collections = visible.map((entry) => entry.collection)
+  const uncategorized = sourceFiltered.filter((skill) => origins[skill.name] === undefined && !isProjectSource(skill.source))
   const personalDisabled = (catalog?.disabled ?? []).filter((record) => origins[record.name] === undefined)
     .filter((record) => normalized.length === 0 || record.name.toLocaleLowerCase().includes(normalized) || record.description.toLocaleLowerCase().includes(normalized))
     .filter((record) => sourceFilter === 'all' || sourceFilter === PRIVATE_SOURCE)
@@ -79,7 +83,7 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
   const rowProps = { uses: hub.uses, hubConfig: hub.hubConfig, busyNames, editMode: hub.editMode, tagBusy: hub.tagBusy, duplicateNames, toggle: hub.toggle, openDetail: hub.openDetail, requestDeleteSkill: hub.requestDeleteSkill }
 
   if (skillView === 'flat') {
-    return <>{filterBySource(sorted, sourceFilter, origins).map((skill) => <SkillRow key={skill.name} skill={skill} {...rowProps} />)}</>
+    return <>{sourceFiltered.map((skill) => <SkillRow key={skill.name} skill={skill} {...rowProps} />)}</>
   }
 
   // 空状态：没有任何分组时提示
@@ -117,13 +121,9 @@ export function SourcesView(props: { hub: SkillHubState }): JSX.Element {
         // Collection 卡片（可拖，归属顶层排序）
         if (topKey.startsWith('col:')) {
           const colName = topKey.slice(4)
-          const collection = collections.find((c) => c.name === colName)
-          if (collection === undefined) return null
-          const skills = filterBySource(sorted, sourceFilter, origins).filter((skill) => collection.skillNames.includes(skill.name))
-          const disabledMembers = (catalog?.disabled ?? []).filter((record) =>
-            collection.skillNames.includes(record.name)
-            && (normalized.length === 0 || record.name.toLocaleLowerCase().includes(normalized) || record.description.toLocaleLowerCase().includes(normalized))
-            && (sourceFilter === 'all' || (origins[record.name] ?? PRIVATE_SOURCE) === sourceFilter))
+          const entry = visible.find((item) => item.collection.name === colName)
+          if (entry === undefined) return null
+          const { collection, skills, disabledMembers } = entry
           const collapsed = collapsedGroups.has('col:' + collection.name)
           const view = groupSwitchView(collection.skillNames, viewNames)
           const check = sourceCheck[collection.name]
