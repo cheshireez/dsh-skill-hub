@@ -101,8 +101,14 @@ export function PanelDialogs(props: PanelDialogsProps): JSX.Element {
         <VersionChoiceDialog
           choice={versionDialog}
           busy={versionBusy}
-          onSelect={(selected) => { setVersionDialog({ ...versionDialog, selected }) }}
-          onCustom={(custom) => { setVersionDialog({ ...versionDialog, custom }) }}
+          // Keep the selected ref and custom override in one functional
+          // update, so a ref selection cannot be lost to a stale snapshot.
+          onSelect={(selected) => {
+            setVersionDialog((previous) => previous === null ? previous : { ...previous, selected, custom: '' })
+          }}
+          onCustom={(custom) => {
+            setVersionDialog((previous) => previous === null ? previous : { ...previous, custom })
+          }}
           onCancel={() => { setVersionDialog(null) }}
           onConfirm={() => { void confirmVersionDialog() }}
         />

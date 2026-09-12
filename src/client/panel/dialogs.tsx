@@ -5,7 +5,7 @@
  * the same role/aria shell; the panel owns all dialog state.
  */
 
-import { useEffect, type JSX, type ReactNode } from 'react'
+import { useEffect, useState, type JSX, type ReactNode } from 'react'
 import type { CollectionGroup, SkillTag } from '../../protocol.ts'
 import { tt } from '../helpers.ts'
 import { groupNamesOf } from '../grouping.ts'
@@ -170,29 +170,56 @@ export function VersionChoiceDialog(props: {
 }): JSX.Element {
   const { choice, busy, onSelect, onCustom, onCancel, onConfirm } = props
   const effective = choice.custom.trim() !== '' ? choice.custom.trim() : choice.selected
+  type RefGroup = 'releases' | 'branches'
+  const branchOptions = choice.branches.filter((branch) => !choice.releases.includes(branch))
+  const [refGroup, setRefGroup] = useState<RefGroup>(
+    choice.releases.includes(choice.selected) || choice.branches.length === 0 ? 'releases' : 'branches',
+  )
+  // The dialog starts in a loading state and receives the release/branch
+  // lists in a later render. Align the group once that data arrives, without
+  // resetting it after the user selects another ref.
+  useEffect(() => {
+    if (choice.loading) return
+    if (choice.releases.includes(choice.selected)) setRefGroup('releases')
+    else if (branchOptions.includes(choice.selected)) setRefGroup('branches')
+  }, [choice.loading, choice.repo])
+  const activeRefs = refGroup === 'releases' ? choice.releases : branchOptions
+  const listedRefs = [...choice.releases, ...branchOptions]
+  const currentUnlistedRef = choice.selected !== '' && !listedRefs.includes(choice.selected) ? choice.selected : undefined
+  const selectRefs = currentUnlistedRef !== undefined ? [currentUnlistedRef, ...activeRefs] : activeRefs
+  const selectValue = selectRefs.includes(choice.selected) ? choice.selected : selectRefs[0] ?? ''
+  const selectGroup = (next: RefGroup): void => {
+    setRefGroup(next)
+    const nextRefs = next === 'releases' ? choice.releases : branchOptions
+    if (nextRefs.length > 0 && !nextRefs.includes(choice.selected)) onSelect(nextRefs[0])
+  }
   return (
     <DialogShell onClose={onCancel}>
       <h3 className={css.dialogTitle}>{tt('market.versionTitle')}</h3>
       <p className={css.dialogText}>{tt('market.versionText', { repo: choice.repo })}{choice.current !== undefined ? ` (${tt('market.versionCurrent', { ref: choice.current })})` : ''}</p>
       {choice.loading ? <p className={css.dialogText}>{tt('market.scanning')}</p> : (
         <>
-          {choice.releases.length > 0 ? (
-            <>
-              <p className={css.dialogText} style={{ marginBottom: 4 }}>{tt('market.versionReleases')}</p>
-              <select className={css.select + ' ' + css.dialogSelect} value={choice.releases.includes(choice.selected) ? choice.selected : choice.releases[0]}
-                onChange={(event) => { onSelect(event.target.value); onCustom('') }}>
-                {choice.releases.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
-              </select>
-            </>
-          ) : null}
-          {choice.branches.length > 0 ? (
-            <>
-              <p className={css.dialogText} style={{ marginBottom: 4 }}>{tt('market.versionBranches')}</p>
-              <select className={css.select + ' ' + css.dialogSelect} value={choice.branches.includes(choice.selected) ? choice.selected : choice.branches[0]}
-                onChange={(event) => { onSelect(event.target.value); onCustom('') }}>
-                {choice.branches.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
-              </select>
-            </>
+          <div className={css.segmented} role='group' aria-label={tt('market.versionTitle')} style={{ marginBottom: 8 }}>
+            <button
+              type='button'
+              className={css.segBtn + (refGroup === 'releases' ? ' ' + css.segBtnActive : '')}
+              disabled={choice.releases.length === 0}
+              aria-pressed={refGroup === 'releases'}
+              onClick={() => { selectGroup('releases') }}
+            >{tt('market.versionReleases')}</button>
+            <button
+              type='button'
+              className={css.segBtn + (refGroup === 'branches' ? ' ' + css.segBtnActive : '')}
+              disabled={branchOptions.length === 0}
+              aria-pressed={refGroup === 'branches'}
+              onClick={() => { selectGroup('branches') }}
+            >{tt('market.versionBranches')}</button>
+          </div>
+          {selectValue !== '' ? (
+            <select className={css.select + ' ' + css.dialogSelect} value={selectValue}
+              onChange={(event) => { onSelect(event.target.value) }}>
+              {selectRefs.map((ref) => <option key={ref} value={ref}>{ref}</option>)}
+            </select>
           ) : null}
           <p className={css.dialogText} style={{ marginBottom: 4 }}>{tt('market.versionCustom')}</p>
           <input className={css.input + ' ' + css.dialogSelect} value={choice.custom}
