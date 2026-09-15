@@ -39,7 +39,7 @@ src/client/locales/     dictionaries by view (common/skills/market/sources/detai
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (217 tests across 13 suites)
+npm test            # vitest (233 tests across 14 suites)
 npm run build       # tsc declarations + tsdown bundles (lib/index.js + lib/client.js)
 ```
 
@@ -68,9 +68,11 @@ npm run build       # tsc declarations + tsdown bundles (lib/index.js + lib/clie
 ```bash
 # after a change:
 npm run build
-cp lib/index.js lib/client.js ~/.dsh/profiles/web/node_modules/dsh-skill-hub/lib/
 # restart the dsh web process, then verify Settings → 技能 and Settings → 插件 → Skill Hub
 ```
+
+When the web profile installs this repo as a link (`"dsh-skill-hub": "link:/path/to/repo"`, the
+usual local-dev setup), `lib/` is picked up on the next `dsh web` restart — no copy step needed.
 
 ## Issues
 
