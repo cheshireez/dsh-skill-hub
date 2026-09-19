@@ -2,8 +2,10 @@
  * The dsh-skill-hub plugin settings card: bridges the hub's settings
  * namespace (bound through the official settings transport) onto the
  * family-style staged card form (enabled master switch + agent announcement).
- * Registered into the official `settings.plugin.item` slot keyed by that
- * namespace, so the plugin shows up in Settings → 插件 on dsh rc.7+.
+ * Registered into `plugins.bundle.config` under the bundle's package name, so
+ * the Plugins manager renders it on dsh-skill-hub's own page. That slot is
+ * dispatched with `view: 'page'` only, so the card always renders its full
+ * form (no `summary` one-liner variant).
  */
 
 import { useEffect, useState, type ReactElement } from 'react'
@@ -54,7 +56,7 @@ export interface SkillHubSettingsCardFace {
 
 /** Props the slot renderer binds (locale copy + injected form actions). */
 export type SkillHubSettingsCardProps =
-  PropsRuntime<'settings.plugin.item'> & PropsLocale<'dsh-skill-hub'> & InjectFace<SkillHubSettingsCardFace>
+  PropsRuntime<'plugins.bundle.config'> & PropsLocale<'dsh-skill-hub'> & InjectFace<SkillHubSettingsCardFace>
 
 /** Bridges the hub's config scope onto the card's staged form. */
 export class SkillHubSettingsCardController {

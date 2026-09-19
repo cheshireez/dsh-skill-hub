@@ -2,11 +2,10 @@
  * Vendored UI icons for dsh-skill-hub.
  *
  * These were originally imported from `@deepseek-ai/dsh-client-ui-primitives`.
- * That package is still published for the rc.7/rc.2 SDK families, but newer dsh
- * web builds no longer expose it as a standalone plugin module — they keep a
- * static compatibility module instead. Vendoring the few tiny outline icons the
- * hub uses makes the browser half self-contained and equally compatible with
- * older and newer dsh hosts.
+ * That package is not exposed as a standalone plugin module by the dsh web
+ * build this plugin targets — dsh keeps a static compatibility module instead.
+ * Vendoring the few tiny outline icons the hub uses keeps the browser half
+ * self-contained and independent of how that module is packaged.
  *
  * SVG paths are copied verbatim from dsh-client-ui-primitives (MIT licensed)
  * so the visuals remain pixel-identical to the dsh icon family.

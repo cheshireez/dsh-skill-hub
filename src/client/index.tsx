@@ -6,10 +6,10 @@
  * surfaces, both through official slots (no DOM injection):
  *  - a plugin-management card in the `settings.plugin.item` slot (Settings →
  *    插件 → 可配置插件列表), keyed by the hub's settings namespace and bound
- *    through the official settings transport (dsh rc.7 serves every
- *    registered namespace to the web client, and the tab dispatches cards by
- *    namespace) — the family-bucket card pattern (PluginSettingsCard +
- *    CardForm vendored from dsh-task-board);
+ *    through the official settings transport (the Host serves every registered
+ *    namespace to the web client, and the tab dispatches cards by namespace) —
+ *    the family-bucket card pattern (PluginSettingsCard + CardForm vendored
+ *    from dsh-task-board);
  *  - a top-level Settings section (Settings → 技能) hosting the skill hub
  *    panel: catalog, search, enable/disable, diagnostics, new-skill form.
  *
@@ -29,14 +29,15 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the LocaleNamespaceMap merge table.
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
-// Type-only: pulls the settings-plugins SlotMap merge (settings.plugin.item).
-import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 // Type-only: pulls the Context merge for ctx.inputTriggers (slash-dots wiring).
 import type {} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
+// Type-only: pulls the plugin-manager SlotMap merge (plugins.bundle.config).
+import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 // Type-only: pulls the connection/reset event.
 import type {} from '@deepseek-ai/dsh-client-connection/client'
 
-// 0.1.2-alpha.2: slots service moved to ui-renderer; provide local augmentation for build.
+// The slots service is owned by ui-renderer, which this build does not depend
+// on; augment the Context locally so the browser half typechecks.
 declare module '@deepseek-ai/cordis' {
   interface Context {
     slots: any
@@ -85,8 +86,8 @@ export function apply(ctx: ClientContext): void {
 
   // The card edits the hub's settings namespace through the official
   // settings transport — the configurable-plugins tab only dispatches cards
-  // whose key the Host serves, and the Host serves every registered namespace
-  // since rc.7, so this is what makes the card appear (and stay in sync).
+  // whose key the Host serves, and the Host serves every registered namespace,
+  // so this is what makes the card appear (and stay in sync).
   // Single scope instance reused for both the card and slash-dots to avoid
   // duplicate subscriptions (review #3).
   const scope = ctx.settingsScope.bind<HubSettingsValue>({ namespace: NS })
@@ -96,17 +97,18 @@ export function apply(ctx: ClientContext): void {
   // inject 含 inputTriggers 保证 fiber 就绪后再 wrap，slash-dots 内的 undefined 防御仅用于单元测试 mock
   ctx.effect(() => setupSkillSlashDots(ctx, api, scope), 'dsh-skill-hub: slash dots')
 
-  // Plugin-management card: Settings → 插件 → 可配置插件列表.
-  // rc.7's slot contract declares this keyed slot with options `key`
-  // (the settings namespace the card edits), so registration is fully typed.
+  // Plugin configuration: the hub renders its own form on the bundle's page in
+  // the Plugins manager (sidebar → 插件 → dsh-skill-hub), keyed by the bundle's
+  // package name — the manager dispatches that key with `view: 'page'`.
+  // No extra settings tab is contributed.
   ctx.effect(
-    () => ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-      name: 'settings.plugin.item',
-      key: NS,
+    () => ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
+      name: 'plugins.bundle.config',
+      key: 'dsh-skill-hub',
       locale: NS,
       inject: () => settingsCard.inject(),
     }, SkillHubSettingsCard)),
-    'dsh-skill-hub: settings card',
+    'dsh-skill-hub: plugin config',
   )
 
   // Top-level Settings section: the skill management page.

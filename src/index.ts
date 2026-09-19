@@ -62,11 +62,10 @@ export const Config: z<Config> = z.object({
 })
 
 /**
- * Settings namespace hosting the hub's runtime config. Since dsh rc.7 the
- * host serves every registered settings namespace to the web client (the
- * dsh-host-apiproxy allowlist is gone), so the browser card and the settings
- * page edit this namespace through the official settings transport, and the
- * plugin consumes the same resolved value — one source of truth.
+ * Settings namespace hosting the hub's runtime config. The host serves every
+ * registered settings namespace to the web client, so the browser card and the
+ * settings page edit this namespace through the official settings transport,
+ * and the plugin consumes the same resolved value — one source of truth.
  */
 export const CONFIG_NAMESPACE = 'dsh-skill-hub' as SettingsNamespace
 
@@ -99,12 +98,11 @@ export const SKILL_HUB_GUIDANCE = [
  * @param config - resolved plugin config (schema defaults applied by the loader).
  */
 export function apply(ctx: Context, config?: Config): void {
-  // The hub's runtime configuration lives in dsh's own settings service:
-  // since rc.7 the host serves every registered settings namespace to the
-  // web client (dsh-host-apiproxy's allowlist is gone), so the browser card
-  // and the config route edit this namespace through the official settings
-  // transport, and the host consumes the very same resolved value — one
-  // source of truth. The cordis composition entry seeds the base layer; the
+  // The hub's runtime configuration lives in dsh's own settings service: the
+  // host serves every registered settings namespace to the web client, so the
+  // browser card and the config route edit this namespace through the official
+  // settings transport, and the host consumes the very same resolved value —
+  // one source of truth. The cordis composition entry seeds the base layer; the
   // sidecar config survives only as a one-time migration source below.
   const base = config ?? {}
   const settingsScope = ctx.settings.register(CONFIG_NAMESPACE, HubSettingsSchema, { base })

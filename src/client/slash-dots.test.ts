@@ -1,8 +1,10 @@
 /**
  * Slash-menu skill dots: source lookup + candidates wrapping. The wrapper's
  * contract is pure and injectable — fake api (catalog) and fake settings scope
- * (getSnapshot), no DOM — so it tests cleanly in the node vitest environment.
- * The module caches the catalog map; resetModelCache keeps tests independent.
+ * (getSnapshot) — so it tests cleanly in the node vitest environment. The dot
+ * itself is injected into the rendered DOM, which does not exist here, so these
+ * tests assert that candidate rows pass through untouched. The module caches
+ * the catalog map; resetModelCache keeps tests independent.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -85,11 +87,10 @@ describe('findSkillSource', () => {
 })
 
 describe('wrapSkillSource', () => {
-  it('adds a model-colored dot to model-callable skills and a user-colored dot to user-only ones (old host, no drilled)', async () => {
+  it('leaves candidate rows untouched — the dot goes to the DOM, not the icon slot', async () => {
     const source = skillSource(async () => [
       { name: 'code-review', description: 'review code' },
       { name: 'personal-note', description: 'only me' },
-      { name: 'known-default', description: 'fallback unknown' },
     ])
     const api = apiWith([
       { name: 'code-review', modelInvocable: true },
@@ -99,16 +100,13 @@ describe('wrapSkillSource', () => {
 
     const restore = wrapSkillSource(source, api, scope)
     try {
-      // Old host: CandidateRequest 无 drilled 字段，注入彩色点
-      const rows = await source.candidates({ sessionId: 's1' as never }, { query: '', position: 'leading', signal: new AbortController().signal } as unknown as import('@deepseek-ai/dsh-client-ui-input-trigger/client').CandidateRequest)
+      const rows = await source.candidates({ sessionId: 's1' as never }, { query: '', position: 'leading', drilled: false, signal: new AbortController().signal })
 
-      expect(rows).toHaveLength(3)
-      // Model-callable → model color.
-      expect((rows[0].icon as unknown as { props: { style: { background: string } } }).props.style.background).toBe('#112233')
-      // User-only → user color.
-      expect((rows[1].icon as unknown as { props: { style: { background: string } } }).props.style.background).toBe('#445566')
-      // Unknown name → model default (still a dot, safer than no dot).
-      expect(rows[2].icon).toBeDefined()
+      expect(rows).toHaveLength(2)
+      // MenuView renders `icon` through ReferenceIcon (enum-narrowed), so a
+      // custom element would never show — rows must carry no icon at all.
+      expect(rows[0].icon).toBeUndefined()
+      expect(rows[1].icon).toBeUndefined()
       // Original fields pass through untouched.
       expect(rows[0].name).toBe('code-review')
       expect(rows[0].description).toBe('review code')
@@ -117,33 +115,18 @@ describe('wrapSkillSource', () => {
     }
   })
 
-  it('falls back to the default colors when settings omit them and catalog fails (old host)', async () => {
+  it('still returns the rows when the catalog route is down', async () => {
     const source = skillSource(async () => [{ name: 'lonely', description: '' }])
     const api = { catalog: async () => { throw new Error('route down') } } as unknown as SkillHubApi
     const scope = scopeWith({ enabled: true, announceToAgent: true, showUseCount: true, showUseTime: true, showGroupSummary: true })
 
     const restore = wrapSkillSource(source, api, scope)
     try {
-      const rows = await source.candidates({ sessionId: 's1' as never }, { query: '', position: 'leading', signal: new AbortController().signal } as unknown as import('@deepseek-ai/dsh-client-ui-input-trigger/client').CandidateRequest)
-      // Catalog failed → unknown name → model default dot still renders.
-      expect(rows[0].icon).toBeDefined()
-      expect((rows[0].icon as unknown as { props: { style: { background: string } } }).props.style.background).toBe('#2f81f7')
-    } finally {
-      restore()
-    }
-  })
-
-  it('skips dot injection on new host (alpha.2, drilled present) for ReferenceIcon compat', async () => {
-    const source = skillSource(async () => [{ name: 'code-review', description: 'review code' }])
-    const api = apiWith([{ name: 'code-review', modelInvocable: true }])
-    const scope = scopeWith({ enabled: true, announceToAgent: true, showUseCount: true, showUseTime: true, showGroupSummary: true, dotModelColor: '#112233', dotUserColor: '#445566' })
-
-    const restore = wrapSkillSource(source, api, scope)
-    try {
       const rows = await source.candidates({ sessionId: 's1' as never }, { query: '', position: 'leading', drilled: false, signal: new AbortController().signal })
+      // A failed catalog only means no dots (unknown names are skipped); the
+      // menu itself must keep working.
       expect(rows).toHaveLength(1)
-      expect(rows[0].icon).toBeUndefined()
-      expect(rows[0].name).toBe('code-review')
+      expect(rows[0].name).toBe('lonely')
     } finally {
       restore()
     }

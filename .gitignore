@@ -4,3 +4,4 @@ lib/
 .DS_Store
 .dsh/
 docs/
+.workbuddy/

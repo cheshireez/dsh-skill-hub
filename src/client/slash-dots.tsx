@@ -2,14 +2,15 @@
  * Slash-menu skill dots: puts the invocation-status dot (model-callable blue /
  * user-only green) in front of every skill candidate in the chat `/` menu.
  *
- * Mechanism (mirrors how dsh-at-file fills the menu icon slot): the candidate
- * menu's rows already render an optional `icon` slot (`MenuView` renders
- * `item.icon` in a 16×16 leading span when it's defined), but the core `/skill`
- * source (`dsh-client-ui-skill`) returns candidates without `icon`. This module
- * wraps that source's `candidates` and stamps each row with a colored dot,
- * reusing the same settings (dotModelColor / dotUserColor) and the same
- * `modelInvocable` classification the panel legend uses — so the chat menu and
- * the Settings → 技能 panel stay in sync, and editing the color updates both.
+ * Mechanism: hooks the `/skill` source's `candidates` so the hub learns which
+ * rows are skill candidates and how each one classifies for model invocation,
+ * then injects the dot straight into the rendered option rows. The menu's
+ * `icon` slot is unusable for this — `MenuView` narrowed `icon` to an enum
+ * ('file' | 'folder' | 'session') and renders it through `ReferenceIcon`, so a
+ * custom element never reaches the DOM. Colors come from the same settings
+ * (dotModelColor / dotUserColor) and the same `modelInvocable` classification
+ * the panel legend uses — so the chat menu and the Settings → 技能 panel stay
+ * in sync, and editing the color updates both.
  *
  * The skill source is registered by the core plugin under the `name` "skill"
  * on the `/` trigger; re-registering the same name would throw, so this wraps
@@ -24,8 +25,7 @@ import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 // Type-only: pulls the connection/reset event.
 import type {} from '@deepseek-ai/dsh-client-connection/client'
-import type { InputTriggerCandidate, InputTriggerServiceContract, InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
-import { createElement } from 'react'
+import type { InputTriggerServiceContract, InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { HubSettingsValue } from '../protocol.ts'
 import type { SkillHubApi } from './api.ts'
 import { DEFAULT_DOT_MODEL_COLOR, DEFAULT_DOT_USER_COLOR } from './panel/format.ts'
@@ -92,37 +92,11 @@ async function modelInvocableMap(api: SkillHubApi): Promise<Map<string, boolean>
 }
 
 /**
- * One menu-row dot element. Inline span so it needs no CSS module; the
- * candidate menu centers it inside its 16×16 leading icon slot.
- * @param color - the dot's background color.
- * @returns a React node (memory-only, never crosses the Host boundary).
- */
-function dotIcon(color: string): InputTriggerCandidate['icon'] {
-  return createElement('span', {
-    'aria-hidden': true,
-    style: {
-      display: 'inline-block',
-      width: 6,
-      height: 6,
-      borderRadius: 3,
-      background: color,
-      flex: 'none',
-    },
-  }) as unknown as InputTriggerCandidate['icon']
-}
-
-/**
- * Wrap the core skill source so every menu row carries the invocation dot.
- * Exported for unit tests; production wiring goes through setupSkillSlashDots.
- * @param source - the registered `/skill` source.
- * @param api - hub browser API for the modelInvocable lookup.
- * @param scope - hub settings scope for the dot colors.
- * @returns a disposer restoring the original candidates.
- */
-/**
- * DOM 兜底：在 alpha.2 新版 MenuView（icon 仅枚举）下通过直接操作
- * 已渲染的 `[role="option"]` 列表注入彩色点，绕过 `icon` 限制。
- * 旧版仍走 `icon` 注入，此处仅为新版。
+ * 通过直接操作已渲染的 `[role="option"]` 列表注入彩色点，
+ * 绕过 MenuView 对 `icon` 的枚举限制。
+ * @param modelByName - 技能名 → 模型可调用性；不在表内的候选不注点。
+ * @param modelColor - 模型可调用技能的点色。
+ * @param userColor - 仅用户可调用技能的点色。
  */
 function injectDotsViaDOM(modelByName: Map<string, boolean>, modelColor: string, userColor: string): void {
   if (typeof document === 'undefined' || typeof requestAnimationFrame === 'undefined') return
@@ -145,7 +119,7 @@ function injectDotsViaDOM(modelByName: Map<string, boolean>, modelColor: string,
       // 仅对技能生效：非技能候选（/command、@file 等）不在 catalog，不注点
       if (!modelByName.has(name)) continue
       const color = (modelByName.get(name) ?? true) ? modelColor : userColor
-      // 复刻旧版 icon 槽：16×16 容器居中 6px 点，与升级前 `dotIcon` 在 `itemIcon` 内的效果一致
+      // 布局对齐菜单行原有的 icon 槽：16×16 容器居中 6px 点
       const wrapper = document.createElement('span')
       wrapper.setAttribute('data-skill-dot', '')
       wrapper.setAttribute('aria-hidden', 'true')
@@ -163,37 +137,33 @@ function injectDotsViaDOM(modelByName: Map<string, boolean>, modelColor: string,
       dot.style.background = color
       dot.style.flex = 'none'
       wrapper.appendChild(dot)
-      // 新版无 icon 槽，直接插在名称前，与旧版 `itemIcon` 位置一致
+      // 直接插在名称前，与菜单行原有 icon 槽的位置一致
       nameEl.parentElement?.insertBefore(wrapper, nameEl)
     }
   }
   requestAnimationFrame(() => setTimeout(run, 0))
 }
 
+/**
+ * Wrap the core skill source so every menu row carries the invocation dot.
+ * Exported for unit tests; production wiring goes through setupSkillSlashDots.
+ * @param source - the registered `/skill` source.
+ * @param api - hub browser API for the modelInvocable lookup.
+ * @param scope - hub settings scope for the dot colors.
+ * @returns a disposer restoring the original candidates.
+ */
 export function wrapSkillSource(source: InputTriggerSource, api: SkillHubApi, scope: SettingsScope<HubSettingsValue>): () => void {
   const original = source.candidates
   source.candidates = async (session, req) => {
     const items = await original(session, req)
     if (req.signal.aborted) return items
-    // Dual-compat: 0.1.2-alpha.2 的 MenuView 将 icon 收窄为 'file'|'folder'|'session'
-    // 并通过 ReferenceIcon 渲染，旧版的自定义 ReactElement 点已无法展示。
-    // 以 `drilled` 是否存在探测新版（alpha.2 必有，rc 无）。
-    const isNewHost = req !== null && typeof req === 'object' && 'drilled' in (req as unknown as Record<string, unknown>)
     const modelByName = await modelInvocableMap(api)
     if (req.signal.aborted) return items
     const snapshot = scope.getSnapshot()
     const modelColor = snapshot.value?.dotModelColor ?? DEFAULT_DOT_MODEL_COLOR
     const userColor = snapshot.value?.dotUserColor ?? DEFAULT_DOT_USER_COLOR
-    if (isNewHost) {
-      // 新版：不通过 icon（枚举限制），改为 DOM 注入
-      injectDotsViaDOM(modelByName, modelColor, userColor)
-      return items
-    }
-    // 旧版：保持原有 icon 注入
-    return items.map((item) => ({
-      ...item,
-      icon: dotIcon((modelByName.get(item.name) ?? true) ? modelColor : userColor),
-    }))
+    injectDotsViaDOM(modelByName, modelColor, userColor)
+    return items
   }
   return () => {
     source.candidates = original
