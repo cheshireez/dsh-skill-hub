@@ -27,6 +27,7 @@ import {
   repoSkillEntry,
   repoSlug,
   skillDirOf,
+  skillFileAt,
   skillManifest,
 } from '../repo.ts'
 import { clearTrash, restoreSkill, rootOfPath, rootPath, trashSkill } from '../skillfs.ts'
@@ -144,7 +145,7 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             // 上游可能用分类子目录（skills/engineering/<name>/）且目录会移动：
             // 先在上游 tree 里搜真实位置，manifest 兜底，否则嵌套技能会 404。
             entry.dir = skillDirOf(source, name, tree.map((item) => item.path))
-            entry.path = entry.dir + '/SKILL.md'
+            entry.path = skillFileAt(entry.dir)
             const files = collectRepoSkillFiles(tree, entry.dir)
             if (files.length === 0) { failed.push({ name, error: 'skill missing upstream' }); continue }
             const targetDir = join(targetRoot, name)

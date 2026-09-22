@@ -11,6 +11,7 @@ import { errorText } from '../error-text.ts'
 import { mapConcurrent } from '../concurrency.ts'
 import { parseFrontmatter } from '../skillfs.ts'
 import { RepoFetchError, fetchError, githubAuthHeaders, isAbortError } from './github-client.ts'
+import { relativeToSkillDir } from './discovery.ts'
 import type { RepoFile } from './types.ts'
 
 /**
@@ -78,7 +79,7 @@ export async function downloadRepoSkill(
   try {
     await mapConcurrent(files, 6, async (file) => {
       if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
-      const relative = file.path.slice(entry.dir.length + 1)
+      const relative = relativeToSkillDir(entry.dir, file.path)
       if (relative === '' || relative.includes('..')) throw new RepoFetchError('unsafe repo path: ' + file.path)
       const target = join(tempDir, relative)
       const buffer = await downloadGitHubFile(repo, ref, file.path, fetchImpl, signal)

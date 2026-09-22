@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { collectRepoSkillFiles, diffRemoteSkills, discoverRepoEntries, downloadGitHubFile, downloadRepoSkill, getLatestReleaseTag, getRepoStats, listRepoBranches, normalizeRepoInput, originForRoot, repoSlug, skillDirOf } from './repo.ts'
+import { collectRepoSkillFiles, diffRemoteSkills, discoverRepoEntries, downloadGitHubFile, downloadRepoSkill, getLatestReleaseTag, getRepoStats, listRepoBranches, normalizeRepoInput, originForRoot, relativeToSkillDir, repoSkillEntry, repoSlug, skillDirOf, skillFileAt, skillManifest } from './repo.ts'
 import type { RepoTreeItem } from './repo.ts'
 import type { RepoSkillEntry } from './protocol.ts'
 
@@ -62,6 +62,26 @@ describe('collectRepoSkillFiles', () => {
     ]
     expect(collectRepoSkillFiles(tree, 'skills/code-review').map((file) => file.path)).toEqual(['skills/code-review/README.md', 'skills/code-review/SKILL.md'])
   })
+
+  it('collects the whole repo for the repo-root skill, minus repo tooling', () => {
+    const tree = [
+      blob('SKILL.md', 900),
+      blob('AGENTS.md', 10),
+      blob('LICENSE', 20),
+      blob('README.md', 30),
+      blob('agents/openai.yaml', 5),
+      blob('scripts/validate.py', 6),
+      blob('.github/workflows/validate.yml', 999),
+      blob('.claude-plugin/plugin.json', 999),
+      blob('.gitignore', 999),
+    ]
+    const files = collectRepoSkillFiles(tree, '')
+    expect(files.map((file) => file.path)).toEqual(['AGENTS.md', 'agents/openai.yaml', 'LICENSE', 'README.md', 'scripts/validate.py', 'SKILL.md'])
+    expect(files.reduce((sum, file) => sum + file.size, 0)).toBe(971)
+    // The manifest must describe exactly the collected set, or every later
+    // update diff would report "changed".
+    expect(skillManifest(tree, '')).toEqual(Object.fromEntries(files.map((file) => [file.path, file.size])))
+  })
 })
 
 describe('discoverRepoEntries', () => {
@@ -100,14 +120,52 @@ describe('discoverRepoEntries', () => {
     expect(entries.map((e) => e.name).sort()).toEqual(['deploy', 'foo', 'my-template'])
   })
 
-  it('ignores hidden roots and bare SKILL.md at depth 1', () => {
+  it('ignores hidden roots and bare root/SKILL.md', () => {
     const tree = [
       blob('.hidden/secret/SKILL.md', 1),
-      blob('SKILL.md', 1),
       blob('skills/SKILL.md', 1),
       blob('.github/workflows/ci/SKILL.md', 1),
     ]
     expect(discoverRepoEntries(tree, 'a/b')).toEqual([])
+  })
+
+  it('discovers a SKILL.md at the repo root as one skill named after the repo', () => {
+    // The whole-repo layout (a plugin manifest may declare "skills": ["./"]).
+    const tree = [
+      blob('SKILL.md', 900),
+      blob('AGENTS.md', 10),
+      blob('LICENSE', 20),
+      blob('README.md', 30),
+      blob('agents/openai.yaml', 5),
+      blob('scripts/validate.py', 6),
+      blob('.github/workflows/validate.yml', 999),
+      blob('.claude-plugin/plugin.json', 999),
+      blob('.gitignore', 999),
+    ]
+    const entries = discoverRepoEntries(tree, 'blader/humanizer')
+    expect(entries).toHaveLength(1)
+    const entry = entries[0]
+    expect(entry.name).toBe('humanizer')
+    expect(entry.root).toBe('')
+    expect(entry.dir).toBe('')
+    expect(entry.path).toBe('SKILL.md')
+    // Repo tooling (top-level dot entries) is not part of the skill.
+    expect(entry.fileCount).toBe(6)
+    expect(entry.totalBytes).toBe(971)
+    expect(entry.origin).toBe('blader/humanizer')
+  })
+
+  it('splits the repo-root origin from nested roots without a trailing slash', () => {
+    const tree = [blob('SKILL.md', 1), blob('skills/foo/SKILL.md', 1)]
+    const entries = discoverRepoEntries(tree, 'a/b')
+    expect(entries.map((e) => [e.name, e.root, e.origin])).toEqual([
+      ['b', '', 'a/b'],
+      ['foo', 'skills', 'a/b/skills'],
+    ])
+  })
+
+  it('skips the repo-root candidate when the repo name is not a valid skill name', () => {
+    expect(discoverRepoEntries([blob('SKILL.md', 1)], 'a/Not A Skill')).toEqual([])
   })
 
   it('returns empty when no SKILL.md exists', () => {
@@ -187,6 +245,68 @@ describe('diffRemoteSkills', () => {
   })
 })
 
+describe('repo-root skills (SKILL.md at the repository root)', () => {
+  it('maps paths without a leading slash or an over-eager slice', () => {
+    // The prefix is empty, so relative === absolute and slicing would eat a char.
+    expect(skillFileAt('')).toBe('SKILL.md')
+    expect(relativeToSkillDir('', 'SKILL.md')).toBe('SKILL.md')
+    expect(relativeToSkillDir('', 'agents/openai.yaml')).toBe('agents/openai.yaml')
+    // Nested dirs are unchanged.
+    expect(skillFileAt('skills/demo')).toBe('skills/demo/SKILL.md')
+    expect(relativeToSkillDir('skills/demo', 'skills/demo/SKILL.md')).toBe('SKILL.md')
+    expect(relativeToSkillDir('skills/demo', 'skills/demo/agents/a.yaml')).toBe('agents/a.yaml')
+  })
+
+  it('builds a repo-root entry whose dir is empty and whose path is a bare SKILL.md', () => {
+    expect(repoSkillEntry('humanizer', '', 'blader/humanizer')).toEqual({
+      name: 'humanizer',
+      dir: '',
+      path: 'SKILL.md',
+      root: '',
+      origin: 'blader/humanizer',
+      fileCount: 0,
+      totalBytes: 0,
+      existing: false,
+    })
+  })
+
+  it('resolves the skill directory to the repo root, never to "/name"', () => {
+    const manifest = { 'SKILL.md': 900, 'README.md': 30 }
+    expect(skillDirOf({ root: '', manifest }, 'humanizer')).toBe('')
+    // A tree lookup must not drag it into a same-name nested skill.
+    expect(skillDirOf({ root: '' }, 'humanizer', ['SKILL.md', 'skills/humanizer/SKILL.md'])).toBe('')
+    // Upstream deleted the SKILL.md: still '', so the diff reports a deletion
+    // instead of hunting for a nested directory that never existed.
+    expect(skillDirOf({ root: '', manifest }, 'humanizer', ['README.md'])).toBe('')
+  })
+
+  it('does not mistake an unchanged repo-root skill for a deletion', () => {
+    // Regression guard for the mid-upgrade hazard: with the old fallback
+    // (root + '/' + name) the prefix was '/humanizer/', matched no blob, and
+    // the skill was reported as deleted — which the GUI turns into a move to
+    // the trash can, even though upstream never changed.
+    const source = { root: '', skills: ['humanizer'], manifest: { 'SKILL.md': 900, 'README.md': 30, 'agents/openai.yaml': 5 } }
+    const tree = [blob('SKILL.md', 900), blob('README.md', 30), blob('agents/openai.yaml', 5), blob('.github/workflows/ci.yml', 999)]
+    expect(diffRemoteSkills(tree, source)).toEqual({ updated: [], deleted: [] })
+  })
+
+  it('reports repo-root updates and deletions', () => {
+    const source = { root: '', skills: ['humanizer'], manifest: { 'SKILL.md': 900, 'README.md': 30 } }
+    expect(diffRemoteSkills([blob('SKILL.md', 1200), blob('README.md', 30)], source)).toEqual({ updated: ['humanizer'], deleted: [] })
+    // A file removed upstream changes the manifest without being a deletion.
+    expect(diffRemoteSkills([blob('SKILL.md', 900)], source)).toEqual({ updated: ['humanizer'], deleted: [] })
+    // No SKILL.md at all is a real deletion.
+    expect(diffRemoteSkills([blob('README.md', 30)], source)).toEqual({ updated: [], deleted: ['humanizer'] })
+  })
+
+  it('treats repo tooling as neither an addition nor a change', () => {
+    // A .github-only upstream change must not flip the skill to "updated".
+    const source = { root: '', skills: ['humanizer'], manifest: { 'SKILL.md': 900 } }
+    const tree = [blob('SKILL.md', 900), blob('.github/workflows/ci.yml', 1)]
+    expect(diffRemoteSkills(tree, source)).toEqual({ updated: [], deleted: [] })
+  })
+})
+
 describe('downloadRepoSkill', () => {
   it('creates the target root when missing and imports a skill directory', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'dsh-repo-download-'))
@@ -207,6 +327,26 @@ describe('downloadRepoSkill', () => {
       const result = await downloadRepoSkill('example/repo', 'main', entry, files, targetRoot, fetchImpl as typeof fetch)
       expect(result.skillPath).toBe(join(targetRoot, 'demo', 'SKILL.md'))
       await expect(readFile(result.skillPath, 'utf8')).resolves.toContain('name: demo')
+    } finally {
+      await rm(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('imports a repo-root skill keeping its top-level paths intact', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'dsh-repo-download-root-'))
+    try {
+      const targetRoot = join(parent, 'skills')
+      const entry: RepoSkillEntry = repoSkillEntry('humanizer', '', 'blader/humanizer')
+      const files = [
+        { path: 'SKILL.md', size: 1 },
+        { path: 'agents/openai.yaml', size: 1 },
+      ]
+      const fetchImpl = async () => new Response('---\nname: humanizer\ndescription: Rewrite AI-sounding text\n---\n\nbody', { status: 200 })
+      const result = await downloadRepoSkill('blader/humanizer', 'main', entry, files, targetRoot, fetchImpl as typeof fetch)
+      expect(result.skillPath).toBe(join(targetRoot, 'humanizer', 'SKILL.md'))
+      // 'SKILL.md' must not be sliced down to 'KILL.md'.
+      await expect(readFile(join(targetRoot, 'humanizer', 'SKILL.md'), 'utf8')).resolves.toContain('name: humanizer')
+      await expect(readFile(join(targetRoot, 'humanizer', 'agents', 'openai.yaml'), 'utf8')).resolves.toContain('name: humanizer')
     } finally {
       await rm(parent, { recursive: true, force: true })
     }

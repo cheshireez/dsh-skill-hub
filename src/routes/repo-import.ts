@@ -26,6 +26,7 @@ import {
   normalizeRepoInput,
   repoSlug,
   skillManifest,
+  skillPathIn,
 } from '../repo.ts'
 import { rootPath } from '../skillfs.ts'
 import { errorText } from '../error-text.ts'
@@ -158,7 +159,7 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           for (const entry of selected) {
             if (controller.signal.aborted) break
             job.current = entry.name
-            job.currentFile = entry.dir + '/SKILL.md'
+            job.currentFile = entry.path
             if (entry.existing) {
               job.skipped.push({ name: entry.name, reason: 'exists' })
               job.downloadedBytes += entry.totalBytes
@@ -176,7 +177,7 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             try {
               const result = await downloadRepoSkill(repo, resolvedRef, entry, files, targetRoot, fetch, controller.signal, (bytes, file) => {
                 job.downloadedBytes += bytes
-                job.currentFile = entry.dir + '/' + file
+                job.currentFile = skillPathIn(entry.dir, file)
               })
               await deps.store.addSourceSkill(repo, entry.root, commitSha, resolvedRef, entry.name)
               await deps.store.mergeSourceManifest(repo, skillManifest(tree, entry.dir), entry.dir)

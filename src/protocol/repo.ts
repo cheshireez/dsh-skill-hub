@@ -18,8 +18,29 @@ export interface RepoSkillEntry {
   existing: boolean
 }
 
-/** Skill root in a GitHub repo: the top-level directory that contains skills (e.g. skills, design-templates, templates). Auto-derived from SKILL.md locations, not hard-coded. */
+/**
+ * Skill root in a GitHub repo: the top-level directory that contains skills
+ * (e.g. skills, design-templates, templates). Auto-derived from SKILL.md
+ * locations, not hard-coded.
+ *
+ * The empty string is the repo root itself — a skill whose SKILL.md sits at
+ * the top of the tree (a Claude Code plugin manifest may declare
+ * `"skills": ["./"]`). It is a legal value, not a missing one, so state
+ * sanitizers must accept it instead of coercing it to a default root.
+ */
 export type RepoRoot = string
+
+/** Top-level directory pattern for a skill root: visible, non-dot, safe chars. First char must be alphanum. */
+export const REPO_ROOT_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
+
+/**
+ * True when a value is a usable root: a visible safe top-level directory name,
+ * or the empty string for the repo root. Guards the persisted store against
+ * corrupt roots without rewriting the repo-root sentinel.
+ */
+export function isValidRepoRoot(value: unknown): value is RepoRoot {
+  return typeof value === 'string' && (value === '' || REPO_ROOT_RE.test(value))
+}
 
 /** GET /api/skill-hub/repo — discover importable skills in a GitHub repo. */
 export interface RepoDiscoverResponse {

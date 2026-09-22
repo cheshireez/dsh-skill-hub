@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { DisabledSkill, HubConfig, MarketSourceRecord, MarketStatsSnapshot, SkillStatsCheckpoint, SkillTag, SourceRecord, TrashEntry } from '../protocol.ts'
+import { skillDirPrefix } from '../repo/discovery.ts'
 import { StoreError } from './errors.ts'
 import { hydrateMigratedState, migrateStore } from './migrate.ts'
 import { DEFAULT_SCENE_NAME, STORE_VERSION, statePath, type StoreFile } from './paths.ts'
@@ -351,14 +352,18 @@ export class SkillHubStore {
    * When `dir` is given, every baseline path under that skill directory is
    * dropped first, so files the upstream removed never linger in the
    * baseline and skew later update diffs.
+   *
+   * `dir` may be '' — a skill whose SKILL.md sits at the repo root. Its prefix
+   * is empty, so the whole baseline is replaced: that skill owns the tree, and
+   * keeping stale paths would make every later diff report "changed" forever.
    */
   async mergeSourceManifest(repo: string, manifest: Record<string, number>, dir?: string): Promise<void> {
     await this.ensureLoaded()
     const existing = this.sourcesByRepo.get(repo)
     if (existing === undefined || Object.keys(manifest).length === 0) return
     const base: Record<string, number> = { ...(existing.manifest ?? {}) }
-    if (dir !== undefined && dir !== '') {
-      const prefix = dir + '/'
+    if (dir !== undefined) {
+      const prefix = skillDirPrefix(dir)
       for (const path of Object.keys(base)) {
         if (path.startsWith(prefix)) delete base[path]
       }

@@ -14,8 +14,11 @@ import css from './panel.module.css'
 /**
  * 已知技能根的显示名键；未知根直接显示目录名。
  * zh 字典里这两项就是目录名本身（与接线前的硬编码文本一致）。
+ * 空串是「技能就在仓库根」的哨兵根（host 侧 REPO_ROOT），目录名无从显示，
+ * 给它一个可读标签，否则筛选按钮会是一片空白。
  */
-function rootLabelKey(root: string): 'repo.root.skills' | 'repo.root.designTemplates' | 'repo.root.generic' {
+function rootLabelKey(root: string): 'repo.root.self' | 'repo.root.skills' | 'repo.root.designTemplates' | 'repo.root.generic' {
+  if (root === '') return 'repo.root.self'
   if (root === 'skills') return 'repo.root.skills'
   if (root === 'design-templates') return 'repo.root.designTemplates'
   return 'repo.root.generic'
@@ -94,7 +97,7 @@ export function RepoScanCard(props: { hub: SkillHubState }): JSX.Element | null 
                   />
                   <button type='button' className={css.button + (repoFilter === 'all' ? ' ' + css.primary : '')} style={{ padding:'6px 10px', fontSize:12 }} onClick={() => setRepoFilter('all')}>{tt('repo.allRoots', { count: entries.length })}</button>
                   {roots.map((root) => (
-                    <button key={root} type='button' className={css.button + (repoFilter === root ? ' ' + css.primary : '')} style={{ padding:'6px 10px', fontSize:12 }} onClick={() => setRepoFilter(root)}>{tt(rootLabelKey(root), { root })} {counts.get(root) ?? 0}</button>
+                    <button key={root === '' ? 'repo-root' : root} type='button' className={css.button + (repoFilter === root ? ' ' + css.primary : '')} style={{ padding:'6px 10px', fontSize:12 }} onClick={() => setRepoFilter(root)}>{tt(rootLabelKey(root), { root })} {counts.get(root) ?? 0}</button>
                   ))}
                 </div>
               )
@@ -122,7 +125,7 @@ export function RepoScanCard(props: { hub: SkillHubState }): JSX.Element | null 
                   />
                   <div className={css.rowMain}>
                     <div className={css.rowName}>{entry.name}</div>
-                    <div className={css.rowDesc}>{entry.dir} · {tt('repo.files', { count: entry.fileCount, size: formatBytes(entry.totalBytes) })}</div>
+                    <div className={css.rowDesc}>{entry.dir === '' ? tt('repo.root.self') : entry.dir} · {tt('repo.files', { count: entry.fileCount, size: formatBytes(entry.totalBytes) })}</div>
                   </div>
                   {existing
                     ? <span className={css.badge + ' ' + css.badgeReadonly}>{tt('repo.existing')}</span>

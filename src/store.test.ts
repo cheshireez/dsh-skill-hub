@@ -125,6 +125,26 @@ describe('SkillHubStore', () => {
     expect(again[0].manifest).toEqual({ 'skills/docx/SKILL.md': 120 })
   })
 
+  it('drops only the given skill directory from the baseline', async () => {
+    await store.addSourceSkill('a/b', 'skills', 'sha-1', undefined, 'docx')
+    await store.addSourceSkill('a/b', 'skills', 'sha-1', undefined, 'pdf')
+    await store.mergeSourceManifest('a/b', { 'skills/docx/SKILL.md': 1, 'skills/docx/gone.md': 2, 'skills/pdf/SKILL.md': 3 })
+    // Re-merging docx must drop its stale baseline without touching pdf.
+    await store.mergeSourceManifest('a/b', { 'skills/docx/SKILL.md': 1 }, 'skills/docx')
+    const sources = await store.listSources()
+    expect(sources[0].manifest).toEqual({ 'skills/pdf/SKILL.md': 3, 'skills/docx/SKILL.md': 1 })
+  })
+
+  it('replaces the whole baseline for a skill at the repo root', async () => {
+    await store.addSourceSkill('blader/humanizer', '', 'sha-1', undefined, 'humanizer')
+    await store.mergeSourceManifest('blader/humanizer', { 'SKILL.md': 1, 'old.md': 2 }, '')
+    await store.mergeSourceManifest('blader/humanizer', { 'SKILL.md': 900, 'README.md': 30 }, '')
+    const sources = await store.listSources()
+    // The empty prefix covers the whole tree, so the upstream-dropped old.md
+    // must not linger — otherwise the diff would report "changed" forever.
+    expect(sources[0].manifest).toEqual({ 'SKILL.md': 900, 'README.md': 30 })
+  })
+
   it('derives origins from sources and drops empty sources', async () => {
     await store.addSourceSkill('repo/a', 'skills', '', undefined, 'one')
     await store.addSourceSkill('repo/a', 'skills', '', undefined, 'two')
@@ -248,6 +268,36 @@ describe('SkillHubStore', () => {
     await writeFile(file, JSON.stringify({ version: 99, disabled: [{ name: 'a', path: '/tmp/a.md.disabled', root: 'user-dsh', disabledAt: 1 }] }), 'utf8')
     const fresh = new SkillHubStore(file)
     expect(await fresh.listDisabled()).toEqual([])
+  })
+
+  it('keeps an empty root through a reload (repo-root skill), still coercing a corrupt one', async () => {
+    // 空 root 是「技能在仓库根」的合法取值：装载时把它改写成 skills 会让来源
+    // 对不上任何 blob，下一次「检查更新」就会把技能当成被上游删除 → 进回收站。
+    await writeFile(file, JSON.stringify({
+      version: 4,
+      sources: [
+        { repo: 'blader/humanizer', root: '', commitSha: 'sha-1', skills: ['humanizer'], manifest: { 'SKILL.md': 900 } },
+        { repo: 'a/b', root: '.hidden', commitSha: 'sha-2', skills: ['x'] },
+      ],
+    }), 'utf8')
+    const sources = await store.listSources()
+    expect(sources.find((s) => s.repo === 'blader/humanizer')?.root).toBe('')
+    // 损坏的 root 仍然回落到默认根。
+    expect(sources.find((s) => s.repo === 'a/b')?.root).toBe('skills')
+    // 写盘-再读一次仍然保持空 root。
+    await store.addMarketSource('new/repo')
+    const reloaded = new SkillHubStore(file)
+    expect((await reloaded.listSources()).find((s) => s.repo === 'blader/humanizer')?.root).toBe('')
+  })
+
+  it('keeps the origin of a trashed repo-root skill', async () => {
+    await writeFile(file, JSON.stringify({
+      version: 4,
+      trash: [{ name: 'humanizer', path: '/tmp/trash/humanizer', movedAt: 1, origin: { repo: 'blader/humanizer', root: '', commitSha: 'sha-1' } }],
+    }), 'utf8')
+    const entry = (await store.listTrash()).find((e) => e.name === 'humanizer')
+    // 空 root 曾被 sanitizer 丢掉整个 origin → 恢复后技能会变成「个人技能」。
+    expect(entry?.origin).toMatchObject({ repo: 'blader/humanizer', root: '' })
   })
 
   it('migrates a v3 file (no skillStats) and persists a checkpoint round-trip at v4', async () => {

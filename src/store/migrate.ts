@@ -1,4 +1,5 @@
 import type { DisabledSkill, HubConfig, MarketSourceRecord, MarketStatsSnapshot, SkillStatsCheckpoint, SkillTag, SourceRecord, TrashEntry } from '../protocol.ts'
+import { isValidRepoRoot } from '../protocol/repo.ts'
 import { STORE_VERSION } from './paths.ts'
 
 /** Normalized raw sidecar document after schema migration (fields still unvalidated). */
@@ -149,7 +150,7 @@ export function hydrateMigratedState(migrated: MigratedStore): HydratedState {
       const source = entry as { repo?: unknown; ref?: unknown; root?: unknown; commitSha?: unknown; skills?: unknown; manifest?: unknown } | null
       if (source !== null && typeof source === 'object' && typeof source.repo === 'string' && source.repo !== '' && Array.isArray(source.skills)) {
         const manifest = source.manifest as Record<string, unknown> | undefined
-        const rawRoot = typeof source.root === 'string' && source.root !== '' && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(source.root) ? source.root : 'skills'
+        const rawRoot = isValidRepoRoot(source.root) ? source.root : 'skills'
         sourcesByRepo.set(source.repo, {
           repo: source.repo,
           ...(typeof source.ref === 'string' && source.ref !== '' ? { ref: source.ref } : {}),
@@ -190,7 +191,7 @@ export function hydrateMigratedState(migrated: MigratedStore): HydratedState {
           path: item.path,
           movedAt: typeof item.movedAt === 'number' ? item.movedAt : 0,
           ...(typeof item.sourcePath === 'string' && item.sourcePath !== '' ? { sourcePath: item.sourcePath } : {}),
-          ...(origin !== null && typeof origin === 'object' && typeof origin.repo === 'string' && origin.repo !== '' && typeof origin.root === 'string' && origin.root !== '' && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(origin.root)
+          ...(origin !== null && typeof origin === 'object' && typeof origin.repo === 'string' && origin.repo !== '' && isValidRepoRoot(origin.root)
             ? {
                 origin: {
                   repo: origin.repo,

@@ -4,7 +4,10 @@
  * Kept dependency-free and mostly pure so the root/origin rules are easy to
  * test. Roots are auto-derived: any top-level directory that contains a
  * `**\/SKILL.md` (e.g. `skills/**`, `design-templates/**`, `templates/**`,
- * `workflows/**`) is treated as a skill root. No hard-coded allowlist.
+ * `workflows/**`) is treated as a skill root. No hard-coded allowlist. A
+ * `SKILL.md` at the repo root is the empty-string root (`REPO_ROOT`): the
+ * whole repo is one skill, named after the repo, with top-level dot entries
+ * treated as repo tooling rather than skill content.
  *
  * The implementation now lives under `./repo/` (types, discovery, api,
  * install) and this module is a barrel that re-exports it.
@@ -16,6 +19,8 @@ export { RepoFetchError, fetchError, fetchJson, fetchJsonCached, githubAuthHeade
 export type { RepoRef, RepoTreeItem, RepoFile } from './repo/types.ts'
 
 export {
+  REPO_ROOT,
+  isRepoRoot,
   repoSlug,
   normalizeRepoInput,
   collectRepoSkillFiles,
@@ -23,6 +28,9 @@ export {
   discoverRepoEntries,
   skillManifest,
   skillDirOf,
+  skillFileAt,
+  skillPathIn,
+  relativeToSkillDir,
   diffRemoteSkills,
   repoSkillEntry,
 } from './repo/discovery.ts'
