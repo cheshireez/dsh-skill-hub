@@ -116,7 +116,7 @@ export async function downloadRepoSkill(
         try {
           await rm(tempDir, { recursive: true, force: true })
         } catch (secondError) {
-          console.warn(`[skill-hub] cleanup tempDir failed ${tempDir}:`, errorText(secondError), 'first:', errorText(firstError))
+          console.warn(`[dsh-skill-hub] cleanup tempDir failed ${tempDir}:`, errorText(secondError), 'first:', errorText(firstError))
         }
       }
     }
@@ -143,9 +143,9 @@ export async function cleanupLeftoverImportDirs(targetRoot: string): Promise<num
       await rm2(full, { recursive: true, force: true })
       cleaned += 1
     } catch (error) {
-      console.warn(`[skill-hub] startup cleanup failed ${full}:`, errorText(error))
+      console.warn(`[dsh-skill-hub] startup cleanup failed ${full}:`, errorText(error))
     }
   }
-  if (cleaned > 0) console.warn(`[skill-hub] startup cleaned ${cleaned} leftover import temp dir(s) in ${targetRoot}`)
+  if (cleaned > 0) console.warn(`[dsh-skill-hub] startup cleaned ${cleaned} leftover import temp dir(s) in ${targetRoot}`)
   return cleaned
 }

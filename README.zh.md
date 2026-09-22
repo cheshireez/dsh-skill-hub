@@ -108,7 +108,7 @@ GitHub 仓库 ──扫描/导入──▶ ~/.dsh/skills
 
 ```bash
 npm run typecheck  # tsc --noEmit
-npm test           # 253 tests, 14 suites
+npm test           # 255 tests, 14 suites
 npm run build      # tsc + tsdown → lib/index.js + lib/client.js
 ```
 

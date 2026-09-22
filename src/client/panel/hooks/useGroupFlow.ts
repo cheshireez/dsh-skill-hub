@@ -5,14 +5,7 @@
  */
 
 import { useCallback, useState, type FormEvent } from 'react'
-import type {
-  GroupsResponse,
-  SkillTag,
-  SourceGroupReorderRequest,
-  TagDeleteRequest,
-  TagMembersRequest,
-  TagReorderRequest,
-} from '../../../protocol.ts'
+import type { GroupsResponse, SkillTag } from '../../../protocol.ts'
 import type { SkillHubApi } from '../../api.ts'
 import { errorMessage } from '../../helpers.ts'
 import { conflictsOnClose, type GroupSwitchState } from '../../grouping.ts'

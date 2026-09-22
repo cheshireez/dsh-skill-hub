@@ -43,7 +43,7 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
     catalog, loading, loadError, successBanner, updateState, detail, detailLoading, showForm, formName, formDesc,
     formRoot, formBusy, formMessage, hubConfig, tab, skillView, sourceFilter, sortKey, search,
     workspace, setWorkspace,
-    sourcesState, tagBusy, batchBusy, busyNames, normalized, origins, sourceOptions, filtered,
+    sourcesState, tagBusy, batchBusy, sourceOptions, filtered,
     conflictDialog, confirmDialog, deleteSkillDialog, deleteGroupDialog, confirmClearTrash, branchChoice, branchBusy, marketSyncDialog,
     syncBusy, editingTag, editName, membersDraft, editSearch, uses, groupsState, sourceCheck, checkingSource, syncingSource,
     showLegend, editMode,

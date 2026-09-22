@@ -14,7 +14,7 @@
 
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { SKILL_HUB_API_ROOT } from './protocol.ts'
-import { createRoute, writeError, type SkillHubRouteDeps, type SkillLookupLike } from './routes/helpers.ts'
+import { createRoute, writeError, type SkillHubRouteDeps } from './routes/helpers.ts'
 import { catalogRoutes } from './routes/catalog.ts'
 import { configRoutes } from './routes/config.ts'
 import { marketRoutes } from './routes/market.ts'

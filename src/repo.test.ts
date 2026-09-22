@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { collectRepoSkillFiles, diffRemoteSkills, discoverRepoEntries, downloadGitHubFile, downloadRepoSkill, getLatestReleaseTag, getRepoStats, listRepoBranches, normalizeRepoInput, originForRoot, relativeToSkillDir, repoSkillEntry, repoSlug, skillDirOf, skillFileAt, skillManifest } from './repo.ts'
+import { NO_COMPRESSION, apiHeaders, collectRepoSkillFiles, diffRemoteSkills, discoverRepoEntries, downloadGitHubFile, downloadRepoSkill, getLatestReleaseTag, getRepoStats, listRepoBranches, normalizeRepoInput, originForRoot, relativeToSkillDir, repoSkillEntry, repoSlug, skillDirOf, skillFileAt, skillManifest } from './repo.ts'
 import type { RepoTreeItem } from './repo.ts'
 import type { RepoSkillEntry } from './protocol.ts'
 
@@ -356,7 +356,7 @@ describe('downloadRepoSkill', () => {
 describe('downloadGitHubFile', () => {
   it('falls back to the api contents endpoint when raw is unreachable', async () => {
     const calls: string[] = []
-    const fetchImpl = async (url: string, init?: RequestInit) => {
+    const fetchImpl = async (url: string) => {
       calls.push(url)
       if (url.startsWith('https://raw.githubusercontent.com/')) throw new Error('raw blocked')
       if (url.includes('/contents/')) return new Response('---\nname: demo\ndescription: x\n---\n\nbody', { status: 200 })
@@ -413,5 +413,19 @@ describe('getRepoStats', () => {
       return new Response(JSON.stringify({ stargazers_count: 7 }), { status: 200 })
     }
     expect(await getRepoStats('a/b', fetchImpl as typeof fetch)).toEqual({ stars: 7, downloads: 0 })
+  })
+})
+
+describe('GitHub 请求头', () => {
+  it('总是要求未压缩实体', () => {
+    // 经代理的响应会丢掉 content-encoding 但 body 仍是 gzip（见 github-client.ts
+    // 里 NO_COMPRESSION 的说明），一旦漏掉这个头，所有 GitHub 调用会假性失败并
+    // 报 `invalid github response for <url>`。
+    expect(NO_COMPRESSION['accept-encoding']).toBe('identity')
+    expect(apiHeaders()['accept-encoding']).toBe('identity')
+  })
+
+  it('保留 JSON 的 accept 头', () => {
+    expect(apiHeaders().accept).toBe('application/vnd.github+json')
   })
 })

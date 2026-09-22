@@ -14,7 +14,7 @@
  */
 
 // 后向兼容：老 `from './repo.ts'` 写法继续可用，新代码可直引 github-client。
-export { RepoFetchError, fetchError, fetchJson, fetchJsonCached, githubAuthHeaders, isAbortError, setGithubToken } from './repo/github-client.ts'
+export { NO_COMPRESSION, RepoFetchError, apiHeaders, fetchError, fetchJson, fetchJsonCached, githubAuthHeaders, isAbortError, setGithubToken } from './repo/github-client.ts'
 
 export type { RepoRef, RepoTreeItem, RepoFile } from './repo/types.ts'
 

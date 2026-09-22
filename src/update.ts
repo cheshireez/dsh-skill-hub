@@ -9,7 +9,7 @@
 
 import { createRequire } from 'node:module'
 import { errorText } from './error-text.ts'
-import { githubAuthHeaders } from './repo.ts'
+import { apiHeaders } from './repo.ts'
 import type { UpdateCheckResponse } from './protocol.ts'
 
 /** Repository checked for releases. Keep in sync with package.json. */
@@ -51,7 +51,9 @@ export async function checkLatestRelease(repo = UPDATE_REPO, fetchImpl: typeof f
   let response: Response
   try {
     response = await fetchImpl(url, {
-      headers: { accept: 'application/vnd.github+json', ...githubAuthHeaders() },
+      // apiHeaders() 而非手写等价物：它带上 `accept-encoding: identity`，
+      // 缺了它在「启动环境带代理」时响应会变成解不开的 gzip（见 github-client.ts）。
+      headers: apiHeaders(),
     })
   } catch (error) {
     return failure(errorText(error))
