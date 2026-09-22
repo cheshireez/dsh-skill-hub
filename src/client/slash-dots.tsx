@@ -20,7 +20,7 @@
  */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the Context merge for ctx.inputTriggers.
 import type {} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 // Type-only: pulls the connection/reset event.
@@ -152,7 +152,7 @@ function injectDotsViaDOM(modelByName: Map<string, boolean>, modelColor: string,
  * @param scope - hub settings scope for the dot colors.
  * @returns a disposer restoring the original candidates.
  */
-export function wrapSkillSource(source: InputTriggerSource, api: SkillHubApi, scope: SettingsScope<HubSettingsValue>): () => void {
+export function wrapSkillSource(source: InputTriggerSource, api: SkillHubApi, scope: ConfigForm<HubSettingsValue>): () => void {
   const original = source.candidates
   source.candidates = async (session, req) => {
     const items = await original(session, req)
@@ -184,7 +184,7 @@ export function wrapSkillSource(source: InputTriggerSource, api: SkillHubApi, sc
 export function setupSkillSlashDots(
   ctx: ClientContext,
   api: SkillHubApi,
-  scope: SettingsScope<HubSettingsValue>,
+  scope: ConfigForm<HubSettingsValue>,
 ): () => void {
   const inputTriggers = ctx.get('inputTriggers')
   if (inputTriggers === undefined) return () => {}

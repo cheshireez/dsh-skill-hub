@@ -65,6 +65,15 @@ export type HubSettingsValue = {
 }
 
 /**
+ * This plugin's Loader entry id — the settings namespace dsh serves its config
+ * under. It is cordis.patch.yml's insert id, NOT the package name, and it is
+ * shared by contract because the browser half addresses the same form through
+ * `ctx.configForms.get(HUB_ENTRY_ID)` while the host half writes through
+ * `ctx.settings.update(HUB_ENTRY_ID, …)`.
+ */
+export const HUB_ENTRY_ID = 'skill-hub'
+
+/**
  * Hub config defaults — the single source every layer reads: the cordis
  * schema (index.ts), the host's saved-override merge, and the routes'
  * fallback view. Changing a default here changes all three.

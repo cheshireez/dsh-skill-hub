@@ -8,7 +8,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { InputTriggerCandidate, InputTriggerServiceContract, InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { HubSettingsValue } from '../protocol.ts'
 import type { SkillHubApi } from './api.ts'
@@ -35,14 +35,14 @@ function registry(...sources: InputTriggerSource[]): InputTriggerServiceContract
 }
 
 /** Fake settings scope snapshotting a fixed HubSettingsValue. */
-function scopeWith(value: HubSettingsValue): SettingsScope<HubSettingsValue> {
+function scopeWith(value: HubSettingsValue): ConfigForm<HubSettingsValue> {
   return {
     getSnapshot: () => ({ status: 'ready', value, base: undefined, user: undefined, revision: 1, writable: true, mode: 'host' }),
     subscribe: () => () => {},
     set: async () => {},
     unset: async () => {},
     mutate: async () => {},
-  } as unknown as SettingsScope<HubSettingsValue>
+  } as unknown as ConfigForm<HubSettingsValue>
 }
 
 /** Fake hub api whose catalog lists the given skills. */

@@ -7,16 +7,19 @@
  * source changes.
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
 import type { SkillProviderControl } from '@deepseek-ai/dsh-skill'
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
-import z from 'schemastery'
+import type { SettingsDescriptor, SettingsNamespace, SettingsPathOp } from '@deepseek-ai/dsh-settings'
+// dsh's own fork, NOT the plain `schemastery` package: `.volatile()` (and the
+// loader's `fiber.runtime.Config` handling) only exist here. Every official
+// plugin imports it under this name.
+import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-settings'
-import { HUB_CONFIG_DEFAULTS, HEX_COLOR_RE, type HubConfig, type HubSettingsValue } from './protocol.ts'
+import { HUB_CONFIG_DEFAULTS, HUB_ENTRY_ID, HEX_COLOR_RE, resolveHubConfig, type HubConfig } from './protocol.ts'
 import { SkillHubProvider } from './provider.ts'
 import { makeRoutes } from './routes.ts'
 import { createSkillStatsReader, asPersistenceSeam, type SessionPersistenceLike, type SessionQueryLike, type SkillStatsReader } from './stats.ts'
@@ -33,82 +36,107 @@ export const name = 'skill-hub'
 /** Services required before the skill-hub surfaces can mount. */
 export const inject = ['webServer', 'skills', 'systemPrompt', 'settings']
 
-/** Plugin config, validated by the same-named schemastery schema. */
+/**
+ * Plugin config, validated by the same-named schemastery schema.
+ *
+ * dsh 0.1.7 replaced the "plugin registers a settings namespace" model with
+ * "the Loader entry's Config IS the settings namespace", so this one schema is
+ * both the composition config and the settings page. Every field is volatile:
+ * the Loader re-resolves volatile values in place and re-enters apply()
+ * instead of rebuilding the fiber, and only volatile fields are writable
+ * through the settings transport.
+ */
 export interface Config {
   /** When true (default), a system-prompt section announces the hub to every agent. */
-  announceToAgent?: boolean
+  announceToAgent: Volatile<boolean>
   /** Master switch for the plugin (routes, prompt section). */
-  enabled?: boolean
+  enabled: Volatile<boolean>
   /** Show per-skill invocation count chip. Default true. */
-  showUseCount?: boolean
+  showUseCount: Volatile<boolean>
   /** Show per-skill last-used relative time. Default true. */
-  showUseTime?: boolean
+  showUseTime: Volatile<boolean>
   /** Show group-header usage summaries (count + last used). Default true. */
-  showGroupSummary?: boolean
-  /** 统计滚动窗口天数：只统计最近 N 天的使用；0 = 全部历史。默认 0。 */
-  statsWindowDays?: number
-  /** 自动统计扫描间隔（分钟，最小 1）。默认 5。 */
-  statsScanMinutes?: number
+  showGroupSummary: Volatile<boolean>
+  /** 模型可调圆点颜色（#rrggbb）；缺省用面板默认色。 */
+  dotModelColor: Volatile<string | undefined>
+  /** 用户可调圆点颜色（#rrggbb）；缺省用面板默认色。 */
+  dotUserColor: Volatile<string | undefined>
+  /** GitHub token；`role('secret')` 让 settings 层统一脱敏，缺省为匿名。 */
+  githubToken: Volatile<string | undefined>
+  /** 统计滚动窗口天数：只统计最近 N 天的使用；0 = 全部历史。 */
+  statsWindowDays: Volatile<number>
+  /** 自动统计扫描间隔（分钟，最小 1）。 */
+  statsScanMinutes: Volatile<number>
 }
 
-export const Config: z<Config> = z.object({
-  announceToAgent: z.boolean().default(HUB_CONFIG_DEFAULTS.announceToAgent),
-  enabled: z.boolean().default(HUB_CONFIG_DEFAULTS.enabled),
-  showUseCount: z.boolean().default(HUB_CONFIG_DEFAULTS.showUseCount),
-  showUseTime: z.boolean().default(HUB_CONFIG_DEFAULTS.showUseTime),
-  showGroupSummary: z.boolean().default(HUB_CONFIG_DEFAULTS.showGroupSummary),
-  statsWindowDays: z.number().min(0).max(3650).default(HUB_CONFIG_DEFAULTS.statsWindowDays),
-  statsScanMinutes: z.number().min(1).max(1440).default(HUB_CONFIG_DEFAULTS.statsScanMinutes),
+/**
+ * The durable field schemas, plain (non-volatile) so the same definitions can
+ * back both the live view below and the wire form the settings page renders
+ * from `.toJSON()`. `description` is what the auto-generated page shows with
+ * each row; `role('secret')` makes the settings layer redact the value on
+ * every wire read.
+ */
+const ConfigFields = {
+  enabled: z.boolean().default(HUB_CONFIG_DEFAULTS.enabled).description('关闭后技能中枢的路由、入口与公告全部下线。'),
+  announceToAgent: z.boolean().default(HUB_CONFIG_DEFAULTS.announceToAgent).description('在系统提示中加入本插件说明，用户提到技能管理时 Agent 知道如何协作。'),
+  dotModelColor: z.string().pattern(HEX_COLOR_RE).description('技能行与聊天「/」菜单中「模型可调」圆点的颜色（#rrggbb）。'),
+  dotUserColor: z.string().pattern(HEX_COLOR_RE).description('技能行与聊天「/」菜单中「仅用户可调」圆点的颜色（#rrggbb）。'),
+  showUseCount: z.boolean().default(HUB_CONFIG_DEFAULTS.showUseCount).description('在技能名旁显示调用次数。'),
+  showUseTime: z.boolean().default(HUB_CONFIG_DEFAULTS.showUseTime).description('在技能名行显示最近调用时间。'),
+  showGroupSummary: z.boolean().default(HUB_CONFIG_DEFAULTS.showGroupSummary).description('在分组标题后汇总调用次数与最近调用时间。'),
+  statsWindowDays: z.number().min(0).max(3650).default(HUB_CONFIG_DEFAULTS.statsWindowDays).description('只统计最近 N 天的使用次数；0 = 全部历史。'),
+  statsScanMinutes: z.number().min(1).max(1440).default(HUB_CONFIG_DEFAULTS.statsScanMinutes).description('后台扫描会话日志的间隔（分钟，最小 1）。'),
+  githubToken: z.string().role('secret').description('市场/来源走 GitHub API：匿名每小时 60 次，填 token 后 5000 次。留空即匿名（或跟随 GITHUB_TOKEN 环境变量）。'),
+}
+
+/**
+ * The live plugin config the settings page edits. Field order here is the row
+ * order the auto-generated page renders.
+ */
+export const Config = z.object({
+  enabled: ConfigFields.enabled.volatile(),
+  announceToAgent: ConfigFields.announceToAgent.volatile(),
+  dotModelColor: ConfigFields.dotModelColor.volatile(),
+  dotUserColor: ConfigFields.dotUserColor.volatile(),
+  showUseCount: ConfigFields.showUseCount.volatile(),
+  showUseTime: ConfigFields.showUseTime.volatile(),
+  showGroupSummary: ConfigFields.showGroupSummary.volatile(),
+  statsWindowDays: ConfigFields.statsWindowDays.volatile(),
+  statsScanMinutes: ConfigFields.statsScanMinutes.volatile(),
+  githubToken: ConfigFields.githubToken.volatile(),
 })
 
 /**
- * Settings namespace hosting the hub's runtime config. The host serves every
- * registered settings namespace to the web client, so the browser card and the
- * settings page edit this namespace through the official settings transport,
- * and the plugin consumes the same resolved value — one source of truth.
+ * The settings namespace this plugin's config lives under, narrowed to the
+ * settings package's branded type. The browser half resolves the same form
+ * through `ctx.configForms.get(HUB_ENTRY_ID)`.
  */
-export const CONFIG_NAMESPACE = 'dsh-skill-hub' as SettingsNamespace
-
-/** Schema of the hub's settings namespace: the card's fields (booleans + optional dot colors). */
-export const HubSettingsSchema: z<HubSettingsValue> = z.object({
-  enabled: z.boolean().default(HUB_CONFIG_DEFAULTS.enabled),
-  announceToAgent: z.boolean().default(HUB_CONFIG_DEFAULTS.announceToAgent),
-  showUseCount: z.boolean().default(HUB_CONFIG_DEFAULTS.showUseCount),
-  showUseTime: z.boolean().default(HUB_CONFIG_DEFAULTS.showUseTime),
-  showGroupSummary: z.boolean().default(HUB_CONFIG_DEFAULTS.showGroupSummary),
-  dotModelColor: z.string().pattern(HEX_COLOR_RE),
-  dotUserColor: z.string().pattern(HEX_COLOR_RE),
-  githubToken: z.string(),
-  statsWindowDays: z.number().min(0).max(3650).default(HUB_CONFIG_DEFAULTS.statsWindowDays),
-  statsScanMinutes: z.number().min(1).max(1440).default(HUB_CONFIG_DEFAULTS.statsScanMinutes),
-})
+export const ENTRY_ID = HUB_ENTRY_ID as SettingsNamespace
 
 /** Order of the announcement section within the tool-guidance band. */
 const SECTION_ORDER = 152
 
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
 export const SKILL_HUB_GUIDANCE = [
-  '本机已安装 dsh-skill-hub 插件（DSH Web GUI 技能中枢）：设置 →「技能」分区为管理主页；本插件的配置卡片（启用/公告开关）在插件管理页——侧边栏「插件」→ 本插件。能力：完整本地技能目录（项目/自定义/用户/内置全部来源，走官方 ctx.skills 注册表，含第三方 provider）；按来源与自定义分组浏览，分组/来源头部的滑动开关可一键启用/禁用整组（跨组冲突时询问）；市场：内置市场目录（精选仓库一键添加）加自定义仓库源，扫描后勾选安装，每个市场源行显示已装/可更新/上游已删数量，支持「检查全部」与「全部更新」；来源跟踪：从 GitHub 仓库（市场源或直接地址）导入的技能记录上游 repo/commit 快照，可检查更新、选择同步、上游删除时跟进删除（移入回收站可恢复，恢复后保留来源与场景归属）；个人技能（无来源记录）不跟踪；调用次数与最近使用时间统计；查看技能正文；发现诊断；新建技能向导（写入 ~/.dsh/skills 或 ~/.agents/skills）。限制：仅用户级技能（user-dsh/user-agents 根目录）可写，项目/内置/运行时技能只读展示；路由仅回环可访问。用户提到「技能管理 / 技能列表 / 技能开关 / 技能同步 / 技能市场 / 更新技能 / 新建技能」时即指本插件，请据此协作。',
-  'The dsh-skill-hub plugin is installed (the DSH Web GUI skill hub): Settings → "Skills" is the management page; the plugin\'s configuration card (enable / announcement toggles) lives on its own page in the Plugins manager (sidebar → 插件 → the plugin). Capabilities: full local skill catalog (project / custom / user / bundled roots via the official ctx.skills registry, including third-party providers); browsing by source and custom groups, each group header carrying a sliding switch to enable/disable the whole group in one click (cross-group conflicts prompt the user); market: a built-in catalog of curated repos (one-click add) plus custom repo sources, scan-and-install import, per-source installed / updatable / deleted-upstream badges with "check all" and "update all" actions; upstream source tracking: skills imported from GitHub repos (market sources or direct URLs) record the repo/commit snapshot, support update checks, selective sync, and follow-up deletion when the upstream removes a skill (moves it into a restorable trash; restoring keeps the source and scene membership); personal skills (no source record) are never tracked; invocation counts and last-used times; skill body inspection; discovery diagnostics; new-skill wizard (writes to ~/.dsh/skills or ~/.agents/skills). Limits: only user-level skills (user-dsh/user-agents roots) are writable; project/bundled/runtime skills are read-only; routes are loopback-only. When the user mentions "skill management / skill list / skill toggle / skill sync / skill market / update skills / new skill", this plugin is what they mean — collaborate accordingly.'
+  '本机已安装 dsh-skill-hub 插件（DSH Web GUI 技能中枢）：设置 →「技能」分区为管理主页；本插件的配置页（启用/公告开关、圆点颜色、GitHub token、统计窗口）在插件管理页——侧边栏「插件」→ 本插件，由插件入口 schema 自动生成。能力：完整本地技能目录（项目/自定义/用户/内置全部来源，走官方 ctx.skills 注册表，含第三方 provider）；按来源与自定义分组浏览，分组/来源头部的滑动开关可一键启用/禁用整组（跨组冲突时询问）；市场：内置市场目录（精选仓库一键添加）加自定义仓库源，扫描后勾选安装，每个市场源行显示已装/可更新/上游已删数量，支持「检查全部」与「全部更新」；来源跟踪：从 GitHub 仓库（市场源或直接地址）导入的技能记录上游 repo/commit 快照，可检查更新、选择同步、上游删除时跟进删除（移入回收站可恢复，恢复后保留来源与场景归属）；个人技能（无来源记录）不跟踪；调用次数与最近使用时间统计；查看技能正文；发现诊断；新建技能向导（写入 ~/.dsh/skills 或 ~/.agents/skills）。限制：仅用户级技能（user-dsh/user-agents 根目录）可写，项目/内置/运行时技能只读展示；路由仅回环可访问。用户提到「技能管理 / 技能列表 / 技能开关 / 技能同步 / 技能市场 / 更新技能 / 新建技能」时即指本插件，请据此协作。',
+  'The dsh-skill-hub plugin is installed (the DSH Web GUI skill hub): Settings → "Skills" is the management page; the plugin\'s configuration page (enable / announcement toggles, dot colors, GitHub token, stats window) is auto-generated from the plugin\'s entry schema on its own page in the Plugins manager (sidebar → 插件 → the plugin). Capabilities: full local skill catalog (project / custom / user / bundled roots via the official ctx.skills registry, including third-party providers); browsing by source and custom groups, each group header carrying a sliding switch to enable/disable the whole group in one click (cross-group conflicts prompt the user); market: a built-in catalog of curated repos (one-click add) plus custom repo sources, scan-and-install import, per-source installed / updatable / deleted-upstream badges with "check all" and "update all" actions; upstream source tracking: skills imported from GitHub repos (market sources or direct URLs) record the repo/commit snapshot, support update checks, selective sync, and follow-up deletion when the upstream removes a skill (moves it into a restorable trash; restoring keeps the source and scene membership); personal skills (no source record) are never tracked; invocation counts and last-used times; skill body inspection; discovery diagnostics; new-skill wizard (writes to ~/.dsh/skills or ~/.agents/skills). Limits: only user-level skills (user-dsh/user-agents roots) are writable; project/bundled/runtime skills are read-only; routes are loopback-only. When the user mentions "skill management / skill list / skill toggle / skill sync / skill market / update skills / new skill", this plugin is what they mean — collaborate accordingly.'
 ].join('\n\n')
 
 /**
  * Mount the skill hub routes and announcement.
  * @param ctx - host plugin context carrying webServer/skills/systemPrompt/settings.
- * @param config - resolved plugin config (schema defaults applied by the loader).
  */
-export function apply(ctx: Context, config?: Config): void {
-  // The hub's runtime configuration lives in dsh's own settings service: the
-  // host serves every registered settings namespace to the web client, so the
-  // browser card and the config route edit this namespace through the official
-  // settings transport, and the host consumes the very same resolved value —
-  // one source of truth. The cordis composition entry seeds the base layer; the
-  // sidecar config survives only as a one-time migration source below.
-  const base = config ?? {}
-  const settingsScope = ctx.settings.register(CONFIG_NAMESPACE, HubSettingsSchema, { base })
-  // The effective resolved config, read live from the settings namespace
-  // (schema defaults, then the composition base, then the user layer).
-  const current = (): HubConfig => settingsScope.get()
+export function apply(ctx: Context): void {
+  // The hub's config IS this Loader entry's Config: since 0.1.7 the settings
+  // page, the composition patch and the config route all edit that one entry,
+  // and the Loader re-enters this function when a volatile value changes. So
+  // `settings.describe()` is the live read — its `value` already holds the
+  // resolved config (schema defaults, then composition base, then user layer)
+  // unwrapped to plain JSON, which is what the routes consume. The sidecar
+  // config survives only as a one-time migration source below.
+  const entryDescriptor = (): SettingsDescriptor | undefined =>
+    ctx.settings.describe().find((entry) => entry.ns === ENTRY_ID)
+  const current = (): HubConfig => resolveHubConfig({}, (entryDescriptor()?.value as Partial<HubConfig> | undefined) ?? {})
 
   const store = new SkillHubStore()
   let disposeRoutes: (() => void) | undefined
@@ -125,25 +153,21 @@ export function apply(ctx: Context, config?: Config): void {
 
   // The raw saved config layer (fields the user explicitly overrode); the
   // config route reports it so callers can mark overridden fields.
-  const saved = (): Partial<HubConfig> => {
-    const descriptor = ctx.settings.describe().find((entry) => entry.ns === CONFIG_NAMESPACE)
-    return (descriptor?.user as Partial<HubConfig> | undefined) ?? {}
-  }
+  const saved = (): Partial<HubConfig> => (entryDescriptor()?.user as Partial<HubConfig> | undefined) ?? {}
 
-  // Persist a config patch, re-point the live config, and re-sync every
-  // surface through the settings transport. A patch value of undefined clears
-  // the saved override (the key leaves the user section, so the field
-  // re-inherits the base/default) — the old sidecar's reset semantics.
-  // Runs inside the config route handler; the watcher below re-syncs the
-  // surfaces once the namespace commits.
+  // Persist a config patch through the settings transport. A patch value of
+  // undefined clears the saved override — expressed as a path `unset`, which
+  // makes the field fall back to its inherited value instead of writing a
+  // literal undefined (the old sidecar's reset semantics). The write reloads
+  // this Loader entry, so apply() re-runs and re-syncs every surface below.
   const updateConfig = async (patch: Partial<HubConfig>): Promise<HubConfig> => {
-    const user: Record<string, unknown> = { ...saved() }
-    for (const [key, value] of Object.entries(patch) as Array<[keyof HubConfig, boolean | string | number | undefined]>) {
-      if (value === undefined) delete user[key]
-      else user[key] = value
+    const ops: SettingsPathOp[] = []
+    for (const [field, value] of Object.entries(patch)) {
+      if (value === undefined) ops.push({ op: 'unset', path: [field] })
+      else ops.push({ op: 'set', path: [field], value })
     }
-    await settingsScope.replace(user)
-    return settingsScope.get()
+    if (ops.length > 0) await ctx.settings.mutate(ENTRY_ID, ops)
+    return current()
   }
 
   // Register (or drop) every surface to match the current config. Each
@@ -208,14 +232,10 @@ export function apply(ctx: Context, config?: Config): void {
     )
   }
 
-  // Initial registration from the composition entry, then re-sync whenever
-  // the settings namespace commits (any writer — the card, the config route,
-  // or the Host document editor).
+  // Initial registration from the composition entry. Later changes — the
+  // settings page, the config route, the Host document editor — rewrite this
+  // Loader entry, which re-enters apply(), so no in-process watcher is needed.
   sync()
-  ctx.effect(
-    () => settingsScope.watch(() => { sync() }),
-    'dsh-skill-hub: settings config watch',
-  )
 
   // One-time migration: an install upgraded from the sidecar-configured
   // build seeds the settings namespace from the saved sidecar config when the
@@ -249,7 +269,7 @@ export function apply(ctx: Context, config?: Config): void {
     try {
       const legacy = await store.getConfig()
       if (Object.keys(legacy).length > 0 && Object.keys(saved()).length === 0) {
-        await settingsScope.update(legacy as Record<string, unknown>)
+        await ctx.settings.update(ENTRY_ID, legacy as Record<string, unknown>)
       }
     } catch (error) {
       ctx.logger.warn('[dsh-skill-hub] sidecar config migration into the settings namespace failed', error)

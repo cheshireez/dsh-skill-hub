@@ -24,9 +24,9 @@ dsh plugin --profile web add dsh-skill-hub
 # restart dsh web → Settings → 技能 → Market → scan → import
 ```
 
-Requires `Node ^22.19 || >=24` + dsh web `>=0.1.6-alpha.2 <0.2`.
+Requires `Node ^22.19 || >=24` + dsh web `>=0.1.7-alpha.1 <0.2`.
 
-Two surfaces — the hub panel lives at **Settings → 技能**, and the plugin's settings card lives on the plugin's own page in the **Plugins manager** (sidebar → 插件 → dsh-skill-hub). The card moved there in dsh `0.1.6-alpha.2`, when the Plugins manager replaced the old Settings → 插件 list; this plugin registers into the new location only.
+Two surfaces — the hub panel lives at **Settings → 技能**, and this plugin's own configuration is rendered by the **Plugins manager** (sidebar → 插件 → dsh-skill-hub) from the plugin's entry schema (`skill-hub`). Since dsh `0.1.7-alpha.1` the manager auto-generates that page for every plugin, so this plugin ships no settings card of its own.
 
 ## Features
 
@@ -120,7 +120,7 @@ npm run build      # tsc + tsdown → lib/index.js + lib/client.js
 - Skill missing — check the diagnostics section (frontmatter / name mismatch / short description).
 - Empty source group — its skills were deleted, or their disabled records were lost (sidecar restored/hand-edited). Startup reconciles `.disabled` files on disk; source groups with no visible member are no longer rendered.
 - Dots missing in `/` menu — dsh internals changed; catalog still works.
-- Settings card missing — it lives in the Plugins manager (sidebar → 插件 → dsh-skill-hub), not under Settings. On dsh older than `0.1.6-alpha.2` this plugin contributes no config surface at all.
+- Settings page missing — open the plugin in the Plugins manager (sidebar → 插件 → dsh-skill-hub); the page is generated from its entry schema. On dsh older than `0.1.7-alpha.1` this plugin does not load at all (the settings API it targets does not exist there).
 
 ## Community
 
