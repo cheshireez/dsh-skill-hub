@@ -26,7 +26,7 @@ dsh plugin --profile web add dsh-skill-hub
 
 Requires `Node ^22.19 || >=24` + dsh web `>=0.1.7-alpha.1 <0.2`.
 
-Two surfaces — the hub panel lives at **Settings → 技能**, and this plugin's own configuration is rendered by the **Plugins manager** (sidebar → 插件 → dsh-skill-hub) from the plugin's entry schema (`skill-hub`). Since dsh `0.1.7-alpha.1` the manager auto-generates that page for every plugin, so this plugin ships no settings card of its own.
+Two surfaces — the hub panel lives at **Settings → 技能**, and this plugin's own configuration card sits on the plugin's page in the **Plugins manager** (sidebar → 插件 → dsh-skill-hub). The card is registered by the plugin itself into the `plugins.bundle.config` slot — dsh has no auto-generated config page — and covers the master switch, announce-to-agent, dot colors, usage display and the stats window/interval.
 
 ## Features
 
@@ -40,7 +40,7 @@ Two surfaces — the hub panel lives at **Settings → 技能**, and this plugin
 - **Market** — built-in curated repos plus custom `owner/repo` sources. Any top-level directory containing `SKILL.md` scans as a root (no allowlist), and a `SKILL.md` at the repo root itself scans as a single skill named after the repo (minus repo tooling such as `.github/`). Async import with byte-level progress and cancel. Each source pins a version — click the ref badge to switch between releases, branches, or a custom ref.
 - **Track updates** — imported skills record a repo + commit snapshot. Check all / update-all, per-source badges (installed / updatable / deleted upstream / new release). Sync overwrites local edits (with confirm); upstream deletions move into a restorable trash that keeps source and scene membership.
 - **Stats** — per-skill call counts + last-used times from session logs (incremental cache), group summaries; window and scan interval live-configurable from the settings card.
-- **Settings card** — on the plugin's own page in the **Plugins manager** (sidebar → 插件 → dsh-skill-hub): master switch, announce-to-agent, invocation dot colors, usage display toggles, stats window/interval; plus a self-update check against GitHub releases.
+- **Settings card** — registered on the plugin's own page in the **Plugins manager** (sidebar → 插件 → dsh-skill-hub; collapsed until you expand the title): master switch, announce-to-agent, invocation dot colors, usage display toggles, stats window/interval.
 
 ## Why not just the read-only browser?
 
@@ -120,7 +120,7 @@ npm run build      # tsc + tsdown → lib/index.js + lib/client.js
 - Skill missing — check the diagnostics section (frontmatter / name mismatch / short description).
 - Empty source group — its skills were deleted, or their disabled records were lost (sidecar restored/hand-edited). Startup reconciles `.disabled` files on disk; source groups with no visible member are no longer rendered.
 - Dots missing in `/` menu — dsh internals changed; catalog still works.
-- Settings page missing — open the plugin in the Plugins manager (sidebar → 插件 → dsh-skill-hub); the page is generated from its entry schema. On dsh older than `0.1.7-alpha.1` this plugin does not load at all (the settings API it targets does not exist there).
+- Settings card missing — open the plugin in the Plugins manager (sidebar → 插件 → dsh-skill-hub) and expand the 「技能中枢」 card at the top of the page (collapsed by default). On dsh older than `0.1.7-alpha.1` this plugin does not load at all (the settings API it targets does not exist there).
 
 ## Community
 
