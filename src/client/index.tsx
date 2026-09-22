@@ -7,10 +7,12 @@
  *    panel: catalog, search, enable/disable, diagnostics, new-skill form;
  *  - the chat "/" menu skill dots, colored from the same config the panel reads.
  *
- * The plugin's own configuration has NO custom card: since dsh 0.1.7 the
- * Plugins manager auto-generates one from this plugin's Loader entry schema
- * (src/index.ts Config), so the browser half only reads that form to color the
- * dots — it never writes it.
+ *  - a configuration card in the `plugins.bundle.config` slot, keyed by the
+ *    BUNDLE PACKAGE NAME, rendered on the plugin's own page in the Plugins
+ *    manager (sidebar → 插件 → dsh-skill-hub). dsh 0.1.7 has no auto-generated
+ *    config page: the manager only renders that section for bundles that
+ *    register this slot, and the card writes through the shared config form
+ *    (`ctx.configForms.get(skill-hub)`), the same form the host routes read.
  *
  * Failure policy: mounting problems are logged, never thrown — the web
  * shell fails the whole boot when a plugin apply throws, and an external
@@ -47,6 +49,7 @@ import { SkillHubApi } from './api.ts'
 import { en, zh, type HubKey } from './locales.ts'
 import { applySettingsNavIcon } from './settings-nav-icon.ts'
 import { setupSkillSlashDots } from './slash-dots.tsx'
+import { SkillHubSettingsCard, SkillHubSettingsCardController } from './SkillHubSettingsCard.tsx'
 import { SkillHubPanel } from './panel/SkillHubPanel.tsx'
 
 /** Locale namespace this plugin owns. */
@@ -70,6 +73,7 @@ export const inject = ['slots', 'locale', 'connection', 'remote', 'configForms',
 
 /** Type-only surface (export discipline: no value exports beyond the plugin contract). */
 export type { SkillHubPanelProps } from './panel/SkillHubPanel.tsx'
+export type { SkillHubSettingsState } from './SkillHubSettingsCard.tsx'
 export type { HubKey } from './locales.ts'
 
 /**
@@ -85,10 +89,26 @@ export function apply(ctx: ClientContext): void {
   // Plugins manager renders; the browser half reads it only to color the dots
   // (single form instance, so slash-dots keeps one subscription).
   const scope = ctx.configForms.get<HubSettingsValue>(HUB_ENTRY_ID)
+  const settingsCard = new SkillHubSettingsCardController(scope)
 
   // Chat `/` 菜单技能圆点：为每个候选行加可调用性圆点（蓝=模型可调，绿=仅用户），颜色与面板图例同步；仅装饰，不自动预填 "/"
   // inject 含 inputTriggers 保证 fiber 就绪后再 wrap，slash-dots 内的 undefined 防御仅用于单元测试 mock
   ctx.effect(() => setupSkillSlashDots(ctx, api, scope), 'dsh-skill-hub: slash dots')
+
+  // The plugin's own configuration page. It must be registered here: the
+  // Plugins manager only renders the config section for bundles that appear in
+  // `plugins.bundle.config` (`ledger.bundles.has(openPkg.name)`), and its key is
+  // the BUNDLE PACKAGE NAME — not the settings entry id (`skill-hub`). There is
+  // no auto-generated fallback page in dsh 0.1.7.
+  ctx.effect(
+    () => ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
+      name: 'plugins.bundle.config',
+      key: 'dsh-skill-hub',
+      locale: NS,
+      inject: () => settingsCard.inject(),
+    }, SkillHubSettingsCard)),
+    'dsh-skill-hub: plugin config',
+  )
 
   // Top-level Settings section: the skill management page.
   ctx.effect(

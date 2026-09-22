@@ -1,0 +1,266 @@
+/**
+ * Shared chrome for the plugin settings card, aligned with the official
+ * dsh-client-ui-settings-plugins PluginCard design language: the same tokens,
+ * disclosure header, field rhythm, and copy. Renders nothing while the
+ * namespace is unavailable — a deployment that does not compose the owning
+ * plugin should show no trace of it.
+ */
+
+import { useState, type ReactElement } from 'react'
+import { IconChevronDownOutline14 } from './icons.tsx'
+import type { HubKey } from './locales.ts'
+import type { CardShell } from './settings-form.ts'
+import css from './settings-card.module.css'
+
+/** Card-level chrome props. */
+export interface PluginSettingsCardProps {
+  /** Locale translator for the owning plugin's namespace (its own key domain). */
+  t: (key: HubKey) => string
+  /** Locale key of the card title. */
+  titleKey: HubKey
+  /** Locale key of the card description. */
+  descriptionKey: HubKey
+  /** 插件自身版本（可选）：显示在标题旁的小徽标；缺省不渲染。 */
+  version?: string
+  /** The form shell state. */
+  state: CardShell
+  onSave: () => void
+  onDiscard: () => void
+  children?: ReactElement | ReactElement[]
+}
+
+/**
+ * Render one plugin settings card.
+ * @param props - the plugin's copy keys, its form state, and its controls.
+ * @returns the card, or nothing while the namespace is still loading.
+ */
+export function PluginSettingsCard(props: PluginSettingsCardProps): ReactElement | null {
+  const [open, setOpen] = useState(false)
+  const { state } = props
+  if (!state.available) return null
+  const title = props.t(props.titleKey)
+  const blocked = !state.dirty || state.invalid || state.saving
+
+  const header = (
+    <button
+      type='button'
+      className={css.header}
+      aria-expanded={open}
+      aria-label={props.t(open ? 'settings.collapse' : 'settings.expand') + ': ' + title}
+      onClick={() => { setOpen(!open) }}
+    >
+      <span className={css.headText}>
+        <span className={css.name}>{title}{props.version !== undefined ? <span className={css.versionTag}>v{props.version}</span> : null}</span>
+        <span className={css.description}>{props.t(props.descriptionKey)}</span>
+      </span>
+      {state.dirty ? <span className={css.pending}>{props.t('settings.unsaved')}</span> : null}
+      <IconChevronDownOutline14 className={open ? css.chevronOpen : css.chevron} />
+    </button>
+  )
+
+  if (!state.exposed) {
+    return (
+      <li className={css.card + (open ? ' ' + css.cardOpen : '')}>
+        {header}
+        {open ? <div className={css.body}><p className={css.notExposed} role='status'>{props.t('settings.notExposed')}</p></div> : null}
+      </li>
+    )
+  }
+
+  return (
+    <li className={css.card + (open ? ' ' + css.cardOpen : '')}>
+      {header}
+      {open ? (
+        <div className={css.body}>
+          {!state.writable ? <p className={css.readOnly} role='status'>{props.t('settings.readOnly')}</p> : null}
+          {props.children}
+          <div className={css.footer}>
+            {state.failed ? <p className={css.failed} role='status'>{props.t('settings.saveFailed')}</p> : null}
+            <button type='button' className={css.discard} disabled={!state.dirty || state.saving} onClick={props.onDiscard}>
+              {props.t('settings.discard')}
+            </button>
+            <button type='button' className={css.save} disabled={blocked} onClick={props.onSave}>
+              {props.t(!state.saving ? 'settings.save' : 'settings.saving')}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </li>
+  )
+}
+
+/** Fields every staged control shares: copy, draft text, override state and actions. */
+export interface FieldBaseProps {
+  label: string
+  hint: string
+  overriddenLabel: string
+  resetLabel: string
+  disabled: boolean
+  /** Draft text; '' means the field inherits its default. */
+  text: string
+  overridden: boolean
+  onEdit: (text: string) => void
+  onReset: () => void
+}
+
+/** Props the shared field head needs: identity, override badge and reset. */
+export interface FieldShellProps {
+  /** Control id for the label's htmlFor; omitted when the head labels no control. */
+  id?: string
+  label: string
+  overridden: boolean
+  overriddenLabel: string
+  resetLabel: string
+  disabled: boolean
+  onReset: () => void
+}
+
+/**
+ * The head row every staged field shares: the label (plain text when the
+ * control has no id) plus the overridden badge and its reset button.
+ */
+export function FieldShell(props: FieldShellProps): ReactElement {
+  return (
+    <div className={css.head}>
+      {props.id !== undefined
+        ? <label className={css.label} htmlFor={props.id}>{props.label}</label>
+        : <span className={css.label}>{props.label}</span>}
+      {props.overridden ? (
+        <span className={css.badges}>
+          <span className={css.badge}>{props.overriddenLabel}</span>
+          <button type='button' className={css.reset} disabled={props.disabled} onClick={props.onReset}>
+            {props.resetLabel}
+          </button>
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * A compact sliding switch for the card's master enable/disable control.
+ * An empty text value means the field inherits its default; the switch still
+ * reflects the effective default and becomes an explicit override on click.
+ */
+export type SwitchFieldProps = FieldBaseProps
+
+export function SwitchField(props: SwitchFieldProps): ReactElement {
+  const checked = props.text !== 'false'
+  return (
+    <div className={css.field}>
+      <div className={css.switchRow}>
+        <div className={css.switchText}>
+          <FieldShell {...props} />
+          <p className={css.hint}>{props.hint}</p>
+        </div>
+        <button
+          type='button'
+          className={checked ? css.switchOn : css.switch}
+          role='switch'
+          aria-checked={checked}
+          aria-label={props.label}
+          disabled={props.disabled}
+          onClick={() => { props.onEdit(String(!checked)) }}
+        >
+          <span className={css.switchThumb} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/** One staged color field: a native color picker plus the hex draft text. */
+export interface ColorFieldProps extends FieldBaseProps {
+  id: string
+  inheritLabel: string
+  /** The default color the picker shows while inheriting (per-field). */
+  defaultColor: string
+}
+
+export function ColorField(props: ColorFieldProps): ReactElement {
+  const value = /^#[0-9a-f]{6}$/i.test(props.text) ? props.text : props.defaultColor
+  return (
+    <div className={css.field}>
+      <FieldShell {...props} />
+      <div className={css.colorRow}>
+        <input
+          id={props.id}
+          type='color'
+          className={css.colorInput}
+          value={value}
+          disabled={props.disabled}
+          onChange={(event) => { props.onEdit(event.target.value) }}
+        />
+        <input
+          type='text'
+          className={css.input + ' ' + css.colorText}
+          value={props.text}
+          disabled={props.disabled}
+          placeholder={props.inheritLabel}
+          onChange={(event) => { props.onEdit(event.target.value.trim()) }}
+        />
+      </div>
+      <p className={css.hint}>{props.hint}</p>
+    </div>
+  )
+}
+
+/**
+ * One staged secret field: a password input that never echoes the stored
+ * value. Shows a "set" state via the overridden badge; Reset unsets it.
+ */
+export interface SecretFieldProps extends FieldBaseProps {
+  id: string
+  /** Placeholder shown while empty (never the stored token). */
+  placeholder: string
+  invalid?: boolean
+}
+
+export function SecretField(props: SecretFieldProps): ReactElement {
+  return (
+    <div className={css.field}>
+      <FieldShell {...props} />
+      <input
+        id={props.id}
+        type='password'
+        autoComplete='off'
+        spellCheck={false}
+        className={css.input}
+        value={props.text}
+        disabled={props.disabled}
+        placeholder={props.placeholder}
+        aria-invalid={props.invalid === true}
+        onChange={(event) => { props.onEdit(event.target.value) }}
+      />
+      <p className={css.hint}>{props.hint}</p>
+    </div>
+  )
+}
+
+/** One staged numeric field: a numeric draft text input with inherit/reset semantics. */
+export interface NumberFieldProps extends FieldBaseProps {
+  id: string
+  /** Placeholder shown while the field inherits its default. */
+  inheritLabel: string
+  invalid?: boolean
+}
+
+export function NumberField(props: NumberFieldProps): ReactElement {
+  return (
+    <div className={css.field}>
+      <FieldShell {...props} />
+      <input
+        id={props.id}
+        type='text'
+        inputMode='numeric'
+        className={css.input}
+        value={props.text}
+        disabled={props.disabled}
+        placeholder={props.inheritLabel}
+        aria-invalid={props.invalid === true}
+        onChange={(event) => { props.onEdit(event.target.value) }}
+      />
+      <p className={css.hint}>{props.hint}</p>
+    </div>
+  )
+}
