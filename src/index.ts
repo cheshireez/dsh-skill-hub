@@ -9,7 +9,7 @@
 
 import type { Context, Volatile } from '@deepseek-ai/cordis'
 import type { SkillProviderControl } from '@deepseek-ai/dsh-skill'
-import type { SettingsDescriptor, SettingsNamespace, SettingsPathOp } from '@deepseek-ai/dsh-settings'
+import type { SettingsForms, SettingsNamespace, SettingsPathOp } from '@deepseek-ai/dsh-settings'
 // dsh's own fork, NOT the plain `schemastery` package: `.volatile()` (and the
 // loader's `fiber.runtime.Config` handling) only exist here. Every official
 // plugin imports it under this name.
@@ -33,8 +33,8 @@ import { homedir } from 'node:os'
 /** Stable cordis plugin name (matches cordis.patch.yml insert id). */
 export const name = 'skill-hub'
 
-/** Services required before the skill-hub surfaces can mount. */
-export const inject = ['webServer', 'skills', 'systemPrompt', 'settings']
+/** Services required before the skill-hub surfaces can mount. `settings` is deliberately NOT here: the plugin reads its own volatile config refs and only reaches for the settings service when it is present (issue #11). */
+export const inject = ['webServer', 'skills', 'systemPrompt']
 
 /**
  * Plugin config, validated by the same-named schemastery schema.
@@ -113,6 +113,20 @@ export const Config = z.object({
  */
 export const ENTRY_ID = HUB_ENTRY_ID as SettingsNamespace
 
+/** Every config field, in the order the settings page renders them (used to walk the volatile refs). */
+const CONFIG_FIELDS = [
+  'enabled',
+  'announceToAgent',
+  'dotModelColor',
+  'dotUserColor',
+  'showUseCount',
+  'showUseTime',
+  'showGroupSummary',
+  'statsWindowDays',
+  'statsScanMinutes',
+  'githubToken',
+] as const
+
 /** Order of the announcement section within the tool-guidance band. */
 const SECTION_ORDER = 152
 
@@ -126,32 +140,33 @@ export const SKILL_HUB_GUIDANCE = [
  * Mount the skill hub routes and announcement.
  * @param ctx - host plugin context carrying webServer/skills/systemPrompt/settings.
  */
-export function apply(ctx: Context): void {
-  // The hub's config IS this Loader entry's Config: since 0.1.7 the settings
-  // page, the composition patch and the config route all edit that one entry,
-  // and the Loader re-enters this function when a volatile value changes. So
-  // `settings.describe()` is the live read — its `value` already holds the
-  // resolved config (schema defaults, then composition base, then user layer)
-  // unwrapped to plain JSON, which is what the routes consume. The sidecar
-  // config survives only as a one-time migration source below.
-  const entryDescriptor = (): SettingsDescriptor | undefined =>
-    ctx.settings.describe().find((entry) => entry.ns === ENTRY_ID)
+export function apply(ctx: Context, config?: Config): void {
   /**
-   * The effective config, read live from this Loader entry every time.
+   * Read the runtime config out of our own volatile config refs.
    *
-   * MUST stay live: a settings write goes through `ConfigEditor.edit`, which
-   * calls `resolveConfig(fiber.runtime, next)` — it updates the values in place
-   * and does NOT rebuild the fiber, so `apply()` is *not* re-entered on a
-   * config change (measured: after writing `showUseCount=false`, `saved` reads
-   * back false while the surface keeps serving the old value). Caching this at
-   * apply time therefore silently freezes the config for the fiber's lifetime.
-   *
-   * The cost is real: `describe()` walks and projects every entry in the
-   * profile, so this is called once per request that reads config. There is no
-   * cheaper per-entry read in the 0.1.7 host API; if upstream adds one, switch
-   * to it.
+   * This is the whole point of `volatile()`: the Loader updates those values
+   * **in place** (`ConfigEditor.edit` → `resolveConfig(fiber.runtime, next)` →
+   * `updateVolatile`) without rebuilding the fiber, so a held reference always
+   * answers `.get()` with the current value. Consequences worth remembering:
+   *   - no `settings.describe()` per request (it walks and projects every entry
+   *     in the profile — the reason this used to be slow);
+   *   - no subscription or watcher is needed for *reading*;
+   *   - the plugin keeps working when the Settings service is absent
+   *     (issue #11: business logic must not depend on Settings).
    */
-  const current = (): HubConfig => resolveHubConfig({}, (entryDescriptor()?.value as Partial<HubConfig> | undefined) ?? {})
+  const readConfig = (): Partial<HubConfig> => {
+    const out: Record<string, unknown> = {}
+    for (const field of CONFIG_FIELDS) {
+      const ref = (config as unknown as Record<string, { get?: () => unknown } | undefined> | undefined)?.[field]
+      const value = ref !== undefined && typeof ref.get === 'function' ? ref.get() : ref
+      if (value !== undefined) out[field] = value
+    }
+    return out as Partial<HubConfig>
+  }
+  const current = (): HubConfig => resolveHubConfig({}, readConfig())
+
+  /** The Settings service, when this deployment mounts it. Absent ⇒ no user layer to read or write. */
+  const settingsOf = (): SettingsForms | undefined => ctx.get('settings') as SettingsForms | undefined
 
   const store = new SkillHubStore()
   let disposeRoutes: (() => void) | undefined
@@ -167,8 +182,12 @@ export function apply(ctx: Context): void {
   let stats: SkillStatsReader | undefined
 
   // The raw saved config layer (fields the user explicitly overrode); the
-  // config route reports it so callers can mark overridden fields.
-  const saved = (): Partial<HubConfig> => (entryDescriptor()?.user as Partial<HubConfig> | undefined) ?? {}
+  // config route reports it so callers can mark overridden fields. Empty when
+  // the deployment has no Settings service — the plugin still runs.
+  const saved = (): Partial<HubConfig> => {
+    const descriptor = settingsOf()?.describe().find((entry) => entry.ns === ENTRY_ID)
+    return (descriptor?.user as Partial<HubConfig> | undefined) ?? {}
+  }
 
   // Persist a config patch through the settings transport. A patch value of
   // undefined clears the saved override — expressed as a path `unset`, which
@@ -181,8 +200,10 @@ export function apply(ctx: Context): void {
       if (value === undefined) ops.push({ op: 'unset', path: [field] })
       else ops.push({ op: 'set', path: [field], value })
     }
+    const settings = settingsOf()
+    if (settings === undefined) throw new Error('this deployment does not mount the settings service; config is read-only')
     if (ops.length > 0) {
-      await ctx.settings.mutate(ENTRY_ID, ops)
+      await settings.mutate(ENTRY_ID, ops)
       // A settings write updates this entry's values in place WITHOUT
       // re-entering apply() (see `current`), so the section / provider / routes
       // registered from the old values would otherwise keep serving them until
@@ -292,7 +313,8 @@ export function apply(ctx: Context): void {
     try {
       const legacy = await store.getConfig()
       if (Object.keys(legacy).length > 0 && Object.keys(saved()).length === 0) {
-        await ctx.settings.update(ENTRY_ID, legacy as Record<string, unknown>)
+        const settings = settingsOf()
+        if (settings !== undefined) await settings.update(ENTRY_ID, legacy as Record<string, unknown>)
       }
     } catch (error) {
       ctx.logger.warn('[dsh-skill-hub] sidecar config migration into the settings namespace failed', error)
