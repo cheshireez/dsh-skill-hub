@@ -495,6 +495,49 @@ describe('skill-hub routes', () => {
     expect(body.saved).toEqual({ enabled: false })
   })
 
+  it('never echoes the github token back from the config route', async () => {
+    const token = 'ghp_secretsecret123abc'
+    // GET with a token in effect: the flag says yes, no payload field carries it.
+    const getRoutes = makeRoutes({
+      ...deps,
+      config: () => ({ enabled: true, announceToAgent: true, githubToken: token }),
+      saved: () => ({ githubToken: token }),
+    })
+    const get = new FakeResponse()
+    await getRoutes.find((r) => r.path === SKILL_HUB_API.config)?.handler(fakeReq('GET', SKILL_HUB_API.config), get as never)
+    expect(get.status).toBe(200)
+    const body = get.json() as ConfigResponse
+    expect(body.githubTokenSet).toBe(true)
+    expect(body.config).not.toHaveProperty('githubToken')
+    expect(body.saved).not.toHaveProperty('githubToken')
+    expect(get.body).not.toContain(token)
+
+    // POST, local merge path (no owner updateConfig).
+    const merged = new FakeResponse()
+    await getRoutes.find((r) => r.path === SKILL_HUB_API.config)?.handler(fakeReq('POST', SKILL_HUB_API.config, { enabled: true }), merged as never)
+    expect(merged.status).toBe(200)
+    expect((merged.json() as ConfigResponse).config).not.toHaveProperty('githubToken')
+    expect(merged.body).not.toContain(token)
+
+    // POST, owner updateConfig path.
+    const updateConfig = async (): Promise<HubConfig> => ({ enabled: true, announceToAgent: true, showUseCount: true, showUseTime: true, showGroupSummary: true, githubToken: token })
+    const postRoutes = makeRoutes({ ...deps, updateConfig })
+    const posted = new FakeResponse()
+    await postRoutes.find((r) => r.path === SKILL_HUB_API.config)?.handler(fakeReq('POST', SKILL_HUB_API.config, { enabled: true }), posted as never)
+    expect(posted.status).toBe(200)
+    const postBody = posted.json() as ConfigResponse
+    expect(postBody.githubTokenSet).toBe(true)
+    expect(postBody.config).not.toHaveProperty('githubToken')
+    expect(posted.body).not.toContain(token)
+  })
+
+  it('reports githubTokenSet false when no token is configured', async () => {
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.config).handler(fakeReq('GET', SKILL_HUB_API.config), res as never)
+    const body = res.json() as ConfigResponse
+    expect(body.githubTokenSet).toBe(false)
+  })
+
   it('patches the hub config through the owner updateConfig', async () => {
     const patches: Array<Partial<HubConfig>> = []
     const updateConfig = async (patch: Partial<HubConfig>): Promise<HubConfig> => {

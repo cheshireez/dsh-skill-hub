@@ -7,6 +7,7 @@ import {
   SKILL_HUB_API,
   GITHUB_TOKEN_RE,
   HEX_COLOR_RE,
+  redactGithubToken,
   type ConfigResponse,
   type DiagnosticFixRequest,
   type DiagnosticFixResponse,
@@ -25,6 +26,22 @@ import {
   type SkillHubRouteDeps,
 } from './helpers.ts'
 
+/**
+ * Build a config payload for either method. The GitHub token never goes out:
+ * the effective config and the raw saved overrides are both stripped, and its
+ * presence is reported as a plain boolean instead.
+ */
+function configResponse(config: HubConfig, saved: Partial<HubConfig>): ConfigResponse {
+  const token = config.githubToken
+  return {
+    ok: true,
+    pluginVersion: CURRENT_VERSION,
+    config: redactGithubToken(config),
+    saved: redactGithubToken(saved),
+    githubTokenSet: token !== undefined && token !== '',
+  }
+}
+
 /** 配置域全部路由 spec（由 routes.ts 经 createRoute 包上统一围栏）。 */
 export function configRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
   return [
@@ -38,7 +55,7 @@ export function configRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       skipGate: true,
       handler: async ({ req, res, body }) => {
         if (req.method === 'GET') {
-          writeJson(res, 200, { ok: true, pluginVersion: CURRENT_VERSION, config: configOf(deps), saved: savedOf(deps) } satisfies ConfigResponse)
+          writeJson(res, 200, configResponse(configOf(deps), savedOf(deps)))
           return
         }
         const raw = body
@@ -85,7 +102,7 @@ export function configRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         } else {
           config = await deps.updateConfig(patch)
         }
-        writeJson(res, 200, { ok: true, pluginVersion: CURRENT_VERSION, config, saved: savedOf(deps) } satisfies ConfigResponse)
+        writeJson(res, 200, configResponse(config, savedOf(deps)))
       },
     },
     // -------------------------------------------------------------- update

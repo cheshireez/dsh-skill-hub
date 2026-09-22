@@ -32,6 +32,15 @@ export interface HubConfig {
 }
 
 /**
+ * HubConfig minus the GitHub token: the shape of every config payload that
+ * leaves the host over HTTP. The token is write-only there — a response
+ * pasted into an issue or a screenshot would otherwise hand the credential
+ * over, so callers read `ConfigResponse.githubTokenSet` when they only need
+ * to know whether one is in effect.
+ */
+export type RedactedHubConfig = Omit<HubConfig, 'githubToken'>
+
+/**
  * The resolved shape of the hub's settings namespace (schema defaults, then
  * the composition base, then the user layer). Kept as a type alias so the
  * browser-side settings scope snapshot is index-compatible with the card
@@ -103,6 +112,17 @@ function clampNumber(value: unknown, min: number): number | undefined {
   return Math.floor(value)
 }
 
+/**
+ * Drop the GitHub token from a config-shaped object. Returns a copy, so the
+ * caller's own config layer keeps the token. Shared by the config route's GET
+ * and POST responses — neither may echo it back.
+ */
+export function redactGithubToken<T extends { githubToken?: string }>(value: T): Omit<T, 'githubToken'> {
+  const copy: Record<string, unknown> = { ...value }
+  delete copy.githubToken
+  return copy as Omit<T, 'githubToken'>
+}
+
 /** HEX color validation shared by host routes and the settings card. */
 export const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i
 
@@ -111,10 +131,12 @@ export interface ConfigResponse {
   ok: true
   /** 已安装插件自身的版本号（package.json version），设置卡标题旁显示。 */
   pluginVersion: string
-  /** Effective configuration (saved overrides merged over the defaults). */
-  config: HubConfig
-  /** Raw user overrides persisted in the sidecar (absent fields inherit defaults). */
-  saved: Partial<HubConfig>
+  /** Effective configuration (saved overrides merged over the defaults), token stripped. */
+  config: RedactedHubConfig
+  /** Raw user overrides persisted in the sidecar (absent fields inherit defaults), token stripped. */
+  saved: Partial<RedactedHubConfig>
+  /** True when a GitHub token is in effect (saved override or the base/env layer). */
+  githubTokenSet: boolean
 }
 
 /** POST /api/skill-hub/config — a partial patch; omitted fields keep their values. */

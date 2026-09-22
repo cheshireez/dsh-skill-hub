@@ -30,8 +30,8 @@ export type {
   CreateResponse,
 } from './protocol/catalog.ts'
 export type { SkillStat, StatsResponse, SkillStatsCheckpoint } from './protocol/stats.ts'
-export type { ErrorResponse, HubConfig, HubSettingsValue, ConfigResponse, ConfigRequest } from './protocol/config.ts'
-export { HUB_CONFIG_DEFAULTS, HEX_COLOR_RE, GITHUB_TOKEN_RE, resolveHubConfig } from './protocol/config.ts'
+export type { ErrorResponse, HubConfig, HubSettingsValue, RedactedHubConfig, ConfigResponse, ConfigRequest } from './protocol/config.ts'
+export { HUB_CONFIG_DEFAULTS, HEX_COLOR_RE, GITHUB_TOKEN_RE, resolveHubConfig, redactGithubToken } from './protocol/config.ts'
 export type {
   MarketSourceRecord,
   MarketSourcesResponse,
