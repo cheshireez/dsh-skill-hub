@@ -69,7 +69,7 @@ export interface MarketStatsResponse {
   }>
 }
 
-/** GET /api/skill-hub/market/check — update check over market sources. */
+/** GET /api/skill-hub/market/source/check — update check over market sources. */
 export interface MarketCheckResponse {
   ok: true
   results: Array<{

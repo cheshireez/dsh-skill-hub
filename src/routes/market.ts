@@ -1,11 +1,12 @@
 /**
  * 市场域路由：market 列表 / source 增删 / ref 锁定 / versions 选择器 /
- * check 更新检查 / stats 星标统计 / sync 对齐版本。从 routes.ts 原样搬出，
- * handler 逻辑不变。
+ * source/check 更新检查 / stats 星标统计 / source/sync 对齐版本。
+ * 从 routes.ts 原样搬出，handler 逻辑不变。
  */
 
 import {
   SKILL_HUB_API,
+  SKILL_HUB_API_DEPRECATED_MARKET_CHECK,
   type MarketCheckResponse,
   type MarketSourceResponse,
   type MarketSourcesResponse,
@@ -28,6 +29,7 @@ import {
   readString,
   writeError,
   writeJson,
+  type RouteHandler,
   type RouteSpec,
   type SkillHubRouteDeps,
 } from './helpers.ts'
@@ -42,6 +44,41 @@ import {
 
 /** 市场域全部路由 spec（由 routes.ts 经 createRoute 包上统一围栏）。 */
 export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
+  // Update check over every market source: compares the pinned ref's commit
+  // against the recorded baseline and surfaces newer releases. 5-minute
+  // throttle mirrors the source check. Shared by the canonical route and its
+  // deprecated alias, so the two can never drift apart.
+  const checkMarketSources: RouteHandler = async ({ res }) => {
+    const sources = await deps.store.listMarketSources()
+    if (lastMarketCheck.size > 500) lastMarketCheck.clear()
+    const results: MarketCheckResponse['results'] = []
+    for (const source of sources) {
+      const base = { repo: source.repo, ...(source.ref !== undefined ? { ref: source.ref } : {}) }
+      const now = Date.now()
+      const last = lastMarketCheck.get(source.repo) ?? 0
+      if (now - last < MIN_CHECK_INTERVAL_MS) {
+        results.push({ ...base, updateAvailable: false, commitSha: source.commitSha ?? '', throttled: true })
+        continue
+      }
+      try {
+        const latestTag = await getLatestReleaseTag(source.repo)
+        if (source.ref === undefined) {
+          // Not pinned yet: report the latest release so the UI can
+          // suggest pinning, but never claim an update.
+          results.push({ ...base, updateAvailable: false, commitSha: source.commitSha ?? '', ...(latestTag !== undefined ? { latestTag } : {}) })
+          continue
+        }
+        const latest = await getLatestCommit(source.repo, source.ref)
+        lastMarketCheck.set(source.repo, now)
+        const commitMoved = source.commitSha !== undefined && latest.commitSha !== source.commitSha
+        const newRelease = latestTag !== undefined && latestTag !== source.ref
+        results.push({ ...base, updateAvailable: commitMoved || newRelease, commitSha: latest.commitSha, ...(newRelease ? { latestTag } : {}) })
+      } catch (error) {
+        results.push({ ...base, updateAvailable: false, commitSha: source.commitSha ?? '', error: errorText(error) })
+      }
+    }
+    writeJson(res, 200, { ok: true, results } satisfies MarketCheckResponse)
+  }
   return [
     // --------------------------------------------------------------- market
     // Market sources: the user adds repo slugs; each source can
@@ -117,44 +154,19 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         } satisfies MarketSourceVersionsResponse)
       },
     },
-    // ------------------------------------------------------- market/check
-    // Update check over every market source: compares the pinned ref's
-    // commit against the recorded baseline and surfaces newer releases.
-    // 5-minute throttle mirrors the source check.
+    // ------------------------------------------------- market/source/check
+    // Canonical path; the sibling sync route lives at market/source/sync.
     {
       path: SKILL_HUB_API.marketCheck,
       methods: ['GET'],
-      handler: async ({ res }) => {
-        const sources = await deps.store.listMarketSources()
-        if (lastMarketCheck.size > 500) lastMarketCheck.clear()
-        const results: MarketCheckResponse['results'] = []
-        for (const source of sources) {
-          const base = { repo: source.repo, ...(source.ref !== undefined ? { ref: source.ref } : {}) }
-          const now = Date.now()
-          const last = lastMarketCheck.get(source.repo) ?? 0
-          if (now - last < MIN_CHECK_INTERVAL_MS) {
-            results.push({ ...base, updateAvailable: false, commitSha: source.commitSha ?? '', throttled: true })
-            continue
-          }
-          try {
-            const latestTag = await getLatestReleaseTag(source.repo)
-            if (source.ref === undefined) {
-              // Not pinned yet: report the latest release so the UI can
-              // suggest pinning, but never claim an update.
-              results.push({ ...base, updateAvailable: false, commitSha: source.commitSha ?? '', ...(latestTag !== undefined ? { latestTag } : {}) })
-              continue
-            }
-            const latest = await getLatestCommit(source.repo, source.ref)
-            lastMarketCheck.set(source.repo, now)
-            const commitMoved = source.commitSha !== undefined && latest.commitSha !== source.commitSha
-            const newRelease = latestTag !== undefined && latestTag !== source.ref
-            results.push({ ...base, updateAvailable: commitMoved || newRelease, commitSha: latest.commitSha, ...(newRelease ? { latestTag } : {}) })
-          } catch (error) {
-            results.push({ ...base, updateAvailable: false, commitSha: source.commitSha ?? '', error: errorText(error) })
-          }
-        }
-        writeJson(res, 200, { ok: true, results } satisfies MarketCheckResponse)
-      },
+      handler: checkMarketSources,
+    },
+    // Deprecated alias, kept for one release: a browser tab still running the
+    // previous client bundle calls the old path until it reloads.
+    {
+      path: SKILL_HUB_API_DEPRECATED_MARKET_CHECK,
+      methods: ['GET'],
+      handler: checkMarketSources,
     },
     // ------------------------------------------------------- market/stats
     // Stars + release-asset downloads per market source. Stale-while-revalidate:

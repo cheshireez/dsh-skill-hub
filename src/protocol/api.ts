@@ -1,4 +1,26 @@
-/** Browser-facing base paths of the skill-hub API family. */
+/**
+ * Root path of the skill-hub API family. The host also registers this as its
+ * 404 catch-all prefix, so a mistyped path answers with a plain 404 naming the
+ * path instead of falling through to the SPA fallback (which answers 401 and
+ * reads like an auth problem).
+ */
+export const SKILL_HUB_API_ROOT = '/api/skill-hub'
+
+/**
+ * Deprecated path of the market update check, kept routable for one release
+ * after the naming unification below. A browser tab that loaded the previous
+ * client bundle keeps calling it until it reloads; delete this (and its route
+ * in routes/market.ts) in the next minor.
+ */
+export const SKILL_HUB_API_DEPRECATED_MARKET_CHECK = '/api/skill-hub/market/check'
+
+/**
+ * Browser-facing base paths of the skill-hub API family.
+ *
+ * Naming rule: a path's segments mirror its scope. Market sources own the
+ * `/market/source/*` subtree — add, delete, ref, versions, check, sync — so
+ * the update check and the sync that acts on its result sit side by side.
+ */
 export const SKILL_HUB_API = {
   catalog: '/api/skill-hub/catalog',
   skill: '/api/skill-hub/skill',
@@ -12,7 +34,7 @@ export const SKILL_HUB_API = {
   marketSource: '/api/skill-hub/market/source',
   marketSourceDelete: '/api/skill-hub/market/source/delete',
   marketSourceRef: '/api/skill-hub/market/source/ref',
-  marketCheck: '/api/skill-hub/market/check',
+  marketCheck: '/api/skill-hub/market/source/check',
   marketSync: '/api/skill-hub/market/source/sync',
   repo: '/api/skill-hub/repo',
   repoImport: '/api/skill-hub/repo/import',

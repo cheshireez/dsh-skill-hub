@@ -94,7 +94,7 @@ GitHub 仓库 ──扫描/导入──▶ ~/.dsh/skills
 | `/api/skill-hub/config` | GET/POST | 运行时配置（`null` 清除） |
 | `/api/skill-hub/groups` | GET | tags+集合+排序 |
 | `/api/skill-hub/tag` 等 | POST | 新建/重命名、删除、设成员、排序 |
-| `/api/skill-hub/market` 等 | GET/POST | 市场源 列表/添加/删除/钉 ref/检查/同步 |
+| `/api/skill-hub/market` 等 | GET/POST | 市场源 列表/添加/删除/钉 ref；`…/source/check` + `…/source/sync` 检查与同步 |
 | `/api/skill-hub/market/source/versions?repo=` | GET | 版本选择器的 releases+branches |
 | `/api/skill-hub/repo?repo=` | GET | 发现（任意根） |
 | `/api/skill-hub/repo/import` | POST | 异步任务 `{jobId, total, totalBytes}` |
@@ -102,12 +102,13 @@ GitHub 仓库 ──扫描/导入──▶ ~/.dsh/skills
 | `/api/skill-hub/repo/import/cancel` | POST | 取消任务 |
 | `/api/skill-hub/sources` 等 | GET/POST | 来源 列表/检查/同步/删除/恢复/清空回收站 |
 | `/api/skill-hub/update` | GET | 插件最新发布 |
+| 未知的 `/api/skill-hub/*` | GET/POST | `404 {error}` 且写明路径 —— 拼错路径不该被读成鉴权失败（宿主 SPA fallback 对自己不拥有的 `/api/*` 一律回 401） |
 
 ## 开发
 
 ```bash
 npm run typecheck  # tsc --noEmit
-npm test           # 249 tests, 14 suites
+npm test           # 253 tests, 14 suites
 npm run build      # tsc + tsdown → lib/index.js + lib/client.js
 ```
 

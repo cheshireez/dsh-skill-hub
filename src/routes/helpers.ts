@@ -8,7 +8,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
+import type { WebRoute, WebRouteKind } from '@deepseek-ai/dsh-host-webserver'
 import { disabledGate, type SkillHubRouteDeps } from './deps.ts'
 import { isLoopbackRequest, readJsonBody, writeError, writeRouteError } from './http.ts'
 
@@ -65,6 +65,13 @@ export type RouteHandler = (context: RouteContext) => Promise<void>
 /** One declarative route: path + accepted methods + the business handler. */
 export interface RouteSpec {
   path: string
+  /**
+   * Match kind: 'exact' (default) matches the pathname verbatim; 'prefix'
+   * matches the path and everything beneath it. The webserver consults the
+   * exact table first and then resolves prefixes longest-first, so a prefix
+   * route is a catch-all that can never shadow a real route.
+   */
+  kind?: WebRouteKind
   /** Accepted HTTP methods; anything else answers 405. */
   methods: readonly ('GET' | 'POST')[]
   /** POST requests must carry a JSON body (400 when missing/unparseable). */
@@ -82,7 +89,7 @@ export interface RouteSpec {
  */
 export function createRoute(deps: SkillHubRouteDeps, spec: RouteSpec): WebRoute {
   return {
-    kind: 'exact',
+    kind: spec.kind ?? 'exact',
     path: spec.path,
     handler: async (req, res) => {
       if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }

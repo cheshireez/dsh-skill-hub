@@ -8,7 +8,7 @@
  * 新代码可按需直引 `from './protocol/<domain>.ts'`。
  */
 
-export { SKILL_HUB_API } from './protocol/api.ts'
+export { SKILL_HUB_API, SKILL_HUB_API_ROOT, SKILL_HUB_API_DEPRECATED_MARKET_CHECK } from './protocol/api.ts'
 export type {
   WritableRoot,
   HubInvocation,

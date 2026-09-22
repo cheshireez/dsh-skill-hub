@@ -6,7 +6,7 @@ import type { SkillDefinition, SkillSummary } from '@deepseek-ai/dsh-skill'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeRoutes, type SkillHubRouteDeps } from './routes.ts'
 import { SkillHubStore, statePath } from './store.ts'
-import { SKILL_HUB_API, type CatalogResponse, type ConfigResponse, type ErrorResponse, type HubConfig } from './protocol.ts'
+import { SKILL_HUB_API, SKILL_HUB_API_DEPRECATED_MARKET_CHECK, SKILL_HUB_API_ROOT, type CatalogResponse, type ConfigResponse, type ErrorResponse, type HubConfig } from './protocol.ts'
 
 /** Minimal response double recording status/headers/body. */
 class FakeResponse {
@@ -1012,4 +1012,67 @@ describe('skill-hub routes', () => {
     expect((await store.getSource('repo/verify-me'))?.commitSha).toBe('v1')
   })
 
+})
+
+describe('skill-hub API surface', () => {
+  let dir: string
+  let home: string
+  let store: SkillHubStore
+  let deps: SkillHubRouteDeps
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dsh-skill-hub-api-'))
+    home = join(dir, 'home')
+    await mkdir(join(home, 'skills'), { recursive: true })
+    store = new SkillHubStore(statePath(home))
+    deps = { skills: { snapshot: async () => ({ skills: [], complete: true }), get: async () => undefined }, store, home }
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('keeps every path inside the family root and registered', () => {
+    const routes = makeRoutes(deps)
+    const registered = new Set(routes.filter((route) => route.kind === 'exact').map((route) => route.path))
+    const declared = Object.values(SKILL_HUB_API)
+    for (const path of declared) expect(path.startsWith(SKILL_HUB_API_ROOT + '/')).toBe(true)
+    // 常量与注册表互为子集：一个声明了没注册（客户端必然 404），或注册了没声明
+    // （客户端永远调不到），都是漂移。唯一的豁免是显式弃用别名。
+    expect([...registered].sort()).toEqual([...declared, SKILL_HUB_API_DEPRECATED_MARKET_CHECK].sort())
+    expect(registered.has(SKILL_HUB_API_DEPRECATED_MARKET_CHECK)).toBe(true)
+  })
+
+  it('pairs the market update check with the sync that acts on it', () => {
+    // 曾经的坑：check 在 /market/check，sync 在 /market/source/sync，
+    // 写客户端时很容易把同步写成 /market/sync（未命中路径还会回 401）。
+    expect(SKILL_HUB_API.marketCheck).toBe('/api/skill-hub/market/source/check')
+    for (const path of [SKILL_HUB_API.marketCheck, SKILL_HUB_API.marketSync]) {
+      expect(path.startsWith('/api/skill-hub/market/source/')).toBe(true)
+    }
+    expect(SKILL_HUB_API_DEPRECATED_MARKET_CHECK).not.toBe(SKILL_HUB_API.marketCheck)
+  })
+
+  it('answers the deprecated market-check alias instead of 404', async () => {
+    const routes = makeRoutes(deps)
+    const route = routes.find((r) => r.path === SKILL_HUB_API_DEPRECATED_MARKET_CHECK)
+    expect(route).toBeDefined()
+    const res = new FakeResponse()
+    await route?.handler(fakeReq('GET', SKILL_HUB_API_DEPRECATED_MARKET_CHECK), res as never)
+    // Same handler as the canonical route: a list of per-source results.
+    expect(res.status).toBe(200)
+    expect((res.json() as { results: unknown[] }).results).toEqual([])
+  })
+
+  it('registers one 404 catch-all covering the whole family', async () => {
+    const routes = makeRoutes(deps)
+    const catchAll = routes.filter((route) => route.kind === 'prefix')
+    expect(catchAll).toHaveLength(1)
+    expect(catchAll[0].path).toBe(SKILL_HUB_API_ROOT)
+    // 未知路径给出写明路径的 404，而不是让请求落到宿主 fallback 的 401。
+    const res = new FakeResponse()
+    await catchAll[0].handler(fakeReq('GET', '/api/skill-hub/market/sync'), res as never)
+    expect(res.status).toBe(404)
+    expect((res.json() as ErrorResponse).error).toContain('/api/skill-hub/market/sync')
+  })
 })

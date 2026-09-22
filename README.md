@@ -94,7 +94,7 @@ Host uses only `ctx.skills.snapshot/get`, `ctx.webServer.register`, `ctx.systemP
 | `/api/skill-hub/config` | GET/POST | runtime config (`null` clears) |
 | `/api/skill-hub/groups` | GET | tags + collections + orders |
 | `/api/skill-hub/tag` etc. | POST | create/rename, delete, set members, reorder |
-| `/api/skill-hub/market` etc. | GET/POST | list/add/delete/pin/check/sync sources |
+| `/api/skill-hub/market` etc. | GET/POST | list/add/delete/pin sources; `…/source/check` + `…/source/sync` update them |
 | `/api/skill-hub/market/source/versions?repo=` | GET | releases + branches for the version picker |
 | `/api/skill-hub/repo?repo=` | GET | discover (any root) |
 | `/api/skill-hub/repo/import` | POST | async job `{jobId, total, totalBytes}` |
@@ -102,12 +102,13 @@ Host uses only `ctx.skills.snapshot/get`, `ctx.webServer.register`, `ctx.systemP
 | `/api/skill-hub/repo/import/cancel` | POST | cancel job |
 | `/api/skill-hub/sources` etc. | GET/POST | list/check/sync/delete/restore/clear trash |
 | `/api/skill-hub/update` | GET | plugin latest release |
+| unknown `/api/skill-hub/*` | GET/POST | `404 {error}` naming the path — a typo must not read as an auth failure (the SPA fallback answers 401 for `/api/*` it does not own) |
 
 ## Development
 
 ```bash
 npm run typecheck  # tsc --noEmit
-npm test           # 249 tests, 14 suites
+npm test           # 253 tests, 14 suites
 npm run build      # tsc + tsdown → lib/index.js + lib/client.js
 ```
 
