@@ -1,7 +1,7 @@
 {
   "name": "dsh-skill-hub",
-  "version": "0.3.14",
-  "description": "In-GUI skill hub for DeepSeek Harness (dsh): browse the full local skill catalog from the official ctx.skills registry (every root + third-party providers), toggle skills on/off, inspect bodies, surface frontmatter diagnostics, and scaffold new skills \u2014 plus a codex-style skill market (built-in catalog, upstream update checks, one-click update-all) with tracked source sync. The full manager beyond the read-only dsh-skill-manager browser.",
+  "version": "0.3.15",
+  "description": "In-GUI skill hub for DeepSeek Harness (dsh): browse the full local skill catalog from the official ctx.skills registry (every root + third-party providers), toggle skills on/off, inspect bodies, surface frontmatter diagnostics, and scaffold new skills — plus a codex-style skill market (built-in catalog, upstream update checks, one-click update-all) with tracked source sync. The full manager beyond the read-only dsh-skill-manager browser.",
   "type": "module",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -67,7 +67,7 @@
     "capability": {
       "id": "skill-hub-settings-panel",
       "kind": "ui",
-      "invocation": "Open Settings \u2192 Skills panel; GET /api/skill-hub/catalog",
+      "invocation": "Open Settings → Skills panel; GET /api/skill-hub/catalog",
       "expected": "The full local skill catalog (all roots) renders as groups and toggles persist an enabled/disabled row without a restart."
     },
     "evidence": {
