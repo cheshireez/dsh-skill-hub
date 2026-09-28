@@ -24,7 +24,7 @@ dsh plugin --profile web add dsh-skill-hub
 # restart dsh web → Settings → 技能 → Market → scan → import
 ```
 
-Requires `Node ^22.19 || >=24` + dsh web `>=0.1.7-alpha.1 <0.2`.
+Requires `Node ^22.19 || >=24` + dsh web `>=0.1.7-alpha.1 <0.3`.
 
 Two surfaces — the hub panel lives at **Settings → 技能**, and this plugin's own configuration card sits on the plugin's page in the **Plugins manager** (sidebar → 插件 → dsh-skill-hub). The card is registered by the plugin itself into the `plugins.bundle.config` slot — dsh has no auto-generated config page — and covers the master switch, announce-to-agent, dot colors, usage display and the stats window/interval.
 

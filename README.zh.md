@@ -24,7 +24,7 @@ dsh plugin --profile web add dsh-skill-hub
 # 重启 dsh web → 设置 → 技能 → 市场 → 扫描 → 导入
 ```
 
-要求 `Node ^22.19 || >=24` + dsh web `>=0.1.7-alpha.1 <0.2`。
+要求 `Node ^22.19 || >=24` + dsh web `>=0.1.7-alpha.1 <0.3`。
 
 两个界面 —— 管理面板在 **设置 → 技能**；本插件自身的配置卡片在 **插件管理页** 的插件自有页面上（侧边栏「插件」→ dsh-skill-hub）。该卡片由本插件自己注册进 `plugins.bundle.config` 槽位（dsh 没有自动生成的配置页），覆盖总开关、向 Agent 公告、圆点颜色、用量显示与统计窗口/间隔。
 
