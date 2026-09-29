@@ -6,7 +6,6 @@
 
 import {
   SKILL_HUB_API,
-  SKILL_HUB_API_DEPRECATED_MARKET_CHECK,
   type MarketCheckResponse,
   type MarketSourceResponse,
   type MarketSourcesResponse,
@@ -46,8 +45,7 @@ import {
 export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
   // Update check over every market source: compares the pinned ref's commit
   // against the recorded baseline and surfaces newer releases. 5-minute
-  // throttle mirrors the source check. Shared by the canonical route and its
-  // deprecated alias, so the two can never drift apart.
+  // throttle mirrors the source check.
   const checkMarketSources: RouteHandler = async ({ res }) => {
     const sources = await deps.store.listMarketSources()
     if (lastMarketCheck.size > 500) lastMarketCheck.clear()
@@ -158,13 +156,6 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
     // Canonical path; the sibling sync route lives at market/source/sync.
     {
       path: SKILL_HUB_API.marketCheck,
-      methods: ['GET'],
-      handler: checkMarketSources,
-    },
-    // Deprecated alias, kept for one release: a browser tab still running the
-    // previous client bundle calls the old path until it reloads.
-    {
-      path: SKILL_HUB_API_DEPRECATED_MARKET_CHECK,
       methods: ['GET'],
       handler: checkMarketSources,
     },

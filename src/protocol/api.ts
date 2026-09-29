@@ -7,14 +7,6 @@
 export const SKILL_HUB_API_ROOT = '/api/skill-hub'
 
 /**
- * Deprecated path of the market update check, kept routable for one release
- * after the naming unification below. A browser tab that loaded the previous
- * client bundle keeps calling it until it reloads; delete this (and its route
- * in routes/market.ts) in the next minor.
- */
-export const SKILL_HUB_API_DEPRECATED_MARKET_CHECK = '/api/skill-hub/market/check'
-
-/**
  * Browser-facing base paths of the skill-hub API family.
  *
  * Naming rule: a path's segments mirror its scope. Market sources own the
