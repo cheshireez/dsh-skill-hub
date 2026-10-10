@@ -9,7 +9,7 @@
 
 import { createRequire } from 'node:module'
 import { errorText } from './error-text.ts'
-import { apiHeaders } from './repo.ts'
+import { apiHeaders, rateLimitResetAt } from './repo.ts'
 import type { UpdateCheckResponse } from './protocol.ts'
 
 /** Repository checked for releases. Keep in sync with package.json. */
@@ -63,11 +63,11 @@ export async function checkLatestRelease(repo = UPDATE_REPO, fetchImpl: typeof f
 
   if (!response.ok) {
     // Rate-limit exhaustion gets a friendlier message with the reset time.
-    const remaining = response.headers.get('x-ratelimit-remaining')
-    const reset = response.headers.get('x-ratelimit-reset')
-    if ((response.status === 403 || response.status === 429) && remaining === '0' && reset !== null) {
-      const at = new Date(Number(reset) * 1000)
-      return failure('github rate limit reached; retry after ' + at.toLocaleTimeString() + ' or set GITHUB_TOKEN')
+    // The header parsing lives in github-client so the repo layer and this
+    // check can never disagree on what counts as exhaustion.
+    const resetAt = rateLimitResetAt(response)
+    if (resetAt !== undefined) {
+      return failure('github rate limit reached; retry after ' + resetAt.toLocaleTimeString() + ' or set GITHUB_TOKEN')
     }
     return failure('GitHub HTTP ' + response.status)
   }

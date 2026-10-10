@@ -5,6 +5,7 @@ import type { IncomingMessage } from 'node:http'
 import type { SkillDefinition, SkillSummary } from '@deepseek-ai/dsh-skill'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeRoutes, type SkillHubRouteDeps } from './routes.ts'
+import { lastMarketCheck } from './routes/route-state.ts'
 import { SkillHubStore, statePath } from './store.ts'
 import { SKILL_HUB_API, SKILL_HUB_API_ROOT, type CatalogResponse, type ConfigResponse, type ErrorResponse, type HubConfig } from './protocol.ts'
 
@@ -643,6 +644,73 @@ describe('skill-hub routes', () => {
     const del = new FakeResponse()
     await routeFor(SKILL_HUB_API.marketSourceDelete).handler(fakeReq('POST', SKILL_HUB_API.marketSourceDelete, { repo: 'anthropics/skills' }), del as never)
     expect((del.json() as import('./protocol.ts').MarketSourceResponse).repos).toEqual([{ repo: 'other/repo', ref: 'v2.0.0' }])
+  })
+
+  // 回归：重复添加一个已存在的源只改它的 ref、不重排列表，所以响应必须回传
+  // 服务端归一化的 slug —— 客户端不能靠 `repos[repos.length - 1]` 猜操作对象。
+  it('returns the resolved slug of the added market source, not a list position', async () => {
+    const add = async (repo: string): Promise<import('./protocol.ts').MarketSourceAddResponse> => {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.marketSource).handler(fakeReq('POST', SKILL_HUB_API.marketSource, { repo }), res as never)
+      expect(res.status).toBe(200)
+      return res.json() as import('./protocol.ts').MarketSourceAddResponse
+    }
+    await add('first/repo')
+    await add('second/repo')
+    const again = await add('first/repo@v9.9.9')
+    expect(again.repo).toBe('first/repo')
+    // 本次操作对象并不在末位：按位置猜会拿到 second/repo。
+    expect(again.repos[again.repos.length - 1].repo).toBe('second/repo')
+    expect(again.repos).toEqual([{ repo: 'first/repo', ref: 'v9.9.9' }, { repo: 'second/repo' }])
+    // URL 输入也归一到同一个 slug。
+    expect((await add('https://github.com/third/repo')).repo).toBe('third/repo')
+  })
+
+  // 回归：未定版的市场源也必须吃 5 分钟节流。曾经把节流时间戳写在「未定版
+  // 早退」之后，于是未定版的源每次检查都重新打 GitHub /releases/latest。
+  it('throttles the market check for an unpinned source as well', async () => {
+    lastMarketCheck.clear()
+    await store.addMarketSource('unpinned/throttle-target')
+    let releaseLookups = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/releases/latest')) {
+        releaseLookups += 1
+        return jsonResponse({ tag_name: 'v3.1.4' })
+      }
+      return new Response('unexpected url: ' + url, { status: 599 })
+    }))
+    try {
+      const first = new FakeResponse()
+      await routeFor(SKILL_HUB_API.marketCheck).handler(fakeReq('GET', SKILL_HUB_API.marketCheck), first as never)
+      const firstBody = first.json() as import('./protocol.ts').MarketCheckResponse
+      expect(firstBody.results[0]).toMatchObject({ repo: 'unpinned/throttle-target', latestTag: 'v3.1.4' })
+      expect(firstBody.results[0].throttled).toBeUndefined()
+
+      const second = new FakeResponse()
+      await routeFor(SKILL_HUB_API.marketCheck).handler(fakeReq('GET', SKILL_HUB_API.marketCheck), second as never)
+      const secondBody = second.json() as import('./protocol.ts').MarketCheckResponse
+      expect(secondBody.results[0].throttled).toBe(true)
+      // 第二次没有发生任何上游查询。
+      expect(releaseLookups).toBe(1)
+    } finally {
+      vi.unstubAllGlobals()
+      lastMarketCheck.clear()
+    }
+  })
+
+  // resolveHubConfig 收敛为单参数后，越界值仍必须回落到 schema 默认，
+  // 而不是被写进有效配置。
+  it('clamps the numeric stats knobs and fills the remaining defaults', async () => {
+    const routes = makeRoutes({
+      ...deps,
+      config: () => ({ enabled: true, announceToAgent: true, statsWindowDays: -5, statsScanMinutes: 0 }),
+    })
+    const res = new FakeResponse()
+    await routes.find((r) => r.path === SKILL_HUB_API.config)?.handler(fakeReq('GET', SKILL_HUB_API.config), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as ConfigResponse
+    expect(body.config.statsWindowDays).toBe(14)
+    expect(body.config.statsScanMinutes).toBe(5)
   })
 
   // ------------------------------------------------------- repo import (B方案 job+轮询)

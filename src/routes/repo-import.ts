@@ -3,7 +3,7 @@
  * cancel 取消。从 routes.ts 原样搬出，handler 逻辑不变。
  */
 
-import { mkdir, rename } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import {
@@ -28,7 +28,7 @@ import {
   skillManifest,
   skillPathIn,
 } from '../repo.ts'
-import { rootPath } from '../skillfs.ts'
+import { moveIntoTrash, rootPath } from '../skillfs.ts'
 import { errorText } from '../error-text.ts'
 import {
   homeOf,
@@ -60,11 +60,8 @@ async function clearDisabledPlaceholder(deps: SkillHubRouteDeps, targetRoot: str
   if (sourceToTrash !== dir) return false
   // 目录里还有 SKILL.md 说明它其实是启用态的真实技能，不动。
   if (await pathExists(join(dir, 'SKILL.md'))) return false
-  // 与 skill/delete 的回收站语义一致：同级 .trash/ 下按「名字-时间戳」落盘，可恢复。
-  const trashDir = join(targetRoot, '.trash')
-  await mkdir(trashDir, { recursive: true })
-  const target = join(trashDir, name + '-' + Date.now())
-  await rename(sourceToTrash, target)
+  // 与 skill/delete 走同一个回收站落盘规则（moveIntoTrash），恢复流程依赖它。
+  const { path: target } = await moveIntoTrash(sourceToTrash)
   await deps.store.addTrash({ name, path: target, movedAt: Date.now(), sourcePath: sourceToTrash })
   await deps.store.removeDisabled(name)
   return true

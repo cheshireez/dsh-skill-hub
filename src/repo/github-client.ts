@@ -66,21 +66,34 @@ function etagCacheSet(url: string, etag: string, json: unknown): void {
   }
   etagCache.set(url, { etag, json })
 }
+
+/**
+ * When the response shows an exhausted GitHub rate limit, the instant it
+ * resets; otherwise undefined. Shared by the repo fetch layer and the plugin's
+ * own update check so both agree on what counts as a rate-limit rejection
+ * (403/429 + `x-ratelimit-remaining: 0` + a parseable `x-ratelimit-reset`)
+ * instead of each re-deriving it from the headers.
+ */
+export function rateLimitResetAt(response: Response): Date | undefined {
+  if (response.status !== 403 && response.status !== 429) return undefined
+  if (response.headers.get('x-ratelimit-remaining') !== '0') return undefined
+  const reset = response.headers.get('x-ratelimit-reset')
+  if (reset === null) return undefined
+  const at = new Date(Number(reset) * 1000)
+  return Number.isNaN(at.getTime()) ? undefined : at
+}
+
 /**
  * Build a RepoFetchError; when the response shows an exhausted rate limit,
  * report the reset time instead of a bare HTTP status.
  */
 export function fetchError(context: string, response: Response, fallbackStatus = 502): RepoFetchError {
-  const remaining = response.headers.get('x-ratelimit-remaining')
-  const reset = response.headers.get('x-ratelimit-reset')
-  if (response.status === 403 || response.status === 429) {
-    if (remaining === '0' && reset !== null) {
-      const at = new Date(Number(reset) * 1000)
-      return new RepoFetchError(
-        'github rate limit reached (anonymous quota exhausted); retry after ' + at.toLocaleTimeString() + ' or set GITHUB_TOKEN',
-        403,
-      )
-    }
+  const resetAt = rateLimitResetAt(response)
+  if (resetAt !== undefined) {
+    return new RepoFetchError(
+      'github rate limit reached (anonymous quota exhausted); retry after ' + resetAt.toLocaleTimeString() + ' or set GITHUB_TOKEN',
+      403,
+    )
   }
   return new RepoFetchError(context + ' (HTTP ' + response.status + ')', response.status === 404 ? 404 : fallbackStatus)
 }
@@ -111,10 +124,9 @@ export async function fetchJson(url: string, fetchImpl: typeof fetch, context: s
 }
 
 /**
- * Load repo metadata and the recursive git tree at the given ref. The meta
- * request always resolves the default branch (used when ref is absent); the
- * tree is fetched at `ref ?? default_branch` so an explicit branch/tag scans
- * the exact same content a later download would fetch.
+ * Load one JSON document from the GitHub API, reusing an ETag when the URL was
+ * fetched before. `fetchImpl`/`context` exist so callers can stub the transport
+ * and shape the error text; the payload is whatever the endpoint returned.
  */
 export async function fetchJsonCached(url: string, fetchImpl: typeof fetch, context: string): Promise<{ json: unknown; response: Response }> {
   const cached = etagCache.get(url)

@@ -27,6 +27,18 @@ export interface MarketSourceResponse {
   repos: MarketSourceRecord[]
 }
 
+/**
+ * POST /api/skill-hub/market/source — same list, plus the slug the host
+ * resolved from the input. Clients must scan *this* slug rather than assume
+ * the acted-on source sits at some position in `repos`: re-adding a repo the
+ * user already tracks only updates its `ref` in place and never reorders the
+ * list.
+ */
+export interface MarketSourceAddResponse extends MarketSourceResponse {
+  /** Normalized `owner/repo` the host recorded for the submitted input. */
+  repo: string
+}
+
 /** POST /api/skill-hub/market/source/ref — pin a market source to an explicit ref. */
 export interface MarketSourceRefRequest {
   repo: string

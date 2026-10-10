@@ -10,6 +10,7 @@ import { useState, type ReactElement } from 'react'
 import { IconChevronDownOutline14 } from './icons.tsx'
 import type { HubKey } from './locales.ts'
 import type { CardShell } from './settings-form.ts'
+import { HEX_COLOR_RE } from '../protocol.ts'
 import css from './settings-card.module.css'
 
 /** Card-level chrome props. */
@@ -178,7 +179,7 @@ export interface ColorFieldProps extends FieldBaseProps {
 }
 
 export function ColorField(props: ColorFieldProps): ReactElement {
-  const value = /^#[0-9a-f]{6}$/i.test(props.text) ? props.text : props.defaultColor
+  const value = HEX_COLOR_RE.test(props.text) ? props.text : props.defaultColor
   return (
     <div className={css.field}>
       <FieldShell {...props} />

@@ -43,10 +43,15 @@ export interface SkillHubRouteDeps {
 
 /** The resolved hub config a route sees (the shared resolver fills defaults). */
 export function configOf(deps: SkillHubRouteDeps): HubConfig {
-  return resolveHubConfig({}, deps.config?.() ?? {})
+  return resolveHubConfig(deps.config?.() ?? {})
 }
 
-/** The raw saved config layer a route reports (empty when the owner omits it). */
+/**
+ * The raw saved config layer as persisted in the sidecar, reported for display
+ * only. Since dsh 0.1.7 the settings namespace is the one user layer, so this
+ * is legacy data: nothing writes it any more and the effective config above
+ * never merges it.
+ */
 export function savedOf(deps: SkillHubRouteDeps): Partial<HubConfig> {
   return deps.saved?.() ?? {}
 }

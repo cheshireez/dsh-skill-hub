@@ -83,6 +83,26 @@ export async function enableSkill(disabledPath: string): Promise<string> {
 }
 
 /**
+ * Move one already-resolved skill (a bundle directory or a flat .md file) into
+ * its root's trash as `<root>/.trash/<name>-<timestamp>`.
+ *
+ * The layout is the restore contract, not an implementation detail:
+ * `restoreSkill` renames the entry back and only proves the parent is `.trash`,
+ * and `clearTrash` deletes in place. Every producer of a trash entry must go
+ * through here — skill delete, the hub-disabled whole-group delete, and repo
+ * import's placeholder replacement all move skills for the same recovery flow.
+ *
+ * @returns the trashed path plus the original path that was moved.
+ */
+export async function moveIntoTrash(source: string): Promise<{ path: string; source: string }> {
+  const trashDir = join(dirname(source), '.trash')
+  await mkdir(trashDir, { recursive: true })
+  const target = join(trashDir, basename(source) + '-' + Date.now())
+  await rename(source, target)
+  return { path: target, source }
+}
+
+/**
  * Move a skill (directory bundle or flat .md file) into the root's trash.
  * The skill stays recoverable: the source is renamed into
  * <root>/.trash/<name>-<timestamp>. A directory bundle is addressed by its
@@ -90,12 +110,7 @@ export async function enableSkill(disabledPath: string): Promise<string> {
  * @returns the trashed path plus the original path that was moved.
  */
 export async function trashSkill(sourcePath: string): Promise<{ path: string; source: string }> {
-  const source = basename(sourcePath) === 'SKILL.md' ? dirname(sourcePath) : sourcePath
-  const trashDir = join(dirname(source), '.trash')
-  await mkdir(trashDir, { recursive: true })
-  const target = join(trashDir, basename(source) + '-' + Date.now())
-  await rename(source, target)
-  return { path: target, source }
+  return moveIntoTrash(basename(sourcePath) === 'SKILL.md' ? dirname(sourcePath) : sourcePath)
 }
 
 /** Restore a trashed skill (directory or flat file) to its original location. */
@@ -127,7 +142,15 @@ function skillFileKind(path: string): 'directory' | 'flat' | undefined {
   return undefined
 }
 
-/** Repair one file on disk when its frontmatter is auto-fixable. Returns the new text. */
+/**
+ * Repair one file on disk when its frontmatter is auto-fixable. Returns the new text.
+ *
+ * The write is atomic (sibling temp file + rename), matching the sidecar's
+ * persist path: this rewrites a real skill file in place, and a crash midway
+ * through a plain write would leave a truncated SKILL.md — exactly the failure
+ * the store layer already guards against. The `.tmp` sibling is never picked
+ * up by discovery (only `SKILL.md` and `*.md` are scanned).
+ */
 export async function fixDiagnosticFile(path: string, home = dshHome()): Promise<string> {
   const root = rootOfPath(path, home)
   if (root === undefined) throw new TypeError('not a hub writable skill path: ' + path)
@@ -137,6 +160,14 @@ export async function fixDiagnosticFile(path: string, home = dshHome()): Promise
   // Validate the repaired text parses as a legal skill (prevents writing a still-broken file).
   const parsed = parseFrontmatter(repairedText)
   if ('error' in parsed) throw new TypeError('repaired frontmatter still invalid: ' + parsed.error)
-  await writeFile(path, repairedText, 'utf8')
+  const tmp = path + '.tmp'
+  await writeFile(tmp, repairedText, 'utf8')
+  try {
+    await rename(tmp, path)
+  } catch (error) {
+    // Never leave a stray temp file behind when the rename is what failed.
+    await rm(tmp, { force: true }).catch(() => {})
+    throw error
+  }
   return path
 }

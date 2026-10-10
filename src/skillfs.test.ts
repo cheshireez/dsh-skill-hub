@@ -1,8 +1,8 @@
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { clearTrash, createSkill, disableSkill, enableSkill, parseFrontmatter, restoreSkill, rootOfPath, scanDiagnostics, trashSkill } from './skillfs.ts'
+import { clearTrash, createSkill, disableSkill, enableSkill, fixDiagnosticFile, parseFrontmatter, restoreSkill, rootOfPath, scanDiagnostics, trashSkill } from './skillfs.ts'
 
 describe('parseFrontmatter', () => {
   it('parses a healthy frontmatter', () => {
@@ -260,6 +260,20 @@ describe('scanDiagnostics', () => {
     expect(await scanDiagnostics('user-dsh', join(dir, 'missing'))).toEqual([])
   })
 
+  // 并发化（读盘 + 解析从串行改为有界并发）不得让输出变得不确定：
+  // 诊断顺序必须仍然等于发现顺序（按路径排序）。
+  it('keeps diagnostics in discovery order now that the scan is concurrent', async () => {
+    await writeFile(join(skills, 'b-bad.md'), '# nope', 'utf8')
+    await writeFile(join(skills, 'a-bad.md'), '# nope', 'utf8')
+    await writeFile(join(skills, 'c-bad.md'), '# nope', 'utf8')
+    const entries = await scanDiagnostics('user-dsh', home)
+    expect(entries.map((entry) => entry.path)).toEqual([
+      join(skills, 'a-bad.md'),
+      join(skills, 'b-bad.md'),
+      join(skills, 'c-bad.md'),
+    ])
+  })
+
   it('flags a frontmatter name that diverges from the discovery path', async () => {
     await mkdir(join(skills, 'folder-name'))
     await writeFile(join(skills, 'folder-name', 'SKILL.md'), '---\nname: other-name\ndescription: A decent longer description\n---', 'utf8')
@@ -274,6 +288,53 @@ describe('scanDiagnostics', () => {
     const entries = await scanDiagnostics('user-dsh', home)
     expect(entries).toHaveLength(1)
     expect(entries[0].reason).toContain('description is only 1 chars')
+  })
+})
+
+describe('fixDiagnosticFile', () => {
+  let dir: string
+  let home: string
+  let skills: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dsh-skill-hub-fixdiag-'))
+    home = join(dir, 'home')
+    skills = join(home, 'skills')
+    await mkdir(skills, { recursive: true })
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('persists the repair atomically and leaves no temp file behind', async () => {
+    const path = join(skills, 'needs-fix', 'SKILL.md')
+    await mkdir(dirname(path), { recursive: true })
+    // Unquoted colon in the description: parseable only after an in-memory
+    // repair, which is exactly what the "Fix" action persists.
+    await writeFile(path, '---\nname: needs-fix\ndescription: Build for AWS: ECS\n---\nbody', 'utf8')
+    const before = await scanDiagnostics('user-dsh', home)
+    expect(before).toHaveLength(1)
+    expect(before[0]).toMatchObject({ path, fixable: true })
+
+    expect(await fixDiagnosticFile(path, home)).toBe(path)
+
+    const parsed = parseFrontmatter(await readFile(path, 'utf8'))
+    if ('error' in parsed) throw new Error('repaired file should parse: ' + parsed.error)
+    expect(parsed.value.description).toBe('Build for AWS: ECS')
+    expect(await scanDiagnostics('user-dsh', home)).toEqual([])
+    // Atomic write = sibling temp file + rename, so no .tmp may survive.
+    expect(await readdir(dirname(path))).toEqual(['SKILL.md'])
+  })
+
+  it('refuses paths outside the writable roots and files that need no repair', async () => {
+    await expect(fixDiagnosticFile(join(dir, 'outside', 'SKILL.md'), home)).rejects.toThrow(/not a hub writable skill path/)
+
+    const healthy = join(skills, 'fine', 'SKILL.md')
+    await mkdir(dirname(healthy), { recursive: true })
+    await writeFile(healthy, '---\nname: fine\ndescription: A perfectly fine description\n---\nbody', 'utf8')
+    await expect(fixDiagnosticFile(healthy, home)).rejects.toThrow(/not auto-fixable/)
+    expect(await readdir(dirname(healthy))).toEqual(['SKILL.md'])
   })
 })
 

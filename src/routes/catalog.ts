@@ -3,8 +3,8 @@
  * create / stats。从 routes.ts 原样搬出，handler 逻辑不变。
  */
 
-import { mkdir, readFile, rename, stat } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { readFile, stat } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import type { SkillDefinition } from '@deepseek-ai/dsh-skill'
 import { isSkillName } from '@deepseek-ai/dsh-skill'
 import {
@@ -18,7 +18,7 @@ import {
   type ToggleResponse,
   type WritableRoot,
 } from '../protocol.ts'
-import { createSkill, disableSkill, enableSkill, parseFrontmatter, readSkillInterface, rootOfPath, rootPath, trashSkill } from '../skillfs.ts'
+import { createSkill, disableSkill, enableSkill, moveIntoTrash, parseFrontmatter, readSkillInterface, rootOfPath, rootPath, trashSkill } from '../skillfs.ts'
 import { errorText } from '../error-text.ts'
 import {
   applyInterface,
@@ -156,12 +156,7 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             }
             // 禁用态：SKILL.md.disabled 或 *.md.disabled，直接将其所在技能整体移入回收站
             const isBundleDisabled = disabled.path.endsWith('SKILL.md.disabled')
-            const sourceToTrash = isBundleDisabled ? dirname(disabled.path) : disabled.path
-            const trashDir = join(dirname(sourceToTrash), '.trash')
-            await mkdir(trashDir, { recursive: true })
-            const target = join(trashDir, basename(sourceToTrash) + '-' + Date.now())
-            await rename(sourceToTrash, target)
-            trashResult = { path: target, source: sourceToTrash }
+            trashResult = await moveIntoTrash(isBundleDisabled ? dirname(disabled.path) : disabled.path)
           } else {
             writeError(res, resolved.status, resolved.error); return
           }

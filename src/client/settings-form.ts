@@ -10,6 +10,9 @@
  */
 
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+// One definition of what a valid color/token looks like, shared with the host
+// routes that re-validate the same drafts.
+import { GITHUB_TOKEN_RE, HEX_COLOR_RE } from '../protocol.ts'
 
 /** One staged field: its draft text plus the clear/reset marker. */
 interface StagedEdit {
@@ -41,9 +44,9 @@ export function booleanField(field: string): FieldSpec {
 export function colorField(field: string): FieldSpec {
   return {
     field,
-    format: (value) => (typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : ''),
+    format: (value) => (typeof value === 'string' && HEX_COLOR_RE.test(value) ? value : ''),
     parse: (text) => {
-      if (/^#[0-9a-f]{6}$/i.test(text)) return { kind: 'set', value: text }
+      if (HEX_COLOR_RE.test(text)) return { kind: 'set', value: text }
       return undefined
     },
   }
@@ -61,7 +64,7 @@ export function secretField(field: string): FieldSpec {
     parse: (text) => {
       const trimmed = text.trim()
       if (trimmed === '') return undefined
-      if (!/^[A-Za-z0-9_-]{8,255}$/.test(trimmed)) return undefined
+      if (!GITHUB_TOKEN_RE.test(trimmed)) return undefined
       return { kind: 'set', value: trimmed }
     },
   }

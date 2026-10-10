@@ -89,29 +89,30 @@ export const HUB_CONFIG_DEFAULTS = {
 } as const
 
 /**
- * Resolve the effective hub config: saved sidecar overrides win over the
- * cordis composition entry (the web card owns runtime config), missing
- * booleans fall back to HUB_CONFIG_DEFAULTS, and dot colors pass through
- * (saved first, then base) only when set. Numeric stats knobs are clamped to
- * their sane ranges (window ≥ 0, scan interval ≥ 1 minute).
+ * Fill a raw settings value into the effective hub config: schema defaults for
+ * anything missing, and the numeric stats knobs clamped to sane ranges
+ * (window ≥ 0, scan interval ≥ 1 minute).
+ *
+ * There is deliberately no "saved sidecar layer" parameter. Until dsh 0.1.7 the
+ * hub kept its own runtime overrides in the sidecar and merged them here; the
+ * settings namespace is now the only user layer (`updateConfig` writes through
+ * `ctx.settings.mutate`), so a merge against a sidecar layer could never
+ * observe anything but `{}` — see the git history of `resolveHubConfig`.
  */
-export function resolveHubConfig(saved: Partial<HubConfig>, base: Partial<HubConfig> = {}): HubConfig {
-  const dotModelColor = saved.dotModelColor !== undefined ? saved.dotModelColor : base.dotModelColor
-  const dotUserColor = saved.dotUserColor !== undefined ? saved.dotUserColor : base.dotUserColor
-  const githubToken = saved.githubToken !== undefined ? saved.githubToken : base.githubToken
-  const windowDays = clampNumber(saved.statsWindowDays ?? base.statsWindowDays, 0) ?? HUB_CONFIG_DEFAULTS.statsWindowDays
-  const scanMinutes = clampNumber(saved.statsScanMinutes ?? base.statsScanMinutes, 1) ?? HUB_CONFIG_DEFAULTS.statsScanMinutes
+export function resolveHubConfig(base: Partial<HubConfig> = {}): HubConfig {
+  const windowDays = clampNumber(base.statsWindowDays, 0) ?? HUB_CONFIG_DEFAULTS.statsWindowDays
+  const scanMinutes = clampNumber(base.statsScanMinutes, 1) ?? HUB_CONFIG_DEFAULTS.statsScanMinutes
   return {
-    enabled: saved.enabled ?? base.enabled ?? HUB_CONFIG_DEFAULTS.enabled,
-    announceToAgent: saved.announceToAgent ?? base.announceToAgent ?? HUB_CONFIG_DEFAULTS.announceToAgent,
-    showUseCount: saved.showUseCount ?? base.showUseCount ?? HUB_CONFIG_DEFAULTS.showUseCount,
-    showUseTime: saved.showUseTime ?? base.showUseTime ?? HUB_CONFIG_DEFAULTS.showUseTime,
-    showGroupSummary: saved.showGroupSummary ?? base.showGroupSummary ?? HUB_CONFIG_DEFAULTS.showGroupSummary,
+    enabled: base.enabled ?? HUB_CONFIG_DEFAULTS.enabled,
+    announceToAgent: base.announceToAgent ?? HUB_CONFIG_DEFAULTS.announceToAgent,
+    showUseCount: base.showUseCount ?? HUB_CONFIG_DEFAULTS.showUseCount,
+    showUseTime: base.showUseTime ?? HUB_CONFIG_DEFAULTS.showUseTime,
+    showGroupSummary: base.showGroupSummary ?? HUB_CONFIG_DEFAULTS.showGroupSummary,
     statsWindowDays: windowDays,
     statsScanMinutes: scanMinutes,
-    ...(dotModelColor !== undefined ? { dotModelColor } : {}),
-    ...(dotUserColor !== undefined ? { dotUserColor } : {}),
-    ...(githubToken !== undefined ? { githubToken } : {}),
+    ...(base.dotModelColor !== undefined ? { dotModelColor: base.dotModelColor } : {}),
+    ...(base.dotUserColor !== undefined ? { dotUserColor: base.dotUserColor } : {}),
+    ...(base.githubToken !== undefined ? { githubToken: base.githubToken } : {}),
   }
 }
 
@@ -148,7 +149,13 @@ export interface ConfigResponse {
   githubTokenSet: boolean
 }
 
-/** POST /api/skill-hub/config — a partial patch; omitted fields keep their values. */
+/**
+ * POST /api/skill-hub/config — a partial patch; omitted fields keep their values.
+ *
+ * Only the fields the handler actually parses belong here: the stats knobs are
+ * owned by the settings namespace (`statsWindowDays` / `statsScanMinutes` are
+ * still part of {@link HubSettingsValue}), not by this route.
+ */
 export interface ConfigRequest {
   /** Set the field; null clears the saved override so it re-inherits the default. */
   enabled?: boolean | null
@@ -164,10 +171,6 @@ export interface ConfigRequest {
   dotModelColor?: string | null
   /** Set the dot color; null clears the saved override so it re-inherits the default. */
   dotUserColor?: string | null
-  /** 统计滚动窗口天数（0 = 全部历史）；null 清除覆盖回默认。 */
-  statsWindowDays?: number | null
-  /** 自动统计扫描间隔（分钟）；null 清除覆盖回默认。 */
-  statsScanMinutes?: number | null
   /** Set the GitHub token; null/empty clears it back to anonymous. */
   githubToken?: string | null
 }

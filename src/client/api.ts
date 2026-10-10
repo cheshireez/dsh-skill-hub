@@ -12,6 +12,7 @@ import {
   type DiagnosticFixResponse,
   type GroupsResponse,
   type MarketCheckResponse,
+  type MarketSourceAddResponse,
   type MarketSourceRefRequest,
   type MarketSourceRequest,
   type MarketSourceResponse,
@@ -156,9 +157,9 @@ export class SkillHubApi {
     return this.get<MarketSourcesResponse>(SKILL_HUB_API.market)
   }
 
-  /** Add a market source repo; resolves with the fresh list. */
-  addMarketSource(repo: string): Promise<MarketSourcesResponse> {
-    return this.post<MarketSourceResponse>(SKILL_HUB_API.marketSource, { repo } satisfies MarketSourceRequest)
+  /** Add a market source repo; resolves with the fresh list plus the resolved slug. */
+  addMarketSource(repo: string): Promise<MarketSourceAddResponse> {
+    return this.post<MarketSourceAddResponse>(SKILL_HUB_API.marketSource, { repo } satisfies MarketSourceRequest)
   }
 
   /** Remove a market source repo; resolves with the fresh list. */

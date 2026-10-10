@@ -36,6 +36,7 @@ export type {
   MarketSourceRecord,
   MarketSourcesResponse,
   MarketSourceRequest,
+  MarketSourceAddResponse,
   MarketSourceResponse,
   MarketSourceRefRequest,
   MarketSourceVersionsResponse,

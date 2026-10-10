@@ -4,8 +4,9 @@ import { load } from 'js-yaml'
 import { parseFrontmatter, repairFrontmatterFileText } from './frontmatter.ts'
 import { rootPath } from './paths.ts'
 import { errorText } from '../error-text.ts'
+import { mapConcurrent } from '../concurrency.ts'
 import { dshHome } from '../store.ts'
-import type { DiagnosticEntry, WritableRoot } from '../protocol.ts'
+import { HEX_COLOR_RE, type DiagnosticEntry, type WritableRoot } from '../protocol.ts'
 
 /** One discoverable skill file in a scanned root. */
 export interface SkillEntry {
@@ -130,7 +131,9 @@ export async function readSkillInterface(directory: string): Promise<SkillInterf
   const hexColor = (value: unknown): string | undefined => {
     if (typeof value !== 'string') return undefined
     const trimmed = value.trim()
-    return /^#[0-9a-fA-F]{6}$/.test(trimmed) ? trimmed : undefined
+    // Shared with the settings card and the config route: one definition, so a
+    // change to the accepted color format cannot land in only some of them.
+    return HEX_COLOR_RE.test(trimmed) ? trimmed : undefined
   }
   const iconPath = (value: unknown): string | undefined => {
     if (typeof value !== 'string' || value.trim() === '') return undefined
@@ -167,33 +170,40 @@ export async function findProjectRoot(cwd: string): Promise<string> {
 }
 
 /**
- * Scan one writable root for files the provider ignores, so the GUI can
- * show why a skill never appears — a
- * missing frontmatter must be visible, not silent). .disabled files belong
- * to the hub and are skipped.
+ * Scan one writable root for files the provider ignores, so the GUI can show
+ * why a skill never appears — a missing frontmatter, a name that disagrees
+ * with the discovery path, and the like must be visible, not silent. Files the
+ * hub itself disabled (`.disabled`) are skipped: they are a toggle state, not
+ * a defect.
  */
 export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Promise<DiagnosticEntry[]> {
-  const diagnostics: DiagnosticEntry[] = []
-  for (const entry of await listSkillEntries(root, home)) {
+  const entries = await listSkillEntries(root, home)
+  // Each entry is read and parsed independently, and the panel polls /catalog
+  // every 5 seconds. A serial read would make the response time grow linearly
+  // with the skill count — the same reason the per-skill `stat` collection in
+  // routes/catalog-data.ts is already parallel. Bounded, not a bare
+  // Promise.all: a root can hold hundreds of entries.
+  const perEntry = await mapConcurrent(entries, 8, async (entry): Promise<DiagnosticEntry[]> => {
+    const found: DiagnosticEntry[] = []
     let text: string
     try {
       text = await readFile(entry.path, 'utf8')
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        diagnostics.push({ path: entry.path, root, reason: 'unreadable: ' + (errorText(error)) })
+        found.push({ path: entry.path, root, reason: 'unreadable: ' + (errorText(error)) })
       }
-      continue
+      return found
     }
     const parsed = parseFrontmatter(text)
     if ('error' in parsed) {
       const fixable = repairFrontmatterFileText(text) !== null
-      diagnostics.push({ path: entry.path, root, reason: parsed.error, ...(fixable ? { fixable: true } : {}) })
-      continue
+      found.push({ path: entry.path, root, reason: parsed.error, ...(fixable ? { fixable: true } : {}) })
+      return found
     }
     // File was auto-repaired in memory (e.g. unquoted `:`); surface a fixable hint so the user can persist it.
     const repaired = repairFrontmatterFileText(text)
     if (repaired !== null) {
-      diagnostics.push({ path: entry.path, root, reason: 'frontmatter contains unquoted colon/bracket (auto-repaired in memory; click Fix to persist)', fixable: true })
+      found.push({ path: entry.path, root, reason: 'frontmatter contains unquoted colon/bracket (auto-repaired in memory; click Fix to persist)', fixable: true })
     }
     const { value } = parsed
     // The provider registers a skill by its discovery path (directory name or
@@ -201,13 +211,16 @@ export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Pro
     // the skill show up under a different identity than its metadata claims.
     const pathName = entry.kind === 'directory' ? basename(entry.directory) : basename(entry.path, '.md')
     if (value.name !== pathName) {
-      diagnostics.push({ path: entry.path, root, reason: `frontmatter name "${value.name}" does not match the discovery path "${pathName}" (the provider registers by path)` })
+      found.push({ path: entry.path, root, reason: `frontmatter name "${value.name}" does not match the discovery path "${pathName}" (the provider registers by path)` })
     }
     // Agents decide to auto-activate a skill from its one-line description, so
     // a too-short description leaves the skill hard to discover automatically.
     if (value.description.length < 10) {
-      diagnostics.push({ path: entry.path, root, reason: `description is only ${value.description.length} chars; write a one-line description so agents can auto-activate this skill` })
+      found.push({ path: entry.path, root, reason: `description is only ${value.description.length} chars; write a one-line description so agents can auto-activate this skill` })
     }
-  }
-  return diagnostics
+    return found
+  })
+  // mapConcurrent preserves index order, so flattening keeps the previous
+  // per-entry ordering of the diagnostics.
+  return perEntry.flat()
 }

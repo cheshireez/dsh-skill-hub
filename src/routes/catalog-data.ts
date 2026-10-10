@@ -199,10 +199,13 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
     if (iface !== undefined) applyInterface(row, iface)
     return row
   })
-  const diagnostics = [
-    ...(await scanDiagnostics('user-dsh', home)),
-    ...(await scanDiagnostics('user-agents', home)),
-  ]
+  // 两个 root 的诊断扫描互不依赖：面板每 5 秒轮询一次 /catalog，串行会让响应
+  // 随技能数量线性变慢。扫描内部的逐条读盘也已是并发的（见 scanDiagnostics）。
+  const [userDshDiagnostics, userAgentsDiagnostics] = await Promise.all([
+    scanDiagnostics('user-dsh', home),
+    scanDiagnostics('user-agents', home),
+  ])
+  const diagnostics = [...userDshDiagnostics, ...userAgentsDiagnostics]
   return {
     ok: true,
     pluginVersion: CURRENT_VERSION,

@@ -75,8 +75,10 @@ export function useMarketFlow(
       setNewSourceName('')
       setRepoResult(null)
       setRepoSelected(new Set())
-      // 用服务端归一化后的 slug 扫描（URL/owner@repo 输入都能对上记录）。
-      const slug = result.repos[result.repos.length - 1].repo
+      // 用服务端回传的归一化 slug 扫描（URL/owner@repo 输入都能对上记录）。
+      // 不能猜 `repos` 的位置：重复添加一个已存在的源只改它的 ref、不重排，
+      // 取末位会扫到另一个源。
+      const slug = result.repo
       setScanningRepo(slug)
       setRepoDiscoverState({ status: 'scanning' })
       try {

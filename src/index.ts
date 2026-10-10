@@ -163,7 +163,7 @@ export function apply(ctx: Context, config?: Config): void {
     }
     return out as Partial<HubConfig>
   }
-  const current = (): HubConfig => resolveHubConfig({}, readConfig())
+  const current = (): HubConfig => resolveHubConfig(readConfig())
 
   /** The Settings service, when this deployment mounts it. Absent ⇒ no user layer to read or write. */
   const settingsOf = (): SettingsForms | undefined => ctx.get('settings') as SettingsForms | undefined

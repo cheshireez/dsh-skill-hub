@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { NO_COMPRESSION, apiHeaders, collectRepoSkillFiles, diffRemoteSkills, discoverRepoEntries, downloadGitHubFile, downloadRepoSkill, getLatestReleaseTag, getRepoStats, listRepoBranches, normalizeRepoInput, originForRoot, relativeToSkillDir, repoSkillEntry, repoSlug, skillDirOf, skillFileAt, skillManifest } from './repo.ts'
+import { NO_COMPRESSION, apiHeaders, collectRepoSkillFiles, diffRemoteSkills, discoverRepoEntries, downloadGitHubFile, downloadRepoSkill, getLatestReleaseTag, getRepoStats, listRepoBranches, normalizeRepoInput, originForRoot, rateLimitResetAt, relativeToSkillDir, repoSkillEntry, repoSlug, skillDirOf, skillFileAt, skillManifest } from './repo.ts'
 import type { RepoTreeItem } from './repo.ts'
 import type { RepoSkillEntry } from './protocol.ts'
 
@@ -447,5 +447,24 @@ describe('GitHub 请求头', () => {
 
   it('保留 JSON 的 accept 头', () => {
     expect(apiHeaders().accept).toBe('application/vnd.github+json')
+  })
+})
+
+describe('rateLimitResetAt', () => {
+  const response = (status: number, headers: Record<string, string>): Response => new Response('', { status, headers })
+  const exhausted = { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1700000000' }
+
+  it('reports the reset instant for an exhausted 403 or 429', () => {
+    expect(rateLimitResetAt(response(403, exhausted))?.getTime()).toBe(1700000000 * 1000)
+    expect(rateLimitResetAt(response(429, exhausted))?.getTime()).toBe(1700000000 * 1000)
+  })
+
+  it('is undefined for anything that is not an exhausted rate limit', () => {
+    expect(rateLimitResetAt(response(500, exhausted))).toBeUndefined()
+    expect(rateLimitResetAt(response(404, exhausted))).toBeUndefined()
+    expect(rateLimitResetAt(response(403, { 'x-ratelimit-remaining': '57', 'x-ratelimit-reset': '1700000000' }))).toBeUndefined()
+    expect(rateLimitResetAt(response(403, { 'x-ratelimit-remaining': '0' }))).toBeUndefined()
+    // 头部存在但不是数字：宁可退回普通 HTTP 文案，也不要报 "Invalid Date"。
+    expect(rateLimitResetAt(response(403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': 'nope' }))).toBeUndefined()
   })
 })

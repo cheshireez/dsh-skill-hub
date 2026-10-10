@@ -7,6 +7,7 @@
 import {
   SKILL_HUB_API,
   type MarketCheckResponse,
+  type MarketSourceAddResponse,
   type MarketSourceResponse,
   type MarketSourcesResponse,
   type MarketSourceVersionsResponse,
@@ -60,6 +61,13 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       }
       try {
         const latestTag = await getLatestReleaseTag(source.repo)
+        // Book the attempt as soon as the GitHub call has been spent, before
+        // the unpinned branch below can `continue`: otherwise an unpinned
+        // source never records a timestamp and the 5-minute throttle promised
+        // above never applies to it (every check re-hits /releases/latest).
+        // A call that throws is deliberately not booked, so a failing repo is
+        // retried on the next check — same as the source check in sources.ts.
+        lastMarketCheck.set(source.repo, now)
         if (source.ref === undefined) {
           // Not pinned yet: report the latest release so the UI can
           // suggest pinning, but never claim an update.
@@ -67,7 +75,6 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           continue
         }
         const latest = await getLatestCommit(source.repo, source.ref)
-        lastMarketCheck.set(source.repo, now)
         const commitMoved = source.commitSha !== undefined && latest.commitSha !== source.commitSha
         const newRelease = latestTag !== undefined && latestTag !== source.ref
         results.push({ ...base, updateAvailable: commitMoved || newRelease, commitSha: latest.commitSha, ...(newRelease ? { latestTag } : {}) })
@@ -99,7 +106,11 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         // An explicit @ref pins the source immediately (e.g. repo@v1.2.3);
         // otherwise the first scan resolves latest-release / branch choice.
         const ref = parsed.ref
-        writeJson(res, 200, { ok: true, repos: await deps.store.addMarketSource(repoSlug(parsed), ref) } satisfies MarketSourceResponse)
+        const slug = repoSlug(parsed)
+        // Return the normalized slug explicitly: the client scans it right
+        // away, and `repos` order carries no "this one" signal (re-adding an
+        // existing repo only rewrites its ref in place).
+        writeJson(res, 200, { ok: true, repo: slug, repos: await deps.store.addMarketSource(slug, ref) } satisfies MarketSourceAddResponse)
       },
     },
     {
