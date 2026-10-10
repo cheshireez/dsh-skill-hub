@@ -34,8 +34,11 @@ export async function downloadGitHubFile(repo: string, ref: string, path: string
   }
   if (response === null || !response.ok) {
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
-    // Fallback: api.github.com/contents with the raw media type.
-    const apiUrl = `https://api.github.com/repos/${repo}/contents/${encodedPath}`
+    // Fallback: api.github.com/contents with the raw media type. The `?ref=`
+    // is mandatory — without it /contents/ serves the default branch, so a
+    // transient raw failure would silently mix default-branch content into a
+    // tag-pinned import (issue #15).
+    const apiUrl = `https://api.github.com/repos/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`
     try {
       response = await fetchImpl(apiUrl, { headers: { accept: 'application/vnd.github.raw', ...NO_COMPRESSION, ...githubAuthHeaders() }, ...(signal !== undefined ? { signal } : {}) })
     } catch (error) {

@@ -366,6 +366,26 @@ describe('downloadGitHubFile', () => {
     expect(buffer.toString('utf8')).toContain('name: demo')
     expect(calls.length).toBe(2)
     expect(calls[1]).toContain('api.github.com/repos/example/repo/contents/skills/demo/SKILL.md')
+    expect(calls[1]).toContain('ref=main')
+  })
+
+  // issue #15: the fallback dropped the ref, so /contents/ served the default
+  // branch and a tag/branch-pinned import silently mixed main-branch content.
+  it('keeps the requested ref on the api fallback (never the default branch)', async () => {
+    const calls: string[] = []
+    const ref = 'andibrae/create-top-level-namespace'
+    const fetchImpl = async (url: string) => {
+      calls.push(url)
+      if (url.startsWith('https://raw.githubusercontent.com/')) throw new Error('raw blocked')
+      if (url.includes('/contents/')) return new Response('---\nname: demo\ndescription: x\n---\n\nref body', { status: 200 })
+      return new Response('nope', { status: 599 })
+    }
+    await downloadGitHubFile('example/repo', ref, 'skills/demo/SKILL.md', fetchImpl as typeof fetch)
+    expect(calls[1]).toBe(
+      'https://api.github.com/repos/example/repo/contents/skills/demo/SKILL.md?ref=' + encodeURIComponent(ref),
+    )
+    // The un-ref'd form is exactly what served default-branch content.
+    expect(calls[1]).not.toBe('https://api.github.com/repos/example/repo/contents/skills/demo/SKILL.md')
   })
 
   it('reports the original error when both hosts fail', async () => {

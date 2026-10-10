@@ -55,7 +55,7 @@ export function RepoScanCard(props: { hub: SkillHubState }): JSX.Element | null 
     // 导入后 catalog 已包含新技能，但 scan 快照的 existing 仍为 false，需用实时 catalog + 本次导入结果兜底，避免已导入仍可选
     const installedNames = new Set<string>([
       ...((hub.catalog?.skills ?? []).map((s) => s.name)),
-      ...((hub.catalog?.disabled ?? []).map((d) => d.name)),
+      // 已禁用不算「已存在」：禁用只该影响启用态，不该永久占名堵住导入（issue #16）。
       ...((repoResult?.imported ?? []).map((r) => r.name)),
       ...((repoResult?.skipped ?? []).map((r) => r.name)),
     ])
@@ -174,6 +174,7 @@ export function RepoScanCard(props: { hub: SkillHubState }): JSX.Element | null 
   {repoResult !== null && repoResult.status !== 'running' ? (
     <div className={repoResult.status === 'cancelled' ? css.errorBanner + ' ' + css.actionsTop : css.formSuccess + ' ' + css.actionsTop}>
       {repoResult.status === 'cancelled' ? tt('repo.cancelled', { imported: repoResult.imported.length, total: repoResult.total }) : `${tt('repo.imported', { count: repoResult.imported.length })} · ${tt('repo.skippedExisting', { count: repoResult.skipped.length })} · ${tt('repo.failed', { count: repoResult.failed.length })}`}
+      {(repoResult.replaced?.length ?? 0) > 0 ? <span> · {tt('repo.replaced', { count: repoResult.replaced?.length ?? 0 })}</span> : null}
       {repoResult.failed.length > 0 ? <div style={{marginTop:6}}>{repoResult.failed.map(f => `${f.name}: ${f.error}`).join('; ')}</div> : null}
       {repoResult.status === 'error' && repoResult.error ? <div style={{marginTop:6}}>{repoResult.error}</div> : null}
     </div>

@@ -16,6 +16,7 @@ function job(jobId: string, createdAt: number, status: ImportJob['status'] = 'do
     imported: [],
     skipped: [],
     failed: [],
+    replaced: [],
     status,
     controller: new AbortController(),
     createdAt,

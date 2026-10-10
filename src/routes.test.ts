@@ -695,6 +695,125 @@ describe('skill-hub routes', () => {
     }
   })
 
+  // ------------------------------------ 导入去重 vs 已禁用占位（issue #16）
+  /** 造一个「已禁用同名占位」：目录还在，SKILL.md 被改名成 SKILL.md.disabled。 */
+  async function seedDisabledPlaceholder(name: string) {
+    const dir = join(home, 'skills', name)
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'SKILL.md.disabled'), `---\nname: ${name}\ndescription: stub\n---\n`, 'utf8')
+    await store.addDisabled({
+      name,
+      description: 'stub',
+      path: join(dir, 'SKILL.md.disabled'),
+      root: 'user-dsh',
+      disabledAt: Date.now(),
+    })
+    return dir
+  }
+
+  it('does not flag a hub-disabled placeholder as existing when discovering', async () => {
+    await seedDisabledPlaceholder('code-review')
+    stubFetch([
+      ['repos/example/repo/releases/latest', jsonResponse({ tag_name: 'v1.0.0' })],
+      ['repos/example/repo/git/trees/v1.0.0', jsonResponse({ tree: [
+        { path: 'skills/code-review/SKILL.md', type: 'blob', size: 60 },
+      ] })],
+      ['repos/example/repo', jsonResponse({ default_branch: 'main' })],
+    ])
+    try {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.repo).handler(fakeReq('GET', `${SKILL_HUB_API.repo}?repo=example/repo`), res as never)
+      expect(res.status).toBe(200)
+      const body = res.json() as import('./protocol.ts').RepoDiscoverResponse
+      expect(body.ref).toBe('v1.0.0')
+      // 禁用只该影响启用态；被算成 existing 会让勾选框直接 disabled，用户无从下手。
+      expect(body.entries).toHaveLength(1)
+      expect(body.entries[0]).toMatchObject({ name: 'code-review', existing: false })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('imports over a hub-disabled placeholder instead of skipping it', async () => {
+    const dir = await seedDisabledPlaceholder('code-review')
+    const skillMd = '---\nname: code-review\ndescription: Reviews code\n---\n\nbody'
+    stubFetch([
+      ['repos/example/repo/git/trees/main', jsonResponse({ tree: [
+        { path: 'skills/code-review/SKILL.md', type: 'blob', size: 60 },
+      ] })],
+      ['repos/example/repo/commits', jsonResponse({ sha: 'abc123', commit: { tree: { sha: 'tree1' } } })],
+      ['repos/example/repo', jsonResponse({ default_branch: 'main' })],
+      ['raw.githubusercontent.com/example/repo/main/skills/code-review/SKILL.md', new Response(skillMd, { status: 200 })],
+    ])
+    try {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.repoImport).handler(fakeReq('POST', SKILL_HUB_API.repoImport, { repo: 'example/repo', paths: ['skills/code-review/SKILL.md'] }), res as never)
+      expect(res.status).toBe(200)
+      const created = res.json() as import('./protocol.ts').RepoImportResponse
+      let prog: import('./protocol.ts').RepoImportProgressResponse | undefined
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 50))
+        const progRes = new FakeResponse()
+        await routeFor(SKILL_HUB_API.repoImportProgress).handler(fakeReq('GET', `${SKILL_HUB_API.repoImportProgress}?jobId=${created.jobId}`), progRes as never)
+        prog = progRes.json() as import('./protocol.ts').RepoImportProgressResponse
+        if (prog.status !== 'running') break
+      }
+      expect(prog!.status).toBe('done')
+      // 关键：不再被「已存在」跳掉，真技能落地。
+      expect(prog!.skipped).toEqual([])
+      expect(prog!.imported.map((r) => r.name)).toEqual(['code-review'])
+      expect(prog!.replaced).toEqual(['code-review'])
+      await expect(readFile(join(dir, 'SKILL.md'), 'utf8')).resolves.toContain('name: code-review')
+      // 旧占位进回收站（可恢复），禁用记录被清掉，不然目录会留个幽灵禁用项。
+      await expect(access(join(dir, 'SKILL.md.disabled'))).rejects.toThrow()
+      expect(await store.listDisabled()).toEqual([])
+      const trash = await store.listTrash()
+      expect(trash).toHaveLength(1)
+      expect(trash[0].name).toBe('code-review')
+      expect(trash[0].path.startsWith(join(home, 'skills', '.trash', 'code-review-'))).toBe(true)
+      expect(trash[0].sourcePath).toBe(dir)
+      expect(await store.listSources()).toHaveLength(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('still skips a same-name directory that is not a disabled placeholder', async () => {
+    // 同名目录里还有真实 SKILL.md、且没有对应的禁用记录：不是占位，不许动。
+    const dir = join(home, 'skills', 'code-review')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'SKILL.md'), '---\nname: code-review\ndescription: real\n---\n', 'utf8')
+    stubFetch([
+      ['repos/example/repo/git/trees/main', jsonResponse({ tree: [
+        { path: 'skills/code-review/SKILL.md', type: 'blob', size: 60 },
+      ] })],
+      ['repos/example/repo/commits', jsonResponse({ sha: 'abc123', commit: { tree: { sha: 'tree1' } } })],
+      ['repos/example/repo', jsonResponse({ default_branch: 'main' })],
+    ])
+    try {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.repoImport).handler(fakeReq('POST', SKILL_HUB_API.repoImport, { repo: 'example/repo', paths: ['skills/code-review/SKILL.md'] }), res as never)
+      const created = res.json() as import('./protocol.ts').RepoImportResponse
+      let prog: import('./protocol.ts').RepoImportProgressResponse | undefined
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 50))
+        const progRes = new FakeResponse()
+        await routeFor(SKILL_HUB_API.repoImportProgress).handler(fakeReq('GET', `${SKILL_HUB_API.repoImportProgress}?jobId=${created.jobId}`), progRes as never)
+        prog = progRes.json() as import('./protocol.ts').RepoImportProgressResponse
+        if (prog.status !== 'running') break
+      }
+      expect(prog!.status).toBe('done')
+      expect(prog!.skipped).toEqual([{ name: 'code-review', reason: 'exists' }])
+      expect(prog!.imported).toEqual([])
+      expect(prog!.replaced ?? []).toEqual([])
+      // 原目录原封不动，也没进回收站。
+      await expect(readFile(join(dir, 'SKILL.md'), 'utf8')).resolves.toContain('description: real')
+      expect(await store.listTrash()).toEqual([])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   // -------------------------------------------------------------- groups
   it('serves groups: user tags + system collections + origins', async () => {
     const tag = await store.saveTag({ name: 'web' })

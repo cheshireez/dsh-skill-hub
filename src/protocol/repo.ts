@@ -95,6 +95,12 @@ export interface RepoImportProgressResponse {
   imported: Array<{ name: string; origin: string; path: string }>
   skipped: Array<{ name: string; reason: 'exists' }>
   failed: Array<{ name: string; error: string }>
+  /**
+   * 本次导入中「让位的已禁用同名占位」名字（issue #16）：这些条目的旧目录已
+   * 移入回收站，新技能随后落地。旧目录挪走即计入，下载失败时也在列。老客户端
+   * 不认这个字段时忽略即可，故为可选。
+   */
+  replaced?: string[]
   /** error 状态时的原因 */
   error?: string
 }

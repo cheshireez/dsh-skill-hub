@@ -3,8 +3,8 @@
  * cancel 取消。从 routes.ts 原样搬出，handler 逻辑不变。
  */
 
-import { mkdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, rename } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import {
   SKILL_HUB_API,
@@ -43,6 +43,32 @@ import {
   type SkillHubRouteDeps,
 } from './helpers.ts'
 import { gcImportJobs, importJobs, type ImportJob } from './route-state.ts'
+
+/**
+ * 导入去重只认「已启用」的目录，但磁盘上仍可能躺着一个已禁用的同名占位 ——
+ * 禁用只是把 SKILL.md 改名成 SKILL.md.disabled，目录本身还在。这种占位不该
+ * 堵住真技能：把它连同禁用记录一起移入回收站让位（issue #16）。
+ *
+ * 只有「禁用记录确实指向 `targetRoot/<name>` 的整目录禁用」才处理，且该目录
+ * 必须已经没有 SKILL.md；其余不确定情形一律返回 false，交回原本的「跳过」。
+ */
+async function clearDisabledPlaceholder(deps: SkillHubRouteDeps, targetRoot: string, name: string): Promise<boolean> {
+  const record = await deps.store.getDisabled(name)
+  if (record === undefined) return false
+  const dir = join(targetRoot, name)
+  const sourceToTrash = record.path.endsWith('SKILL.md.disabled') ? dirname(record.path) : record.path
+  if (sourceToTrash !== dir) return false
+  // 目录里还有 SKILL.md 说明它其实是启用态的真实技能，不动。
+  if (await pathExists(join(dir, 'SKILL.md'))) return false
+  // 与 skill/delete 的回收站语义一致：同级 .trash/ 下按「名字-时间戳」落盘，可恢复。
+  const trashDir = join(targetRoot, '.trash')
+  await mkdir(trashDir, { recursive: true })
+  const target = join(trashDir, name + '-' + Date.now())
+  await rename(sourceToTrash, target)
+  await deps.store.addTrash({ name, path: target, movedAt: Date.now(), sourcePath: sourceToTrash })
+  await deps.store.removeDisabled(name)
+  return true
+}
 
 /** 仓库导入域全部路由 spec（由 routes.ts 经 createRoute 包上统一围栏）。 */
 export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
@@ -86,7 +112,8 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           }
         }
         const { ref: resolvedRef, tree, truncated } = await loadRepoTree(repo, ref)
-        const existing = await knownSkillNames(deps)
+        // 发现态也只看「已启用」：否则已禁用占位会把真技能标成「已存在」并禁掉勾选（issue #16）。
+        const existing = await knownSkillNames(deps, { includeDisabled: false })
         const entries = discoverRepoEntries(tree, repo, existing)
         writeJson(res, 200, { ok: true, repo, ref: resolvedRef, entries, ...(truncated ? { truncated: true } : {}) } satisfies RepoDiscoverResponse)
       },
@@ -108,7 +135,8 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         const requestedRef = readString(body, 'ref')
         const ref = requestedRef !== '' ? requestedRef : parsed.ref
         const { ref: resolvedRef, tree } = await loadRepoTree(repo, ref)
-        const existing = await knownSkillNames(deps)
+        // 导入去重同 discover：已禁用不算「已存在」（issue #16）。
+        const existing = await knownSkillNames(deps, { includeDisabled: false })
         const entries = discoverRepoEntries(tree, repo, existing)
         // truncated tree is still usable for the selected paths the user already picked from the prior discover response
         const byPath = new Map(entries.map((entry) => [entry.path, entry]))
@@ -139,6 +167,7 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           imported: [],
           skipped: [],
           failed: [],
+          replaced: [],
           status: 'running',
           controller,
           createdAt: now,
@@ -166,11 +195,25 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
               job.done += 1
               continue
             }
+            // 磁盘上有同名目录。若它只是一个已禁用的占位（目录里只剩
+            // SKILL.md.disabled），先把旧目录移入回收站再继续导入；移不动或
+            // 不是这种形态时退回原本的「跳过」（issue #16）。
             if (await pathExists(join(targetRoot, entry.name))) {
-              job.skipped.push({ name: entry.name, reason: 'exists' })
-              job.downloadedBytes += entry.totalBytes
-              job.done += 1
-              continue
+              let cleared = false
+              try {
+                cleared = await clearDisabledPlaceholder(deps, targetRoot, entry.name)
+              } catch {
+                cleared = false
+              }
+              if (!cleared) {
+                job.skipped.push({ name: entry.name, reason: 'exists' })
+                job.downloadedBytes += entry.totalBytes
+                job.done += 1
+                continue
+              }
+              // 旧目录已经进了回收站（可恢复）。即使随后的下载失败也必须如实
+              // 上报，否则用户不知道自己的占位被挪走了。
+              job.replaced.push(entry.name)
             }
             if (controller.signal.aborted) break
             const files = collectRepoSkillFiles(tree, entry.dir)
@@ -241,6 +284,7 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           imported: [...job.imported],
           skipped: [...job.skipped],
           failed: [...job.failed],
+          ...(job.replaced.length > 0 ? { replaced: [...job.replaced] } : {}),
           ...(job.error !== undefined ? { error: job.error } : {}),
         } satisfies RepoImportProgressResponse)
       },

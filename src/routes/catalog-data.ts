@@ -17,10 +17,21 @@ import { rootPath, readSkillInterface, scanDiagnostics, type SkillInterface } fr
 import { CURRENT_VERSION } from '../update.ts'
 import { homeOf, isWritableSource, type SkillHubRouteDeps } from './deps.ts'
 
-/** 目录中存在的技能名集合（tag 成员校验用）：启用目录 ∪ 已禁用名单，避免成员因禁用而丢失。 */
-export async function knownSkillNames(deps: SkillHubRouteDeps): Promise<Set<string>> {
+/**
+ * 目录中存在的技能名集合。默认（`includeDisabled` 未显式关闭）为「启用目录 ∪
+ * 已禁用名单」——tag 成员校验用：技能被禁用后不该从 tag 里掉出去。
+ *
+ * 导入去重必须传 `{ includeDisabled: false }`：禁用只意味着「暂不启用」，把它
+ * 算作「已存在」会让一次禁用产生「永久占名」的副作用，真技能再也导不进来
+ * （issue #16）。
+ */
+export async function knownSkillNames(
+  deps: SkillHubRouteDeps,
+  options?: { includeDisabled?: boolean },
+): Promise<Set<string>> {
   const snapshot = await deps.skills.snapshot()
   const names = new Set(snapshot.skills.map((skill) => skill.name))
+  if (options?.includeDisabled === false) return names
   for (const disabled of await deps.store.listDisabled()) names.add(disabled.name)
   return names
 }
