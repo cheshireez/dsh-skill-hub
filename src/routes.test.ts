@@ -1287,6 +1287,27 @@ describe('skill-hub routes', () => {
     }
   })
 
+  it('keeps a bundle-disabled skill disabled after syncing it again', async () => {
+    // 记录本来就指向目录包形态（`<name>/SKILL.md.disabled`）：让位步骤会把记录删掉，
+    // 若只在「path 变了」时写回，这里就会连禁用状态和记录一起丢掉（活体实测抓到过）。
+    const dir = join(home, 'skills', 'code-review')
+    await mkdir(dir, { recursive: true })
+    const bundleDisabled = join(dir, 'SKILL.md.disabled')
+    await writeFile(bundleDisabled, '---\nname: code-review\ndescription: old\n---\n', 'utf8')
+    await store.addDisabled({ name: 'code-review', description: 'old', path: bundleDisabled, root: 'user-dsh', disabledAt: 1 })
+    await store.addSourceSkill('example/repo', 'skills', '', 'main', 'code-review')
+    stubSyncFetch()
+    try {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.sourceSync).handler(fakeReq('POST', SKILL_HUB_API.sourceSync, { repo: 'example/repo' }), res as never)
+      expect((res.json() as import('./protocol.ts').SourceSyncResponse).synced).toEqual(['code-review'])
+      await expect(access(bundleDisabled)).resolves.toBeUndefined()
+      expect((await store.getDisabled('code-review'))?.path).toBe(bundleDisabled)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('follows an upstream delete for a flat-stored skill', async () => {
     const flat = join(home, 'skills', 'code-review.md')
     await writeFile(flat, '---\nname: code-review\ndescription: flat\n---\n', 'utf8')

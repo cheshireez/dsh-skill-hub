@@ -165,11 +165,12 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             }
             if (record !== undefined) {
               // Preserve the disabled state: the fresh SKILL.md must not
-              // re-enter discovery. 记录同时改指到新的形态，否则「启用」会去动
-              // 那个已经被替换掉的旧占位。
+              // re-enter discovery. 记录必须**无条件写回** —— 上面的
+              // retireNamePlaceholders 已经把它删过一遍，只按「path 变了才写」
+              // 判断会让「同步一个已禁用的技能」丢掉禁用状态与记录（活体实测过）。
               const disabledPath = join(targetDir, 'SKILL.md.disabled')
               await rename(join(targetDir, 'SKILL.md'), disabledPath)
-              if (record.path !== disabledPath) await deps.store.addDisabled({ ...record, path: disabledPath })
+              await deps.store.addDisabled({ ...record, path: disabledPath })
             } else {
               await deps.store.removeDisabled(name)
             }
