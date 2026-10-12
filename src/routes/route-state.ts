@@ -6,6 +6,7 @@
 import { rm, rename } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { errorText } from '../error-text.ts'
+import { moveIntoTrash, occupancyOf, trashSourceOf } from '../skillfs.ts'
 import type { SkillHubRouteDeps } from './helpers.ts'
 
 /** Minimum interval between network update checks per source (GitHub rate limits). */
@@ -79,21 +80,55 @@ export function gcImportJobs(): void {
   }
 }
 
-/** Replace one skill directory with a fresh download; restores the old dir on failure. */
-export async function replaceSkillDir(targetDir: string, download: () => Promise<void>): Promise<void> {
-  // 点前缀：发现扫描跳过点开头的目录（与导入临时目录 .<name>.import- 同一
-  // 约定），备份即使删除失败残留下来，也不会混进目录/发现诊断，更不会
-  // 造成同名技能重复注册。
-  const backup = join(dirname(targetDir), '.' + basename(targetDir) + '.sync-bak-' + Date.now())
-  await rename(targetDir, backup)
+/**
+ * Replace whatever currently occupies a skill slot with a fresh download;
+ * restores the previous state on failure.
+ *
+ * `target` is the entry to move aside — a bundle **directory** or a flat
+ * `<name>.md` file, whichever the download is replacing (the rename/rm below
+ * are form-neutral). The backup is dot-prefixed (discovery skips dot entries),
+ * so even a failed cleanup can never register as a duplicate skill.
+ */
+export async function replaceInPlace(target: string, download: () => Promise<unknown>): Promise<void> {
+  const backup = join(dirname(target), '.' + basename(target) + '.sync-bak-' + Date.now())
+  await rename(target, backup)
   try {
     await download()
   } catch (error) {
-    await rename(backup, targetDir).catch((rollbackError) => {
-      // 回滚失败会让技能只剩点前缀的备份目录（发现扫描会跳过它）：必须留痕。
-      console.warn('[dsh-skill-hub] restoring ' + targetDir + ' from ' + backup + ' failed:', errorText(rollbackError))
+    await rename(backup, target).catch((rollbackError) => {
+      // 回滚失败会让技能只剩点前缀的备份：必须留痕。
+      console.warn('[dsh-skill-hub] restoring ' + target + ' from ' + backup + ' failed:', errorText(rollbackError))
     })
     throw error
   }
   await rm(backup, { recursive: true, force: true })
+}
+
+/**
+ * 让位：把一个名字下的「非启用态占位」移入回收站并清掉它的 sidecar 禁用记录。
+ * 只动这两类，**启用的技能一律不碰**：
+ * - 禁用发现文件（`<name>/SKILL.md.disabled` 或 `<name>.md.disabled`，两种形态都认）；
+ * - 同名目录存在但既无 `SKILL.md` 也无 `SKILL.md.disabled`（导入中断/手工删除的空壳）。
+ *
+ * 回收站按名字索引，所以多形态只会记下最后一条的恢复指针；其余的那份会在
+ * 「清空回收站」时被孤儿回收扫掉（见 sourceTrashClear）。
+ *
+ * @returns 被移入回收站的路径列表，没有可让位的东西时 undefined。
+ */
+export async function retireNamePlaceholders(deps: SkillHubRouteDeps, base: string, name: string): Promise<string[] | undefined> {
+  const occupancy = await occupancyOf(base, name)
+  // trashSourceOf 让「目录包禁用件」与「空壳目录」自然去重（同一个目录只搬一次）。
+  const sources = [...new Set([
+    ...occupancy.disabled.map((path) => trashSourceOf(path)),
+    ...(occupancy.bareDir !== undefined ? [occupancy.bareDir] : []),
+  ])]
+  if (sources.length === 0) return undefined
+  const trashed: string[] = []
+  for (const source of sources) {
+    const moved = await moveIntoTrash(source)
+    await deps.store.addTrash({ name, path: moved.path, movedAt: Date.now(), sourcePath: moved.source })
+    trashed.push(moved.path)
+  }
+  await deps.store.removeDisabled(name)
+  return trashed
 }

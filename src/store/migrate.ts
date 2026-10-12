@@ -90,7 +90,7 @@ export interface HydratedState {
   tagsById: Map<string, SkillTag>
   sourcesByRepo: Map<string, SourceRecord>
   marketSources: MarketSourceRecord[]
-  trashByName: Map<string, TrashEntry>
+  trashByPath: Map<string, TrashEntry>
   skillStats: SkillStatsCheckpoint | undefined
   marketStats: MarketStatsSnapshot | undefined
   collectionOrder: string[]
@@ -179,14 +179,16 @@ export function hydrateMigratedState(migrated: MigratedStore): HydratedState {
     }
   }
 
-  const trashByName = new Map<string, TrashEntry>()
+  const trashByPath = new Map<string, TrashEntry>()
   if (Array.isArray(migrated.trash)) {
     for (const entry of migrated.trash as unknown[]) {
       const item = entry as { name?: unknown; path?: unknown; movedAt?: unknown; sourcePath?: unknown } | null
       if (item !== null && typeof item === 'object' && typeof item.name === 'string' && typeof item.path === 'string') {
         const origin = (item as Record<string, unknown>).origin as { repo?: unknown; root?: unknown; ref?: unknown; commitSha?: unknown } | undefined
         const tagIds = (item as Record<string, unknown>).tagIds
-        trashByName.set(item.name, {
+        // 按 path 建索引：回收站里同名可以有多条（跨形态/先后两次入站），按名字
+        // 索引会让后一条静默覆盖前一条、把前一份目录留成谁都指不到的孤儿。
+        trashByPath.set(item.path, {
           name: item.name,
           path: item.path,
           movedAt: typeof item.movedAt === 'number' ? item.movedAt : 0,
@@ -294,5 +296,5 @@ export function hydrateMigratedState(migrated: MigratedStore): HydratedState {
   const collectionOrder = cleanStringList(migrated.collectionOrder)
   const sourceGroupOrder = cleanStringList(migrated.sourceGroupOrder)
 
-  return { entries, config, tagsById, sourcesByRepo, marketSources, trashByName, skillStats, marketStats, collectionOrder, sourceGroupOrder }
+  return { entries, config, tagsById, sourcesByRepo, marketSources, trashByPath, skillStats, marketStats, collectionOrder, sourceGroupOrder }
 }

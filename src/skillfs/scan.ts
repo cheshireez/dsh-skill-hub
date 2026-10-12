@@ -85,7 +85,9 @@ export async function scanDisabledRoot(base: string): Promise<string[]> {
       } catch {
         // 目录里没有禁用的发现文件，跳过
       }
-    } else if (name.endsWith('.md.disabled') && name !== 'SKILL.md.disabled') {
+    } else if (name.endsWith('.md.disabled')) {
+      // 扁平形态的禁用文件。根级 `SKILL.md.disabled` 也归这里：`scanRoot` 会把
+      // 根级 `SKILL.md` 文件当作一个扁平技能，它的禁用对应物就该被对账到。
       paths.push(absolute)
     }
   }
@@ -257,12 +259,57 @@ export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Pro
  * 单点定义「禁用态在磁盘上长什么样」，避免各处再拼一次路径（issue #16 类）。
  */
 export async function disabledOccupancyIn(base: string, name: string): Promise<string | undefined> {
-  for (const candidate of [join(base, name, 'SKILL.md.disabled'), join(base, name + '.md.disabled')]) {
-    try {
-      if ((await stat(candidate)).isFile()) return candidate
-    } catch {
-      // 该形态不存在，试下一个。
-    }
+  return (await occupancyOf(base, name)).disabled[0]
+}
+
+/** stat 一次给出形态；不存在或不可读时 undefined。 */
+async function statKind(path: string): Promise<'file' | 'directory' | undefined> {
+  try {
+    const info = await stat(path)
+    return info.isDirectory() ? 'directory' : 'file'
+  } catch {
+    return undefined
   }
-  return undefined
+}
+
+/**
+ * 一个名字在某个 root 下的全部磁盘占位。技能名是系统里唯一的身份，但同一个名字
+ * 可以被两种形态（目录包 `<name>/SKILL.md` / 扁平 `<name>.md`）× 两种状态
+ * （启用 / `.disabled` 改名）占据，而且两种形态可以**同时存在** —— 注册表只会
+ * 给出其中一个，另一个静默不可达。所有按名字操作文件的路径都应该从这里取值，
+ * 而不是各自拼一次路径（issue #16 类的根因）。
+ *
+ * 两个数组都按「目录包优先」排序：目录包是 hub 自己写入的形态（导入、创建、
+ * 同步都建目录包），冲突时它是更「权威」的那份。
+ */
+export interface NameOccupancy {
+  /** 启用态发现文件（目录包 `<name>/SKILL.md` 在前，扁平 `<name>.md` 在后）。 */
+  enabled: string[]
+  /** 禁用态发现文件（`<name>/SKILL.md.disabled` 在前，`<name>.md.disabled` 在后）。 */
+  disabled: string[]
+  /** `<name>/` 存在，但既没有 `SKILL.md` 也没有 `SKILL.md.disabled`（空壳/残留目录）。 */
+  bareDir?: string
+}
+
+/** 读一个名字在某个 skills root 下的全部占位。只读，不修改磁盘。 */
+export async function occupancyOf(base: string, name: string): Promise<NameOccupancy> {
+  const bundleDir = join(base, name)
+  const bundleSkill = join(bundleDir, 'SKILL.md')
+  const bundleDisabled = join(bundleDir, 'SKILL.md.disabled')
+  const flatSkill = join(base, name + '.md')
+  const flatDisabled = join(base, name + '.md.disabled')
+  const [bundleSkillKind, bundleDisabledKind, flatSkillKind, flatDisabledKind, bundleDirKind] = await Promise.all([
+    statKind(bundleSkill),
+    statKind(bundleDisabled),
+    statKind(flatSkill),
+    statKind(flatDisabled),
+    statKind(bundleDir),
+  ])
+  const result: NameOccupancy = { enabled: [], disabled: [] }
+  if (bundleSkillKind === 'file') result.enabled.push(bundleSkill)
+  if (flatSkillKind === 'file') result.enabled.push(flatSkill)
+  if (bundleDisabledKind === 'file') result.disabled.push(bundleDisabled)
+  if (flatDisabledKind === 'file') result.disabled.push(flatDisabled)
+  if (bundleDirKind === 'directory' && bundleSkillKind !== 'file' && bundleDisabledKind !== 'file') result.bareDir = bundleDir
+  return result
 }

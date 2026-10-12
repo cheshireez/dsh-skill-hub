@@ -73,6 +73,14 @@ describe('reconcileDisabledSkills', () => {
     expect(await reconcileDisabledSkills(store, home)).toEqual([])
     expect(await store.listDisabled()).toHaveLength(1)
   })
+
+  it('reconciles a root-level SKILL.md.disabled (a flat skill literally named SKILL)', async () => {
+    // scanRoot 会把根级 SKILL.md 文件当一个扁平技能，它的禁用对应物就不能被漏掉。
+    await writeFile(join(home, 'skills', 'SKILL.md.disabled'), '---\nname: root-flat\ndescription: Root flat\n---', 'utf8')
+    const added = await reconcileDisabledSkills(store, home)
+    expect(added.map((entry) => entry.name)).toEqual(['root-flat'])
+    expect((await store.getDisabled('root-flat'))?.path).toBe(join(home, 'skills', 'SKILL.md.disabled'))
+  })
 })
 
 describe('pruneStaleDisabledSkills', () => {

@@ -206,10 +206,26 @@ describe('SkillHubStore', () => {
     await store.addTrash({ name: 'older', path: '/tmp/.trash/older-1', movedAt: 10 })
     const trash = await store.listTrash()
     expect(trash.map((entry) => entry.name)).toEqual(['gone-skill', 'older']) // newest first
-    await store.removeTrash('gone-skill')
+    await store.removeTrash('/tmp/.trash/gone-skill-123')
     const reloaded = new SkillHubStore(file)
     expect(await reloaded.listTrash()).toHaveLength(1)
     expect(await reloaded.getTrash('older')).toMatchObject({ name: 'older' })
+  })
+
+  it('keeps several trash entries sharing one skill name (no silent overwrite)', async () => {
+    // 同一个名字先后入站两次（重复删除，或磁盘上两种发现形态各进一次）：
+    // 按名字索引会让后一条覆盖前一条，前一份目录就成了谁都指不到的孤儿。
+    await store.addTrash({ name: 'dup', path: '/tmp/.trash/dup-1', movedAt: 1, sourcePath: '/tmp/skills/dup' })
+    await store.addTrash({ name: 'dup', path: '/tmp/.trash/dup.md.disabled-2', movedAt: 2, sourcePath: '/tmp/skills/dup.md.disabled' })
+    const reloaded = new SkillHubStore(file)
+    expect((await reloaded.listTrash()).map((entry) => entry.path).sort()).toEqual([
+      '/tmp/.trash/dup-1',
+      '/tmp/.trash/dup.md.disabled-2',
+    ])
+    // getTrash 按名字取最新的一条（恢复入口用）。
+    expect(await reloaded.getTrash('dup')).toMatchObject({ path: '/tmp/.trash/dup.md.disabled-2' })
+    await reloaded.removeTrash('/tmp/.trash/dup.md.disabled-2')
+    expect(await reloaded.getTrash('dup')).toMatchObject({ path: '/tmp/.trash/dup-1' })
   })
 
   it('persists the trash source path', async () => {

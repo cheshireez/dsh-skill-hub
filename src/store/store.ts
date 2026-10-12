@@ -13,7 +13,7 @@ export class SkillHubStore {
   private tagsById = new Map<string, SkillTag>()
   private sourcesByRepo = new Map<string, SourceRecord>()
   private marketSources: MarketSourceRecord[] = []
-  private trashByName = new Map<string, TrashEntry>()
+  private trashByPath = new Map<string, TrashEntry>()
   private skillStats: SkillStatsCheckpoint | undefined = undefined
   private marketStats: MarketStatsSnapshot | undefined = undefined
   private collectionOrder: string[] = []
@@ -41,7 +41,7 @@ export class SkillHubStore {
         this.tagsById = state.tagsById
         this.sourcesByRepo = state.sourcesByRepo
         this.marketSources = state.marketSources
-        this.trashByName = state.trashByName
+        this.trashByPath = state.trashByPath
         this.skillStats = state.skillStats
         this.marketStats = state.marketStats
         this.collectionOrder = state.collectionOrder
@@ -444,26 +444,36 @@ export class SkillHubStore {
   /** All trashed skills, newest first. */
   async listTrash(): Promise<TrashEntry[]> {
     await this.ensureLoaded()
-    return [...this.trashByName.values()].sort((a, b) => b.movedAt - a.movedAt)
+    return [...this.trashByPath.values()].sort((a, b) => b.movedAt - a.movedAt)
   }
 
-  /** One trash entry by skill name (undefined when absent). */
+  /** One trash entry by skill name — the newest when a name has several. */
   async getTrash(name: string): Promise<TrashEntry | undefined> {
     await this.ensureLoaded()
-    return this.trashByName.get(name)
+    let newest: TrashEntry | undefined
+    for (const entry of this.trashByPath.values()) {
+      if (entry.name !== name) continue
+      if (newest === undefined || entry.movedAt > newest.movedAt) newest = entry
+    }
+    return newest
   }
 
-  /** Record a trashed skill. */
+  /**
+   * Record a trashed skill, keyed by its trashed path. Keying by name used to
+   * silently drop the previous record when the same name landed in the trash
+   * twice (a re-delete, or the two on-disk discovery forms), orphaning its
+   * directory with nothing left pointing at it.
+   */
   async addTrash(entry: TrashEntry): Promise<void> {
     await this.ensureLoaded()
-    this.trashByName.set(entry.name, entry)
+    this.trashByPath.set(entry.path, entry)
     await this.persist()
   }
 
-  /** Remove a trash record (after restore). */
-  async removeTrash(name: string): Promise<void> {
+  /** Remove a trash record by its trashed path (after restore or permanent clear). */
+  async removeTrash(path: string): Promise<void> {
     await this.ensureLoaded()
-    if (!this.trashByName.delete(name)) return
+    if (!this.trashByPath.delete(path)) return
     await this.persist()
   }
 
@@ -521,7 +531,7 @@ export class SkillHubStore {
         ...(this.tagsById.size > 0 ? { tags: [...this.tagsById.values()] } : {}),
         ...(this.sourcesByRepo.size > 0 ? { sources: [...this.sourcesByRepo.values()] } : {}),
         ...(this.marketSources.length > 0 ? { marketSources: [...this.marketSources] } : {}),
-        ...(this.trashByName.size > 0 ? { trash: [...this.trashByName.values()] } : {}),
+        ...(this.trashByPath.size > 0 ? { trash: [...this.trashByPath.values()] } : {}),
         ...(this.skillStats !== undefined ? { skillStats: this.skillStats } : {}),
         ...(this.marketStats !== undefined ? { marketStats: this.marketStats } : {}),
         ...(this.collectionOrder.length > 0 ? { collectionOrder: [...this.collectionOrder] } : {}),

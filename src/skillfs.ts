@@ -103,14 +103,26 @@ export async function moveIntoTrash(source: string): Promise<{ path: string; sou
 }
 
 /**
+ * The filesystem entry behind a discovery file: a directory bundle is addressed
+ * by its `SKILL.md` (or `SKILL.md.disabled`) and moved as a whole directory, a
+ * flat `<name>.md` file is moved as itself. Single definition of that mapping —
+ * delete, restore, sync-replace and placeholder retirement must all agree on it,
+ * or one of them moves a bundle's discovery file and leaves an empty directory.
+ */
+export function trashSourceOf(discoveryPath: string): string {
+  const base = basename(discoveryPath)
+  return base === 'SKILL.md' || base === 'SKILL.md.disabled' ? dirname(discoveryPath) : discoveryPath
+}
+
+/**
  * Move a skill (directory bundle or flat .md file) into the root's trash.
  * The skill stays recoverable: the source is renamed into
  * <root>/.trash/<name>-<timestamp>. A directory bundle is addressed by its
- * SKILL.md path and moved as a whole directory.
+ * SKILL.md (or SKILL.md.disabled) path and moved as a whole directory.
  * @returns the trashed path plus the original path that was moved.
  */
 export async function trashSkill(sourcePath: string): Promise<{ path: string; source: string }> {
-  return moveIntoTrash(basename(sourcePath) === 'SKILL.md' ? dirname(sourcePath) : sourcePath)
+  return moveIntoTrash(trashSourceOf(sourcePath))
 }
 
 /** Restore a trashed skill (directory or flat file) to its original location. */

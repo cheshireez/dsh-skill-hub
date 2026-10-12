@@ -1195,6 +1195,139 @@ describe('skill-hub routes', () => {
     await expect(access(join(trash, 'foo-2'))).rejects.toThrow()
   })
 
+  // ------------------------- 导入/同步/删除/新建 遇到扁平形态（issue #16 类，实测 G1–G4）
+  /** 造一个「扁平已禁用占位」：`<name>.md.disabled` + 指向它的 sidecar 记录。 */
+  async function seedFlatDisabledPlaceholder(name: string) {
+    const flat = join(home, 'skills', name + '.md.disabled')
+    await writeFile(flat, `---\nname: ${name}\ndescription: stub\n---\n`, 'utf8')
+    await store.addDisabled({ name, description: 'stub', path: flat, root: 'user-dsh', disabledAt: Date.now() })
+    return flat
+  }
+
+  it('imports over a flat disabled placeholder instead of leaving it behind', async () => {
+    const flat = await seedFlatDisabledPlaceholder('code-review')
+    const skillMd = '---\nname: code-review\ndescription: Reviews code\n---\n\nbody'
+    stubFetch([
+      ['repos/example/repo/git/trees/main', jsonResponse({ tree: [
+        { path: 'skills/code-review/SKILL.md', type: 'blob', size: 60 },
+      ] })],
+      ['repos/example/repo/commits', jsonResponse({ sha: 'abc123', commit: { tree: { sha: 'tree1' } } })],
+      ['repos/example/repo', jsonResponse({ default_branch: 'main' })],
+      ['raw.githubusercontent.com/example/repo/main/skills/code-review/SKILL.md', new Response(skillMd, { status: 200 })],
+    ])
+    try {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.repoImport).handler(fakeReq('POST', SKILL_HUB_API.repoImport, { repo: 'example/repo', paths: ['skills/code-review/SKILL.md'] }), res as never)
+      const created = res.json() as import('./protocol.ts').RepoImportResponse
+      let prog: import('./protocol.ts').RepoImportProgressResponse | undefined
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 40))
+        const p = new FakeResponse()
+        await routeFor(SKILL_HUB_API.repoImportProgress).handler(fakeReq('GET', `${SKILL_HUB_API.repoImportProgress}?jobId=${created.jobId}`), p as never)
+        prog = p.json() as import('./protocol.ts').RepoImportProgressResponse
+        if (prog.status !== 'running') break
+      }
+      expect(prog!.status).toBe('done')
+      expect(prog!.skipped).toEqual([])
+      expect(prog!.imported.map((r) => r.name)).toEqual(['code-review'])
+      // 关键差异：扁平占位不再「看不见」——它被移入回收站、如实上报，真技能落地。
+      expect(prog!.replaced).toEqual(['code-review'])
+      await expect(access(flat)).rejects.toThrow()
+      await expect(readFile(join(home, 'skills', 'code-review', 'SKILL.md'), 'utf8')).resolves.toContain('name: code-review')
+      expect(await store.listDisabled()).toEqual([])
+      expect((await store.listTrash()).map((entry) => entry.name)).toEqual(['code-review'])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  /** 同步一个已跟踪技能所需的 fetch 桩（tree + commit + raw）。 */
+  function stubSyncFetch(): void {
+    stubFetch([
+      ['repos/example/repo/git/trees/tree1', jsonResponse({ tree: [
+        { path: 'skills/code-review/SKILL.md', type: 'blob', size: 60 },
+      ] })],
+      ['repos/example/repo/commits', jsonResponse({ sha: 'abc123', commit: { tree: { sha: 'tree1' } } })],
+      ['raw.githubusercontent.com/example/repo/abc123/skills/code-review/SKILL.md', new Response('---\nname: code-review\ndescription: upstream\n---\n', { status: 200 })],
+    ])
+  }
+
+  it('syncs a flat-stored skill into the bundle slot instead of leaving both', async () => {
+    await writeFile(join(home, 'skills', 'code-review.md'), '---\nname: code-review\ndescription: flat\n---\n', 'utf8')
+    await store.addSourceSkill('example/repo', 'skills', '', 'main', 'code-review')
+    stubSyncFetch()
+    try {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.sourceSync).handler(fakeReq('POST', SKILL_HUB_API.sourceSync, { repo: 'example/repo' }), res as never)
+      expect(res.status).toBe(200)
+      expect((res.json() as import('./protocol.ts').SourceSyncResponse).synced).toEqual(['code-review'])
+      // 旧扁平文件必须先让开，否则同名两形态并存（注册表只会给一个）。
+      await expect(access(join(home, 'skills', 'code-review.md'))).rejects.toThrow()
+      await expect(readFile(join(home, 'skills', 'code-review', 'SKILL.md'), 'utf8')).resolves.toContain('description: upstream')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('syncs a flat hub-disabled skill and repoints its record at the new bundle', async () => {
+    const flat = await seedFlatDisabledPlaceholder('code-review')
+    await store.addSourceSkill('example/repo', 'skills', '', 'main', 'code-review')
+    stubSyncFetch()
+    try {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.sourceSync).handler(fakeReq('POST', SKILL_HUB_API.sourceSync, { repo: 'example/repo' }), res as never)
+      expect(res.status).toBe(200)
+      // 禁用态要保持，但记录必须改指新形态 —— 否则「启用」会去动那个已被替换掉的旧文件。
+      const bundleDisabled = join(home, 'skills', 'code-review', 'SKILL.md.disabled')
+      await expect(access(bundleDisabled)).resolves.toBeUndefined()
+      await expect(access(flat)).rejects.toThrow()
+      expect((await store.getDisabled('code-review'))?.path).toBe(bundleDisabled)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('follows an upstream delete for a flat-stored skill', async () => {
+    const flat = join(home, 'skills', 'code-review.md')
+    await writeFile(flat, '---\nname: code-review\ndescription: flat\n---\n', 'utf8')
+    await store.addSourceSkill('example/repo', 'skills', 'abc', undefined, 'code-review')
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.sourceDelete).handler(fakeReq('POST', SKILL_HUB_API.sourceDelete, { repo: 'example/repo', skills: ['code-review'] }), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as import('./protocol.ts').SourceDeleteResponse
+    expect(body.failed).toEqual([])
+    expect(body.trashed).toEqual(['code-review'])
+    await expect(access(flat)).rejects.toThrow()
+    expect((await store.listTrash())[0]?.sourcePath).toBe(flat)
+  })
+
+  it('refuses to create a skill whose name is taken by a flat file on disk', async () => {
+    // frontmatter 坏 → 注册表看不见它，但名字确实被占了；建目录会立刻造出同名两形态。
+    await writeFile(join(home, 'skills', 'foo.md'), 'not a frontmatter file', 'utf8')
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.create).handler(fakeReq('POST', SKILL_HUB_API.create, { name: 'foo', description: 'x' }), res as never)
+    expect(res.status).toBe(409)
+    expect(String((res.json() as { error: string }).error)).toContain('occupies this name on disk')
+    await expect(access(join(home, 'skills', 'foo'))).rejects.toThrow()
+  })
+
+  it('refuses to create a skill whose name is held by a disabled placeholder', async () => {
+    // 有 sidecar 记录时走既有的「先重新启用」提示；没有记录（记录丢失/手改过）
+    // 时以前会直接建档造出同名两形态，现在由磁盘占位检查兜住。
+    await writeFile(join(home, 'skills', 'foo.md.disabled'), '---\nname: foo\ndescription: stub\n---\n', 'utf8')
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.create).handler(fakeReq('POST', SKILL_HUB_API.create, { name: 'foo', description: 'x' }), res as never)
+    expect(res.status).toBe(409)
+    expect(String((res.json() as { error: string }).error)).toContain('disabled placeholder')
+    await expect(access(join(home, 'skills', 'foo'))).rejects.toThrow()
+    // 有记录时保持原有提示口径。
+    await seedFlatDisabledPlaceholder('bar')
+    const withRecord = new FakeResponse()
+    await routeFor(SKILL_HUB_API.create).handler(fakeReq('POST', SKILL_HUB_API.create, { name: 'bar', description: 'x' }), withRecord as never)
+    expect(withRecord.status).toBe(409)
+    expect(String((withRecord.json() as { error: string }).error)).toContain('re-enable it from the disabled list first')
+  })
+
   it('patches display toggles on the config route', async () => {
     const res = new FakeResponse()
     await routeFor(SKILL_HUB_API.config).handler(fakeReq('POST', SKILL_HUB_API.config, { showUseCount: false }), res as never)

@@ -4,7 +4,7 @@
  */
 
 import { readFile, stat } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname } from 'node:path'
 import type { SkillDefinition } from '@deepseek-ai/dsh-skill'
 import { isSkillName } from '@deepseek-ai/dsh-skill'
 import {
@@ -18,7 +18,7 @@ import {
   type ToggleResponse,
   type WritableRoot,
 } from '../protocol.ts'
-import { createSkill, disableSkill, disabledOccupancyIn, enableSkill, moveIntoTrash, parseFrontmatter, readSkillInterface, rootOfPath, rootPath, trashSkill } from '../skillfs.ts'
+import { createSkill, disableSkill, disabledOccupancyIn, enableSkill, occupancyOf, parseFrontmatter, readSkillInterface, rootOfPath, rootPath, trashSkill } from '../skillfs.ts'
 import { errorText } from '../error-text.ts'
 import {
   applyInterface,
@@ -164,8 +164,8 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             return
           }
           // 禁用态：SKILL.md.disabled 或 *.md.disabled，直接将其所在技能整体移入回收站
-          const isBundleDisabled = disabled.path.endsWith('SKILL.md.disabled')
-          trashResult = await moveIntoTrash(isBundleDisabled ? dirname(disabled.path) : disabled.path)
+          // （trashSkill 认两种发现文件名，目录包按整目录搬）。
+          trashResult = await trashSkill(disabled.path)
         } else {
             writeError(res, resolved.status, resolved.error); return
           }
@@ -213,8 +213,7 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             // root 从记录路径反推，不直接信 sidecar 里的 root 字段（可能是损坏数据）。
             const root = rootOfPath(disabledPath, homeOf(deps))
             const occupancy = root === undefined ? undefined : await disabledOccupancyIn(rootPath(root, homeOf(deps)), name)
-            if (occupancy === undefined) {
-              await deps.store.removeDisabled(name)
+            if (occupancy === undefined) {              await deps.store.removeDisabled(name)
               deps.invalidate?.()
               writeError(res, 409, 'disabled record was stale (its file no longer exists); the record has been removed — retry now')
               return
@@ -300,12 +299,16 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         const existing = await deps.skills.get(name)
         if (existing !== undefined) { writeError(res, 409, 'skill name already exists: ' + name); return }
         if (await deps.store.getDisabled(name) !== undefined) { writeError(res, 409, 'skill name is disabled: re-enable it from the disabled list first'); return }
-        // A directory may exist without producing a registry entry (invalid
-        // frontmatter — exactly what the diagnostics section reports).
-        // Refuse to overwrite it instead of silently truncating its SKILL.md.
-        const target = join(rootPath(root, homeOf(deps)), name)
-        if (await pathExists(target)) {
-          writeError(res, 409, 'skill directory already exists on disk: ' + name + ' (check the discovery diagnostics)')
+        // 建档前先看磁盘：三种占位都会让新目录与旧文件并存成同名两形态 ——
+        // 已启用的发现文件（frontmatter 坏了因此注册表看不见）、已禁用的占位
+        // （目录包或扁平）、以及没有 SKILL.md 的空壳目录（正是发现诊断在报的东西）。
+        const occupancy = await occupancyOf(rootPath(root, homeOf(deps)), name)
+        if (occupancy.enabled.length > 0) {
+          writeError(res, 409, 'a skill file already occupies this name on disk: ' + name + ' (check the discovery diagnostics)')
+          return
+        }
+        if (occupancy.disabled.length > 0 || occupancy.bareDir !== undefined) {
+          writeError(res, 409, 'name is occupied by a disabled placeholder or an empty directory on disk: ' + name + ' (check the discovery diagnostics)')
           return
         }
         const path = await createSkill(root, name, readString(body, 'description'), homeOf(deps))

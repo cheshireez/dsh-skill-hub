@@ -30,7 +30,7 @@ import {
   skillFileAt,
   skillManifest,
 } from '../repo.ts'
-import { clearTrash, restoreSkill, rootOfPath, rootPath, trashSkill, WRITABLE_ROOTS } from '../skillfs.ts'
+import { clearTrash, occupancyOf, restoreSkill, rootOfPath, rootPath, trashSkill, trashSourceOf, WRITABLE_ROOTS } from '../skillfs.ts'
 import { errorText } from '../error-text.ts'
 import {
   buildCollections,
@@ -43,7 +43,7 @@ import {
   type RouteSpec,
   type SkillHubRouteDeps,
 } from './helpers.ts'
-import { MIN_CHECK_INTERVAL_MS, lastSourceCheck, replaceSkillDir } from './route-state.ts'
+import { MIN_CHECK_INTERVAL_MS, lastSourceCheck, replaceInPlace, retireNamePlaceholders } from './route-state.ts'
 
 /** 来源跟踪域全部路由 spec（由 routes.ts 经 createRoute 包上统一围栏）。 */
 export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
@@ -149,18 +149,27 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             const files = collectRepoSkillFiles(tree, entry.dir)
             if (files.length === 0) { failed.push({ name, error: 'skill missing upstream' }); continue }
             const targetDir = join(targetRoot, name)
-            const wasDisabled = (await deps.store.getDisabled(name)) !== undefined
-            if (await pathExists(targetDir)) {
-              await replaceSkillDir(targetDir, async () => {
-                await downloadRepoSkill(repo, latest.commitSha, entry, files, targetRoot)
-              })
+            const record = await deps.store.getDisabled(name)
+            const occupancy = await occupancyOf(targetRoot, name)
+            // 落盘位置永远是目录包，所以本地无论是目录包还是扁平文件（启用或禁用）
+            // 都得先让开，否则同名两形态会并存（issue #16 类）。
+            const download = () => downloadRepoSkill(repo, latest.commitSha, entry, files, targetRoot)
+            // 1) 禁用件与空壳让位（顺带清掉 sidecar 禁用记录）。
+            await retireNamePlaceholders(deps, targetRoot, name)
+            // 2) 启用件按「替换」语义处理：先挪到点前缀备份，下载失败则原样恢复。
+            const enabled = occupancy.enabled[0]
+            if (enabled !== undefined) {
+              await replaceInPlace(trashSourceOf(enabled), download)
             } else {
-              await downloadRepoSkill(repo, latest.commitSha, entry, files, targetRoot)
+              await download()
             }
-            if (wasDisabled) {
+            if (record !== undefined) {
               // Preserve the disabled state: the fresh SKILL.md must not
-              // re-enter discovery.
-              await rename(join(targetDir, 'SKILL.md'), join(targetDir, 'SKILL.md.disabled'))
+              // re-enter discovery. 记录同时改指到新的形态，否则「启用」会去动
+              // 那个已经被替换掉的旧占位。
+              const disabledPath = join(targetDir, 'SKILL.md.disabled')
+              await rename(join(targetDir, 'SKILL.md'), disabledPath)
+              if (record.path !== disabledPath) await deps.store.addDisabled({ ...record, path: disabledPath })
             } else {
               await deps.store.removeDisabled(name)
             }
@@ -206,24 +215,29 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             failed.push({ name, error: 'skill is not tracked by this source' })
             continue
           }
-          const sourcePath = join(rootPath('user-dsh', home), name)
-          if (rootOfPath(sourcePath, home) === undefined) {
-            failed.push({ name, error: 'skill path is outside the hub writable roots' })
+          // Resolve the on-disk occupation instead of assuming a `<root>/<name>`
+          // directory: the tracked skill can equally be a flat `<name>.md` file
+          // or a hub-disabled placeholder (issue #16 类).
+          const base = rootPath('user-dsh', home)
+          const occupancy = await occupancyOf(base, name)
+          const existing = occupancy.enabled[0] ?? occupancy.disabled[0] ?? occupancy.bareDir
+          if (existing === undefined) {
+            failed.push({ name, error: 'skill not found on disk' })
             continue
           }
-          if (!await pathExists(sourcePath)) {
-            failed.push({ name, error: 'skill directory not found' })
+          if (rootOfPath(existing, home) === undefined) {
+            failed.push({ name, error: 'skill path is outside the hub writable roots' })
             continue
           }
           try {
             // 入回收站前快照来源与场景归属，恢复时挂回（见 sourceRestore）。
             const tagIds = (await deps.store.listTags()).filter((tag) => tag.skillNames.includes(name)).map((tag) => tag.id)
-            const { path } = await trashSkill(sourcePath)
+            const { path, source: trashSource } = await trashSkill(existing)
             await deps.store.addTrash({
               name,
               path,
               movedAt: Date.now(),
-              sourcePath,
+              sourcePath: trashSource,
               origin: { repo: source.repo, root: source.root, ...(source.ref !== undefined && source.ref !== '' ? { ref: source.ref } : {}), commitSha: source.commitSha },
               ...(tagIds.length > 0 ? { tagIds } : {}),
             })
@@ -267,7 +281,7 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         for (const tagId of entry.tagIds ?? []) {
           await deps.store.addSkillToTag(tagId, name)
         }
-        await deps.store.removeTrash(name)
+        await deps.store.removeTrash(entry.path)
         deps.invalidate?.()
         writeJson(res, 200, { ok: true, name, path } satisfies SourceRestoreResponse)
       },
@@ -281,6 +295,7 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         const home = homeOf(deps)
         const entries = await deps.store.listTrash()
         const deleted: string[] = []
+        const removedPaths: string[] = []
         const failed: Array<{ name: string; error: string }> = []
         for (const entry of entries) {
           try {
@@ -288,11 +303,12 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             // A permanently deleted skill must not linger in user groups.
             await deps.store.removeSkillFromTags(entry.name)
             deleted.push(entry.name)
+            removedPaths.push(entry.path)
           } catch (error) {
             failed.push({ name: entry.name, error: errorText(error) })
           }
         }
-        for (const name of deleted) await deps.store.removeTrash(name)
+        for (const path of removedPaths) await deps.store.removeTrash(path)
         // 回收站记录按名字索引：同名技能先后两次入站时旧记录被覆盖，但它的
         // `<name>-<时间戳>` 目录还留在盘上，任何记录都指不到它 → 永久孤儿。
         // 「清空回收站」正是它的回收时机，顺手扫掉并如实上报。

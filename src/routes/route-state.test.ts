@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { IMPORT_JOB_MAX, gcImportJobs, importJobs, replaceSkillDir, type ImportJob } from './route-state.ts'
+import { IMPORT_JOB_MAX, gcImportJobs, importJobs, replaceInPlace, type ImportJob } from './route-state.ts'
 
 /** One import job with sane defaults; override what the test cares about. */
 function job(jobId: string, createdAt: number, status: ImportJob['status'] = 'done'): ImportJob {
@@ -50,7 +50,7 @@ describe('gcImportJobs', () => {
   })
 })
 
-describe('replaceSkillDir', () => {
+describe('replaceInPlace', () => {
   let dir: string
 
   afterEach(async () => { await rm(dir, { recursive: true, force: true }) })
@@ -60,7 +60,7 @@ describe('replaceSkillDir', () => {
     const target = join(dir, 'skill')
     await mkdir(target, { recursive: true })
     await writeFile(join(target, 'old.txt'), 'old', 'utf8')
-    await replaceSkillDir(target, async () => {
+    await replaceInPlace(target, async () => {
       // 下载方负责重建目标目录（downloadRepoSkill 就是这么做的）。
       await mkdir(target, { recursive: true })
       await writeFile(join(target, 'new.txt'), 'new', 'utf8')
@@ -76,7 +76,7 @@ describe('replaceSkillDir', () => {
     const target = join(dir, 'skill')
     await mkdir(target, { recursive: true })
     await writeFile(join(target, 'old.txt'), 'old', 'utf8')
-    await expect(replaceSkillDir(target, async () => { throw new Error('download failed') })).rejects.toThrow('download failed')
+    await expect(replaceInPlace(target, async () => { throw new Error('download failed') })).rejects.toThrow('download failed')
     expect(await readFile(join(target, 'old.txt'), 'utf8')).toBe('old')
     expect((await readdir(dir)).filter((name) => name.startsWith('.'))).toEqual([])
   })

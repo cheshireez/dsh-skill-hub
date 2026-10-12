@@ -4,7 +4,6 @@
  */
 
 import { mkdir } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import {
   SKILL_HUB_API,
@@ -28,12 +27,11 @@ import {
   skillManifest,
   skillPathIn,
 } from '../repo.ts'
-import { moveIntoTrash, rootPath } from '../skillfs.ts'
+import { occupancyOf, rootPath } from '../skillfs.ts'
 import { errorText } from '../error-text.ts'
 import {
   homeOf,
   knownSkillNames,
-  pathExists,
   queryParam,
   readString,
   readStrings,
@@ -42,29 +40,20 @@ import {
   type RouteSpec,
   type SkillHubRouteDeps,
 } from './helpers.ts'
-import { gcImportJobs, importJobs, type ImportJob } from './route-state.ts'
+import { gcImportJobs, importJobs, retireNamePlaceholders, type ImportJob } from './route-state.ts'
 
 /**
- * 导入去重只认「已启用」的目录，但磁盘上仍可能躺着一个已禁用的同名占位 ——
- * 禁用只是把 SKILL.md 改名成 SKILL.md.disabled，目录本身还在。这种占位不该
- * 堵住真技能：把它连同禁用记录一起移入回收站让位（issue #16）。
+ * 导入让位（issue #16）：磁盘上已有同名占位但**没有启用的技能**时，把占位移入
+ * 回收站，把名字让给即将导入的真技能。占位有两种 —— 已禁用的发现文件（目录包或
+ * 扁平，后者曾长期漏处理：`clearDisabledPlaceholder` 只认 `<name>` 这个目录，
+ * 扁平占位占的是 `<name>.md.disabled`，判据为假，分支根本进不去）和没有 `SKILL.md`
+ * 的空壳目录。判据统一走 `occupancyOf`，形态判断集中在 `retireNamePlaceholders`。
  *
- * 只有「禁用记录确实指向 `targetRoot/<name>` 的整目录禁用」才处理，且该目录
- * 必须已经没有 SKILL.md；其余不确定情形一律返回 false，交回原本的「跳过」。
+ * 返回 false = 磁盘上有启用的同名技能（真货），一律不动，交回原本的「跳过」。
  */
 async function clearDisabledPlaceholder(deps: SkillHubRouteDeps, targetRoot: string, name: string): Promise<boolean> {
-  const record = await deps.store.getDisabled(name)
-  if (record === undefined) return false
-  const dir = join(targetRoot, name)
-  const sourceToTrash = record.path.endsWith('SKILL.md.disabled') ? dirname(record.path) : record.path
-  if (sourceToTrash !== dir) return false
-  // 目录里还有 SKILL.md 说明它其实是启用态的真实技能，不动。
-  if (await pathExists(join(dir, 'SKILL.md'))) return false
-  // 与 skill/delete 走同一个回收站落盘规则（moveIntoTrash），恢复流程依赖它。
-  const { path: target } = await moveIntoTrash(sourceToTrash)
-  await deps.store.addTrash({ name, path: target, movedAt: Date.now(), sourcePath: sourceToTrash })
-  await deps.store.removeDisabled(name)
-  return true
+  if ((await occupancyOf(targetRoot, name)).enabled.length > 0) return false
+  return (await retireNamePlaceholders(deps, targetRoot, name)) !== undefined
 }
 
 /** 仓库导入域全部路由 spec（由 routes.ts 经 createRoute 包上统一围栏）。 */
@@ -192,10 +181,11 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
               job.done += 1
               continue
             }
-            // 磁盘上有同名目录。若它只是一个已禁用的占位（目录里只剩
-            // SKILL.md.disabled），先把旧目录移入回收站再继续导入；移不动或
-            // 不是这种形态时退回原本的「跳过」（issue #16）。
-            if (await pathExists(join(targetRoot, entry.name))) {
+            // 磁盘上有同名占位。若它只是一个已禁用的占位（目录包或扁平）或一个空壳
+            // 目录，先把旧东西移入回收站再继续导入；有启用的同名技能时退回「跳过」
+            // （issue #16）。
+            const occupancy = await occupancyOf(targetRoot, entry.name)
+            if (occupancy.enabled.length > 0 || occupancy.disabled.length > 0 || occupancy.bareDir !== undefined) {
               let cleared = false
               try {
                 cleared = await clearDisabledPlaceholder(deps, targetRoot, entry.name)
@@ -208,7 +198,7 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
                 job.done += 1
                 continue
               }
-              // 旧目录已经进了回收站（可恢复）。即使随后的下载失败也必须如实
+              // 占位已经进了回收站（可恢复）。即使随后的下载失败也必须如实
               // 上报，否则用户不知道自己的占位被挪走了。
               job.replaced.push(entry.name)
             }
