@@ -18,7 +18,7 @@ import {
   type ToggleResponse,
   type WritableRoot,
 } from '../protocol.ts'
-import { createSkill, disableSkill, enableSkill, moveIntoTrash, parseFrontmatter, readSkillInterface, rootOfPath, rootPath, trashSkill } from '../skillfs.ts'
+import { createSkill, disableSkill, disabledOccupancyIn, enableSkill, moveIntoTrash, parseFrontmatter, readSkillInterface, rootOfPath, rootPath, trashSkill } from '../skillfs.ts'
 import { errorText } from '../error-text.ts'
 import {
   applyInterface,
@@ -146,18 +146,27 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         // 已禁用的技能不在 registry 中，resolve 会 404，这里单独处理：允许整组删除未开启的技能
         let trashResult: { path: string; source: string } | null = null
         if (!resolved.ok) {
-          const disabled = await deps.store.getDisabled(name)
-          if (disabled !== undefined) {
-            // sidecar 里的路径可能是外部写入/损坏的：移动前必须确认它落在
-            // 可写根内（正常路径由 disableSkill 保证，这里只拦异常数据）。
-            if (rootOfPath(disabled.path, homeOf(deps)) === undefined) {
-              writeError(res, 409, 'disabled skill path is outside the hub writable roots')
-              return
-            }
-            // 禁用态：SKILL.md.disabled 或 *.md.disabled，直接将其所在技能整体移入回收站
-            const isBundleDisabled = disabled.path.endsWith('SKILL.md.disabled')
-            trashResult = await moveIntoTrash(isBundleDisabled ? dirname(disabled.path) : disabled.path)
-          } else {
+        const disabled = await deps.store.getDisabled(name)
+        if (disabled !== undefined) {
+          // sidecar 里的路径可能是外部写入/损坏的：移动前必须确认它落在
+          // 可写根内（正常路径由 disableSkill 保证，这里只拦异常数据）。
+          if (rootOfPath(disabled.path, homeOf(deps)) === undefined) {
+            writeError(res, 409, 'disabled skill path is outside the hub writable roots')
+            return
+          }
+          // 记录还在、文件已经不在（手工删了 / 从备份恢复过 sidecar）：这条记录
+          // 只是残留，清掉即算删除完成，否则它会永久占住这个名字。
+          if (!await pathExists(disabled.path)) {
+            await deps.store.removeDisabled(name)
+            await deps.store.removeSkillFromTags(name)
+            deps.invalidate?.()
+            writeJson(res, 200, { ok: true, name, path: disabled.path } satisfies SkillDeleteResponse)
+            return
+          }
+          // 禁用态：SKILL.md.disabled 或 *.md.disabled，直接将其所在技能整体移入回收站
+          const isBundleDisabled = disabled.path.endsWith('SKILL.md.disabled')
+          trashResult = await moveIntoTrash(isBundleDisabled ? dirname(disabled.path) : disabled.path)
+        } else {
             writeError(res, resolved.status, resolved.error); return
           }
         }
@@ -196,13 +205,29 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         if (body.enabled === true) {
           const record = await deps.store.getDisabled(name)
           if (record === undefined) { writeError(res, 404, 'skill is not hub-disabled: ' + name); return }
+          // 记录里的路径可能已经失效（文件被手工删/搬走）。先在同 root 下找现存的
+          // 禁用占位：找得到就把记录指向它，找不到说明这条记录是残留 —— 清掉并把
+          // 名字还给用户，而不是让「启用」永远失败把名字锁死。
+          let disabledPath = record.path
+          if (!await pathExists(disabledPath)) {
+            // root 从记录路径反推，不直接信 sidecar 里的 root 字段（可能是损坏数据）。
+            const root = rootOfPath(disabledPath, homeOf(deps))
+            const occupancy = root === undefined ? undefined : await disabledOccupancyIn(rootPath(root, homeOf(deps)), name)
+            if (occupancy === undefined) {
+              await deps.store.removeDisabled(name)
+              deps.invalidate?.()
+              writeError(res, 409, 'disabled record was stale (its file no longer exists); the record has been removed — retry now')
+              return
+            }
+            disabledPath = occupancy
+          }
           try {
-            await enableSkill(record.path)
+            await enableSkill(disabledPath)
           } catch (error) {
             // The renamed file may have vanished (external cleanup); report
             // precisely instead of a generic 500, like toggle-batch does.
             if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-              writeError(res, 409, 'disabled skill file is missing on disk: ' + record.path)
+              writeError(res, 409, 'disabled skill file is missing on disk: ' + disabledPath)
               return
             }
             throw error

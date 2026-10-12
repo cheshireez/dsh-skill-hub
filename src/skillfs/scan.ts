@@ -178,6 +178,12 @@ export async function findProjectRoot(cwd: string): Promise<string> {
  */
 export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Promise<DiagnosticEntry[]> {
   const entries = await listSkillEntries(root, home)
+  // 同一个名字可以由两种发现形态同时占据（目录包 `<name>/SKILL.md` 与扁平
+  // `<name>.md`）。注册表只会给出其中一个，另一个静默不可达 —— 必须报出来，
+  // 否则面板上完全看不出「技能改了没生效」的原因。分组键同时取「发现路径名」
+  // 与「frontmatter 名」：前者是官方 provider 的注册键，后者是本插件 provider
+  // 的注册键，两边不一致时至少有一侧会撞上。
+  const discovered: Array<{ path: string; keys: string[] }> = []
   // Each entry is read and parsed independently, and the panel polls /catalog
   // every 5 seconds. A serial read would make the response time grow linearly
   // with the skill count — the same reason the per-skill `stat` collection in
@@ -210,6 +216,7 @@ export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Pro
     // flat file name), so a frontmatter name that diverges from the path makes
     // the skill show up under a different identity than its metadata claims.
     const pathName = entry.kind === 'directory' ? basename(entry.directory) : basename(entry.path, '.md')
+    discovered.push({ path: entry.path, keys: [...new Set([pathName, value.name])] })
     if (value.name !== pathName) {
       found.push({ path: entry.path, root, reason: `frontmatter name "${value.name}" does not match the discovery path "${pathName}" (the provider registers by path)` })
     }
@@ -220,7 +227,42 @@ export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Pro
     }
     return found
   })
+  // 同名冲突：把每个命中冲突的发现文件各报一条，让用户两边都能看到并选一个处理。
+  const owners = new Map<string, string[]>()
+  for (const item of discovered) {
+    for (const key of item.keys) {
+      const list = owners.get(key)
+      if (list === undefined) owners.set(key, [item.path])
+      else list.push(item.path)
+    }
+  }
+  const collisions: DiagnosticEntry[] = []
+  for (const item of discovered) {
+    const shared = item.keys.filter((key) => (owners.get(key)?.length ?? 0) > 1)
+    if (shared.length === 0) continue
+    collisions.push({
+      path: item.path,
+      root,
+      reason: `another skill in this root registers the same name (${shared.map((key) => '"' + key + '"').join(', ')}); the registry keeps only one of them, so this one is unreachable — delete or rename one of the two`,
+    })
+  }
   // mapConcurrent preserves index order, so flattening keeps the previous
   // per-entry ordering of the diagnostics.
-  return perEntry.flat()
+  return [...perEntry.flat(), ...collisions]
+}
+
+/**
+ * 某个名字在一个 root 下现存的禁用发现文件（两种形态都认），没有则 undefined。
+ * 目录包形态优先（`<name>/SKILL.md.disabled`），其次扁平 `<name>.md.disabled`。
+ * 单点定义「禁用态在磁盘上长什么样」，避免各处再拼一次路径（issue #16 类）。
+ */
+export async function disabledOccupancyIn(base: string, name: string): Promise<string | undefined> {
+  for (const candidate of [join(base, name, 'SKILL.md.disabled'), join(base, name + '.md.disabled')]) {
+    try {
+      if ((await stat(candidate)).isFile()) return candidate
+    } catch {
+      // 该形态不存在，试下一个。
+    }
+  }
+  return undefined
 }

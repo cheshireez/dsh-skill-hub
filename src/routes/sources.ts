@@ -4,7 +4,7 @@
  * handler 逻辑不变。
  */
 
-import { mkdir, rename } from 'node:fs/promises'
+import { mkdir, readdir, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isSkillName } from '@deepseek-ai/dsh-skill'
 import {
@@ -30,7 +30,7 @@ import {
   skillFileAt,
   skillManifest,
 } from '../repo.ts'
-import { clearTrash, restoreSkill, rootOfPath, rootPath, trashSkill } from '../skillfs.ts'
+import { clearTrash, restoreSkill, rootOfPath, rootPath, trashSkill, WRITABLE_ROOTS } from '../skillfs.ts'
 import { errorText } from '../error-text.ts'
 import {
   buildCollections,
@@ -293,9 +293,48 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           }
         }
         for (const name of deleted) await deps.store.removeTrash(name)
-        if (deleted.length > 0) deps.invalidate?.()
-        writeJson(res, 200, { ok: true, deleted, failed } satisfies SourceTrashClearResponse)
+        // 回收站记录按名字索引：同名技能先后两次入站时旧记录被覆盖，但它的
+        // `<name>-<时间戳>` 目录还留在盘上，任何记录都指不到它 → 永久孤儿。
+        // 「清空回收站」正是它的回收时机，顺手扫掉并如实上报。
+        const orphans = await sweepOrphanTrash(deps, home, failed)
+        if (deleted.length > 0 || orphans.length > 0) deps.invalidate?.()
+        writeJson(res, 200, {
+          ok: true,
+          deleted,
+          failed,
+          ...(orphans.length > 0 ? { orphans } : {}),
+        } satisfies SourceTrashClearResponse)
       },
     },
   ]
+}
+
+/**
+ * 删除两个可写根 `.trash` 下不被任何回收站记录引用的残留目录。
+ * 只扫 `.trash` 的直接子项、跳过点开头项，失败项并入 `failed`（保留可重试）。
+ */
+async function sweepOrphanTrash(deps: SkillHubRouteDeps, home: string, failed: Array<{ name: string; error: string }>): Promise<string[]> {
+  const referenced = new Set((await deps.store.listTrash()).map((entry) => entry.path))
+  const orphans: string[] = []
+  for (const root of WRITABLE_ROOTS) {
+    const trashDir = join(rootPath(root, home), '.trash')
+    let names: string[]
+    try {
+      names = await readdir(trashDir)
+    } catch {
+      continue // 该根没有回收站目录
+    }
+    for (const name of names) {
+      if (name.startsWith('.')) continue
+      const full = join(trashDir, name)
+      if (referenced.has(full)) continue
+      try {
+        await rm(full, { recursive: true, force: true })
+        orphans.push(full)
+      } catch (error) {
+        failed.push({ name, error: errorText(error) })
+      }
+    }
+  }
+  return orphans
 }

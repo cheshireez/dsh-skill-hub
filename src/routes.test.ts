@@ -1117,6 +1117,84 @@ describe('skill-hub routes', () => {
     expect(invalidate).toHaveBeenCalledTimes(1)
   })
 
+  // --------------------------- 同名双形态 / 陈旧禁用记录（issue #16 类，实测 G5/G7/G8）
+  it('self-heals a stale disabled record by pointing it at the surviving placeholder', async () => {
+    // 记录指目录形态，磁盘上只剩扁平占位 —— 导入让位/L2 迁移后的典型残留。
+    await writeFile(join(home, 'skills', 'code-review.md.disabled'), '---\nname: code-review\ndescription: stub\n---', 'utf8')
+    await store.addDisabled({ name: 'code-review', description: 'stub', path: join(home, 'skills', 'code-review', 'SKILL.md.disabled'), root: 'user-dsh', disabledAt: 1 })
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.toggle).handler(fakeReq('POST', SKILL_HUB_API.toggle, { name: 'code-review', enabled: true }), res as never)
+    expect(res.status).toBe(200)
+    await expect(access(join(home, 'skills', 'code-review.md'))).resolves.toBeUndefined()
+    expect(await store.getDisabled('code-review')).toBeUndefined()
+  })
+
+  it('drops a fully stale disabled record so the name becomes usable again', async () => {
+    await store.addDisabled({ name: 'ghost', description: 'x', path: join(home, 'skills', 'ghost', 'SKILL.md.disabled'), root: 'user-dsh', disabledAt: 1 })
+    // 记录还在时，新建同名技能被 409 挡住。
+    const blocked = new FakeResponse()
+    await routeFor(SKILL_HUB_API.create).handler(fakeReq('POST', SKILL_HUB_API.create, { name: 'ghost', description: 'x' }), blocked as never)
+    expect(blocked.status).toBe(409)
+    // 启用报「记录已失效」并把记录清掉，而不是留下一条谁都动不了的死记录。
+    const enable = new FakeResponse()
+    await routeFor(SKILL_HUB_API.toggle).handler(fakeReq('POST', SKILL_HUB_API.toggle, { name: 'ghost', enabled: true }), enable as never)
+    expect(enable.status).toBe(409)
+    expect(String((enable.json() as { error: string }).error)).toContain('stale')
+    expect(await store.getDisabled('ghost')).toBeUndefined()
+    // 名字已释放：新建成功，再次启用则报「不是禁用态」。
+    const created = new FakeResponse()
+    await routeFor(SKILL_HUB_API.create).handler(fakeReq('POST', SKILL_HUB_API.create, { name: 'ghost', description: 'x' }), created as never)
+    expect(created.status).toBe(201)
+    await expect(access(join(home, 'skills', 'ghost', 'SKILL.md'))).resolves.toBeUndefined()
+    const again = new FakeResponse()
+    await routeFor(SKILL_HUB_API.toggle).handler(fakeReq('POST', SKILL_HUB_API.toggle, { name: 'ghost', enabled: true }), again as never)
+    expect(again.status).toBe(404)
+  })
+
+  it('deletes a stale disabled record instead of failing on the missing file', async () => {
+    const tag = await store.saveTag({ name: 'scene-x' })
+    await store.setTagMembers(tag.id, ['ghost'])
+    await store.addDisabled({ name: 'ghost', description: 'x', path: join(home, 'skills', 'ghost', 'SKILL.md.disabled'), root: 'user-dsh', disabledAt: 1 })
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.skillDelete).handler(fakeReq('POST', SKILL_HUB_API.skillDelete, { name: 'ghost' }), res as never)
+    expect(res.status).toBe(200)
+    expect(await store.getDisabled('ghost')).toBeUndefined()
+    expect((await store.getTag(tag.id))?.skillNames).toEqual([])
+  })
+
+  it('flags two discovery forms occupying the same skill name in one root', async () => {
+    // 目录包与扁平文件同名：注册表只给一个，另一个静默不可达 → 必须报诊断。
+    await writeFile(join(home, 'skills', 'dup-skill.md'), '---\nname: dup-skill\ndescription: flat one\n---', 'utf8')
+    await mkdir(join(home, 'skills', 'dup-skill'), { recursive: true })
+    await writeFile(join(home, 'skills', 'dup-skill', 'SKILL.md'), '---\nname: dup-skill\ndescription: bundle one\n---', 'utf8')
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.catalog).handler(fakeReq('GET', SKILL_HUB_API.catalog), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as CatalogResponse
+    const collisions = body.diagnostics.filter((d) => d.reason.includes('registers the same name'))
+    expect(collisions.map((d) => d.path).sort()).toEqual([
+      join(home, 'skills', 'dup-skill.md'),
+      join(home, 'skills', 'dup-skill', 'SKILL.md'),
+    ].sort())
+    expect(collisions[0].reason).toContain('"dup-skill"')
+  })
+
+  it('reclaims unreferenced trash directories when clearing the trash', async () => {
+    const trash = join(home, 'skills', '.trash')
+    await mkdir(join(trash, 'foo-1'), { recursive: true })
+    await mkdir(join(trash, 'foo-2'), { recursive: true })
+    // 名字索引只剩最新那条；foo-1 已经没有任何记录指得到它。
+    await store.addTrash({ name: 'foo', path: join(trash, 'foo-2'), movedAt: 2, sourcePath: join(home, 'skills', 'foo') })
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.sourceTrashClear).handler(fakeReq('POST', SKILL_HUB_API.sourceTrashClear), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as import('./protocol.ts').SourceTrashClearResponse
+    expect(body.deleted).toEqual(['foo'])
+    expect(body.orphans).toEqual([join(trash, 'foo-1')])
+    await expect(access(join(trash, 'foo-1'))).rejects.toThrow()
+    await expect(access(join(trash, 'foo-2'))).rejects.toThrow()
+  })
+
   it('patches display toggles on the config route', async () => {
     const res = new FakeResponse()
     await routeFor(SKILL_HUB_API.config).handler(fakeReq('POST', SKILL_HUB_API.config, { showUseCount: false }), res as never)

@@ -108,7 +108,7 @@ GitHub 仓库 ──扫描/导入──▶ ~/.dsh/skills
 
 ```bash
 npm run typecheck  # tsc --noEmit
-npm test           # 266 tests, 14 suites
+npm test           # 276 tests, 14 suites
 npm run build      # tsc + tsdown → lib/index.js + lib/client.js
 ```
 
@@ -117,8 +117,9 @@ npm run build      # tsc + tsdown → lib/index.js + lib/client.js
 ## 故障排查
 
 - `duplicate loader entry id: skill-hub` — 删掉重复安装（只留一种 `dsh plugin add`）。
-- 技能不出现 — 看诊断区（缺 frontmatter / 名称不一致 / 描述过短）。
-- 来源组空壳 — 组内技能已被删除、或禁用记录丢失（状态文件被恢复/手改）。启动时自动对账磁盘上的 `.disabled` 文件补记录；无可见成员的来源组不再渲染。
+- 技能不出现 — 看诊断区（缺 frontmatter / 名称不一致 / 描述过短 / 两种发现形态抢同一个名字：`<name>/SKILL.md` 目录包与 `<name>.md` 扁平文件可以并存，注册表只会留一个）。
+- 来源组空壳 — 组内技能已被删除、或禁用记录丢失（状态文件被恢复/手改）。启动时自动对账磁盘上的 `.disabled` 文件补记录，**并清掉文件已不存在的死记录**（手工删掉目录后留下的记录以前谁也动不了：启用、新建、删除三条路全失败）；无可见成员的来源组不再渲染。
+- 技能建不出来 / 一直显示「已禁用」— 禁用记录指向的文件已经不在了。启动时（以及下一次点「启用」时）会把记录改指到现存的 `.disabled` 文件，找不到就直接删掉记录、把名字释放出来。
 - `/` 菜单圆点消失 — dsh 内部触发源变更，目录功能不受影响。
 - 找不到配置卡片 — 在插件管理页打开本插件（侧边栏「插件」→ dsh-skill-hub），展开页面顶部的「技能中枢」卡片（默认折叠）。dsh 低于 `0.1.7-alpha.1` 时本插件无法加载（它所用的 settings API 在旧版不存在）。
 

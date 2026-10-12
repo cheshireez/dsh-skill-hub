@@ -24,7 +24,7 @@ import { SkillHubProvider } from './provider.ts'
 import { makeRoutes } from './routes.ts'
 import { createSkillStatsReader, asPersistenceSeam, type SessionPersistenceLike, type SessionQueryLike, type SkillStatsReader } from './stats.ts'
 import { SkillHubStore } from './store.ts'
-import { reconcileDisabledSkills } from './reconcile.ts'
+import { reconcileDisabledSkills, pruneStaleDisabledSkills } from './reconcile.ts'
 import { cleanupLeftoverImportDirs, setGithubToken } from './repo.ts'
 import { dshHome } from './store.ts'
 import { join } from 'node:path'
@@ -306,6 +306,16 @@ export function apply(ctx: Context, config?: Config): void {
       }
     } catch (error) {
       ctx.logger.warn('[dsh-skill-hub] startup disabled-skill reconcile failed', error)
+    }
+    // 反向对账：记录还在、文件已不在 → 修路径或删记录。不做这一步，那条记录会
+    // 把名字永久锁死（启用/新建/删除三条路都失败）。
+    try {
+      const pruned = await pruneStaleDisabledSkills(store, home)
+      if (pruned.repaired.length > 0 || pruned.removed.length > 0) {
+        ctx.logger.info(`[dsh-skill-hub] startup pruned disabled records: repaired ${pruned.repaired.length} (${pruned.repaired.map((entry) => entry.name).join(', ') || '-'}), removed ${pruned.removed.length} (${pruned.removed.join(', ') || '-'})`)
+      }
+    } catch (error) {
+      ctx.logger.warn('[dsh-skill-hub] startup disabled-record prune failed', error)
     }
   })()
 

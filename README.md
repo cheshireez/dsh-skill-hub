@@ -108,7 +108,7 @@ Host uses only `ctx.skills.snapshot/get`, `ctx.webServer.register`, `ctx.systemP
 
 ```bash
 npm run typecheck  # tsc --noEmit
-npm test           # 266 tests, 14 suites
+npm test           # 276 tests, 14 suites
 npm run build      # tsc + tsdown → lib/index.js + lib/client.js
 ```
 
@@ -117,8 +117,9 @@ npm run build      # tsc + tsdown → lib/index.js + lib/client.js
 ## Troubleshooting
 
 - `duplicate loader entry id: skill-hub` — remove the duplicate install (keep one `dsh plugin add` method).
-- Skill missing — check the diagnostics section (frontmatter / name mismatch / short description).
-- Empty source group — its skills were deleted, or their disabled records were lost (sidecar restored/hand-edited). Startup reconciles `.disabled` files on disk; source groups with no visible member are no longer rendered.
+- Skill missing — check the diagnostics section (frontmatter / name mismatch / short description / two discovery forms claiming the same name: a `<name>/SKILL.md` bundle and a `<name>.md` file can coexist on disk, and the registry keeps only one of them).
+- Empty source group — its skills were deleted, or their disabled records were lost (sidecar restored/hand-edited). Startup reconciles `.disabled` files on disk **and prunes records whose file is gone** (a record left behind by a hand-deleted directory used to be un-actionable: enable, create and delete all failed). Source groups with no visible member are no longer rendered.
+- A skill cannot be created / stays "disabled" — the disabled record pointed at a file that no longer exists. At startup (and on the next enable attempt) the record is repointed at the surviving `.disabled` file, or dropped so the name is free again.
 - Dots missing in `/` menu — dsh internals changed; catalog still works.
 - Settings card missing — open the plugin in the Plugins manager (sidebar → 插件 → dsh-skill-hub) and expand the 「技能中枢」 card at the top of the page (collapsed by default). On dsh older than `0.1.7-alpha.1` this plugin does not load at all (the settings API it targets does not exist there).
 

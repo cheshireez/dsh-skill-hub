@@ -138,6 +138,11 @@ export interface SourceTrashClearResponse {
   deleted: string[]
   /** 未能删除的技能（保留在回收站中）。 */
   failed: Array<{ name: string; error: string }>
+  /**
+   * `.trash` 里没有对应记录的残留目录（同名技能先后两次入站时，旧记录被覆盖，
+   * 目录却留了下来）。清空回收站时一并回收，这里上报它们的路径；没有则省略。
+   */
+  orphans?: string[]
 }
 
 /** 项目级技能来源（它们有 workspace 归属，不属于「个人」组）。 */
