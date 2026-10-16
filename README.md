@@ -77,7 +77,7 @@ GitHub repo ──scan/import──▶ ~/.dsh/skills
                     /api/skill-hub/* ──▶ Panel (Settings → 技能)
 ```
 
-Host uses only `ctx.skills.snapshot/get`, `ctx.webServer.register`, `ctx.systemPrompt.section`. Loopback-only routes (`127.0.0.1`/`localhost`), JSON.
+Host uses only `ctx.skills.snapshot/get`, `ctx.webServer.register`, `ctx.systemPrompt.section`. Routes sit behind dsh's own `/api` trust fence (loopback / the listener's bind address / `--trusted-host`), JSON.
 
 ## HTTP API
 

@@ -14,6 +14,8 @@ import type { SettingsForms, SettingsNamespace, SettingsPathOp } from '@deepseek
 // loader's `fiber.runtime.Config` handling) only exist here. Every official
 // plugin imports it under this name.
 import z from '@deepseek-ai/schemastery'
+// Type-only, for the `ctx.connection` augmentation (the `/api` trust fence).
+import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-system-prompt'
@@ -21,7 +23,7 @@ import type {} from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-settings'
 import { HUB_CONFIG_DEFAULTS, HUB_ENTRY_ID, HEX_COLOR_RE, resolveHubConfig, type HubConfig } from './protocol.ts'
 import { SkillHubProvider } from './provider.ts'
-import { makeRoutes } from './routes.ts'
+import { hostTrustFence, makeRoutes } from './routes.ts'
 import { createSkillStatsReader, asPersistenceSeam, type SessionPersistenceLike, type SessionQueryLike, type SkillStatsReader } from './stats.ts'
 import { SkillHubStore } from './store.ts'
 import { reconcileDisabledSkills, pruneStaleDisabledSkills } from './reconcile.ts'
@@ -132,8 +134,8 @@ const SECTION_ORDER = 152
 
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
 export const SKILL_HUB_GUIDANCE = [
-  '本机已安装 dsh-skill-hub 插件（DSH Web GUI 技能中枢）：设置 →「技能」分区为管理主页；本插件的配置页（启用/公告开关、圆点颜色、GitHub token、统计窗口）在插件管理页——侧边栏「插件」→ 本插件，是本插件自己注册的配置卡片（默认折叠，点标题展开）。能力：完整本地技能目录（项目/自定义/用户/内置全部来源，走官方 ctx.skills 注册表，含第三方 provider）；按来源与自定义分组浏览，分组/来源头部的滑动开关可一键启用/禁用整组（跨组冲突时询问）；市场：内置市场目录（精选仓库一键添加）加自定义仓库源，扫描后勾选安装，每个市场源行显示已装/可更新/上游已删数量，支持「检查全部」与「全部更新」；来源跟踪：从 GitHub 仓库（市场源或直接地址）导入的技能记录上游 repo/commit 快照，可检查更新、选择同步、上游删除时跟进删除（移入回收站可恢复，恢复后保留来源与场景归属）；个人技能（无来源记录）不跟踪；调用次数与最近使用时间统计；查看技能正文；发现诊断；新建技能向导（写入 ~/.dsh/skills 或 ~/.agents/skills）。限制：仅用户级技能（user-dsh/user-agents 根目录）可写，项目/内置/运行时技能只读展示；路由仅回环可访问。用户提到「技能管理 / 技能列表 / 技能开关 / 技能同步 / 技能市场 / 更新技能 / 新建技能」时即指本插件，请据此协作。',
-  'The dsh-skill-hub plugin is installed (the DSH Web GUI skill hub): Settings → "Skills" is the management page; the plugin\'s configuration page (enable / announcement toggles, dot colors, GitHub token, stats window) is registered by the plugin itself on its own page in the Plugins manager (sidebar → 插件 → the plugin; collapsed until you expand the title). Capabilities: full local skill catalog (project / custom / user / bundled roots via the official ctx.skills registry, including third-party providers); browsing by source and custom groups, each group header carrying a sliding switch to enable/disable the whole group in one click (cross-group conflicts prompt the user); market: a built-in catalog of curated repos (one-click add) plus custom repo sources, scan-and-install import, per-source installed / updatable / deleted-upstream badges with "check all" and "update all" actions; upstream source tracking: skills imported from GitHub repos (market sources or direct URLs) record the repo/commit snapshot, support update checks, selective sync, and follow-up deletion when the upstream removes a skill (moves it into a restorable trash; restoring keeps the source and scene membership); personal skills (no source record) are never tracked; invocation counts and last-used times; skill body inspection; discovery diagnostics; new-skill wizard (writes to ~/.dsh/skills or ~/.agents/skills). Limits: only user-level skills (user-dsh/user-agents roots) are writable; project/bundled/runtime skills are read-only; routes are loopback-only. When the user mentions "skill management / skill list / skill toggle / skill sync / skill market / update skills / new skill", this plugin is what they mean — collaborate accordingly.'
+  '本机已安装 dsh-skill-hub 插件（DSH Web GUI 技能中枢）：设置 →「技能」分区为管理主页；本插件的配置页（启用/公告开关、圆点颜色、GitHub token、统计窗口）在插件管理页——侧边栏「插件」→ 本插件，是本插件自己注册的配置卡片（默认折叠，点标题展开）。能力：完整本地技能目录（项目/自定义/用户/内置全部来源，走官方 ctx.skills 注册表，含第三方 provider）；按来源与自定义分组浏览，分组/来源头部的滑动开关可一键启用/禁用整组（跨组冲突时询问）；市场：内置市场目录（精选仓库一键添加）加自定义仓库源，扫描后勾选安装，每个市场源行显示已装/可更新/上游已删数量，支持「检查全部」与「全部更新」；来源跟踪：从 GitHub 仓库（市场源或直接地址）导入的技能记录上游 repo/commit 快照，可检查更新、选择同步、上游删除时跟进删除（移入回收站可恢复，恢复后保留来源与场景归属）；个人技能（无来源记录）不跟踪；调用次数与最近使用时间统计；查看技能正文；发现诊断；新建技能向导（写入 ~/.dsh/skills 或 ~/.agents/skills）。限制：仅用户级技能（user-dsh/user-agents 根目录）可写，项目/内置/运行时技能只读展示；路由受 dsh 自身的 /api 信任栅栏保护（回环、监听器绑定地址、--trusted-host 声明的 authority，外加浏览器会话认证），因此反代部署下与 GUI 同一套放行规则。用户提到「技能管理 / 技能列表 / 技能开关 / 技能同步 / 技能市场 / 更新技能 / 新建技能」时即指本插件，请据此协作。',
+  'The dsh-skill-hub plugin is installed (the DSH Web GUI skill hub): Settings → "Skills" is the management page; the plugin\'s configuration page (enable / announcement toggles, dot colors, GitHub token, stats window) is registered by the plugin itself on its own page in the Plugins manager (sidebar → 插件 → the plugin; collapsed until you expand the title). Capabilities: full local skill catalog (project / custom / user / bundled roots via the official ctx.skills registry, including third-party providers); browsing by source and custom groups, each group header carrying a sliding switch to enable/disable the whole group in one click (cross-group conflicts prompt the user); market: a built-in catalog of curated repos (one-click add) plus custom repo sources, scan-and-install import, per-source installed / updatable / deleted-upstream badges with "check all" and "update all" actions; upstream source tracking: skills imported from GitHub repos (market sources or direct URLs) record the repo/commit snapshot, support update checks, selective sync, and follow-up deletion when the upstream removes a skill (moves it into a restorable trash; restoring keeps the source and scene membership); personal skills (no source record) are never tracked; invocation counts and last-used times; skill body inspection; discovery diagnostics; new-skill wizard (writes to ~/.dsh/skills or ~/.agents/skills). Limits: only user-level skills (user-dsh/user-agents roots) are writable; project/bundled/runtime skills are read-only; the routes sit behind dsh\'s own /api trust fence (loopback, the listener\'s bind address, any --trusted-host authority, plus browser-session authentication), so a reverse-proxied deployment is judged exactly like the GUI around it. When the user mentions "skill management / skill list / skill toggle / skill sync / skill market / update skills / new skill", this plugin is what they mean — collaborate accordingly.'
 ].join('\n\n')
 
 /**
@@ -262,6 +264,16 @@ export function apply(ctx: Context, config?: Config): void {
         const disposers = makeRoutes({
           skills: ctx.skills,
           store,
+          // The host's own `/api` trust fence (loopback ∪ bind address ∪
+          // --trusted-host ∪ browser session). Read per request: Connection
+          // may be provided after this plugin starts, and a one-shot read here
+          // would latch the literal-loopback fallback for the whole process.
+          // A *persistent* absence means the upstream composition changed —
+          // say so once instead of silently re-creating issue #17.
+          fence: hostTrustFence(
+            () => ctx.get('connection'),
+            () => ctx.logger.warn('[dsh-skill-hub] Connection service absent: routes fall back to literal-loopback; reverse-proxy deployments will 403 until it mounts'),
+          ),
           invalidate: () => { providerControl?.invalidate() },
           stats,
           config: current,

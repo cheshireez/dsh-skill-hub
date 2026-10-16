@@ -1,6 +1,6 @@
 /**
  * routes 共享层 · 依赖视图：路由依赖接口、配置解析与可写技能解析（HTTP
- * 围栏在 ./http.ts）。从 helpers.ts 原样搬出，行为不变。
+ * 围栏在 ./http.ts）。
  */
 
 import type { ServerResponse } from 'node:http'
@@ -8,7 +8,7 @@ import type { SkillDefinition, SkillSummary } from '@deepseek-ai/dsh-skill'
 import { resolveHubConfig, type HubConfig, type WritableRoot } from '../protocol.ts'
 import { rootOfPath } from '../skillfs.ts'
 import { dshHome, type SkillHubStore } from '../store.ts'
-import { writeError } from './http.ts'
+import { writeError, type RouteFence } from './http.ts'
 
 /** Sources the hub may toggle (the user-level filesystem roots). */
 export function isWritableSource(source: string): source is WritableRoot {
@@ -27,6 +27,12 @@ export interface SkillHubRouteDeps {
     get(name: string, options?: SkillLookupLike): Promise<SkillDefinition | undefined>
   }
   store: SkillHubStore
+  /**
+   * Request fence for the whole family: returns the rejection status (401/403)
+   * or `undefined` to proceed. Production passes the host's own `/api` fence
+   * (`ctx.connection.requestRejection`); absent falls back to literal loopback.
+   */
+  fence?: RouteFence
   /** DSH home override (tests isolate the writable roots; defaults to ~/.dsh). */
   home?: string
   /** Invalidate the registry catalog cache after hub-driven mutations. */

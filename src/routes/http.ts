@@ -1,6 +1,6 @@
 /**
- * routes 共享层 · HTTP 围栏：回环信任检查、JSON 响应与错误映射、请求体读取、
- * 查询/字段读取与文件存在性检查。从 helpers.ts 原样搬出，行为不变。
+ * routes 共享层 · HTTP 围栏：请求信任栅栏（复用宿主 `/api` 模型，见 RouteFence）、
+ * JSON 响应与错误映射、请求体读取、查询/字段读取与文件存在性检查。
  */
 
 import { stat } from 'node:fs/promises'
@@ -33,6 +33,35 @@ export function isLoopbackRequest(request: IncomingMessage): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * The route family's request fence: the HTTP status a request is rejected
+ * with (`401` unauthenticated / `403` untrusted authority), or `undefined`
+ * when it may reach the handler.
+ *
+ * dsh owns **one** browser-trust model for the whole `/api` tree — loopback,
+ * the listener's own bind address, every `--trusted-host` authority, then the
+ * browser session — and publishes it as `ctx.connection.requestRejection`,
+ * whose contract is written for exactly this case ("apply Connection's
+ * Host/Origin checks ... to another Web route"). Our paths are exact routes
+ * registered beside the shared `/api` prefix, so the host's own fence never
+ * sees them; asking its entry point instead of re-deriving the rule keeps a
+ * single trust model rather than a second, stricter one. Issue #17 is what the
+ * second one cost: behind a reverse proxy the literals checkable in this file
+ * are the gateway address and the public domain, so every route answered 403
+ * while the rest of the GUI worked.
+ */
+export type RouteFence = (request: IncomingMessage) => number | undefined
+
+/**
+ * Fallback fence for a host that mounts no Connection service (unit tests, and
+ * any composition serving the webserver alone): the historical literal-loopback
+ * check, so a missing service degrades to the previous behaviour instead of an
+ * open or a dead route family.
+ */
+export function loopbackOnlyFence(request: IncomingMessage): number | undefined {
+  return isLoopbackRequest(request) ? undefined : 403
 }
 
 /** One JSON response. */

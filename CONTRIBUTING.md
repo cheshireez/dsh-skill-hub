@@ -59,7 +59,7 @@ npm run build       # tsc declarations + tsdown bundles (lib/index.js + lib/clie
 ## Code style
 
 - TypeScript, strict mode. ESM (`"type": "module"`).
-- Host routes are loopback-only by construction — keep the trust fence intact.
+- Host routes reuse dsh's own `/api` trust fence (loopback ∪ the listener's bind address ∪ `--trusted-host` authorities ∪ the browser session) — never add a second, stricter check. Issue #17 (every route 403s behind a reverse proxy) came from exactly such a duplicate.
 - The browser half uses CSS Modules; keep the settings-card chrome family-bucket-compatible.
 - Comments explain *why* (routing decisions, dsh host behaviors) more than *what*.
 

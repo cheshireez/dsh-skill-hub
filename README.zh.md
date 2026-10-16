@@ -77,7 +77,7 @@ GitHub 仓库 ──扫描/导入──▶ ~/.dsh/skills
                   /api/skill-hub/* ──▶ 面板（设置 → 技能）
 ```
 
-宿主仅用 `ctx.skills.snapshot/get`、`ctx.webServer.register`、`ctx.systemPrompt.section`。路由仅回环（`127.0.0.1`/`localhost`），JSON。
+宿主仅用 `ctx.skills.snapshot/get`、`ctx.webServer.register`、`ctx.systemPrompt.section`。路由走 dsh 自身的 `/api` 信任栅栏（回环 / 监听器绑定地址 / `--trusted-host`），JSON。
 
 ## HTTP API
 

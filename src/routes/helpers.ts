@@ -1,8 +1,7 @@
 /**
- * routes 共享层：请求围栏（回环信任/方法/总开关/JSON 体）、统一错误映射、
- * 可写技能解析、目录/分组数据装配。handler 只写业务，从这里 import。
- * 从 routes.ts 原样搬出，行为不变。
- * 本文件是聚合出口（barrel）：实现按域拆到 ./http.ts（围栏/错误映射/读体）、
+ * routes 共享层：请求栅栏（宿主 /api 信任模型 → 方法 → 总开关 → JSON 体）、
+ * 统一错误映射、可写技能解析、目录/分组数据装配。handler 只写业务，从这里 import。
+ * 本文件是聚合出口（barrel）：实现按域拆到 ./http.ts（栅栏/错误映射/读体）、
  * ./deps.ts（依赖视图/可写解析）、./collection.ts（集合装配）、
  * ./catalog-data.ts（目录装配）；对外导出面保持不变。
  */
@@ -10,12 +9,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { WebRoute, WebRouteKind } from '@deepseek-ai/dsh-host-webserver'
 import { disabledGate, type SkillHubRouteDeps } from './deps.ts'
-import { isLoopbackRequest, readJsonBody, writeError, writeRouteError } from './http.ts'
+import { loopbackOnlyFence, readJsonBody, writeError, writeRouteError } from './http.ts'
 
 export {
   MAX_JSON_BODY_BYTES,
   STORE_ERROR_STATUS,
   isLoopbackRequest,
+  loopbackOnlyFence,
   pathExists,
   queryParam,
   readJsonBody,
@@ -25,6 +25,7 @@ export {
   writeJson,
   writeRouteError,
 } from './http.ts'
+export type { RouteFence } from './http.ts'
 export {
   configOf,
   disabledGate,
@@ -83,16 +84,26 @@ export interface RouteSpec {
 
 /**
  * Wrap one handler in the shared request fences. Order matches the
- * original per-handler prologue: loopback trust → HTTP method → master
+ * original per-handler prologue: trust fence → HTTP method → master
  * switch → JSON body. The outer catch maps errors onto the JSON error
  * body (preserving RepoFetchError status codes).
+ *
+ * The trust fence is the host's `/api` model (`deps.fence`) whenever the
+ * composition mounts Connection, so a reverse-proxied deployment is judged by
+ * the same authorities dsh already trusts; without that service the historical
+ * literal-loopback check stands in.
  */
 export function createRoute(deps: SkillHubRouteDeps, spec: RouteSpec): WebRoute {
+  const fence = deps.fence ?? loopbackOnlyFence
   return {
     kind: spec.kind ?? 'exact',
     path: spec.path,
     handler: async (req, res) => {
-      if (!isLoopbackRequest(req)) { writeError(res, 403, 'forbidden: loopback-only'); return }
+      const rejection = fence(req)
+      if (rejection !== undefined) {
+        writeError(res, rejection, rejection === 401 ? 'unauthorized: browser session required' : 'forbidden: untrusted authority')
+        return
+      }
       if (!spec.methods.includes(req.method as 'GET' | 'POST')) {
         writeError(res, 405, 'method not allowed: ' + (req.method ?? ''))
         return

@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import type { IncomingMessage } from 'node:http'
 import type { SkillDefinition, SkillSummary } from '@deepseek-ai/dsh-skill'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { makeRoutes, type SkillHubRouteDeps } from './routes.ts'
+import { hostTrustFence, makeRoutes, type SkillHubRouteDeps } from './routes.ts'
 import { lastMarketCheck } from './routes/route-state.ts'
 import { SkillHubStore, statePath } from './store.ts'
 import { SKILL_HUB_API, SKILL_HUB_API_ROOT, type CatalogResponse, type ConfigResponse, type ErrorResponse, type HubConfig } from './protocol.ts'
@@ -27,12 +27,12 @@ class FakeResponse {
 }
 
 /** Minimal request double (loopback by default; body available for POST). */
-function fakeReq(method: string, url = '/', body?: unknown, remoteAddress = '127.0.0.1'): IncomingMessage {
+function fakeReq(method: string, url = '/', body?: unknown, remoteAddress = '127.0.0.1', host = '127.0.0.1:3080'): IncomingMessage {
   const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body))]
   return {
     method,
     url,
-    headers: { host: '127.0.0.1:3080' },
+    headers: { host },
     socket: { remoteAddress },
     async *[Symbol.asyncIterator]() {
       for (const chunk of chunks) yield chunk
@@ -105,10 +105,76 @@ describe('skill-hub routes', () => {
     return route
   }
 
-  it('rejects non-loopback requests', async () => {
+  it('rejects non-loopback requests with the literal fallback when no host fence is wired', async () => {
+    // deps 里没有 fence（非 web 宿主、单测）⇒ 退回历史的字面回环判定。
     const res = new FakeResponse()
     await routeFor(SKILL_HUB_API.catalog).handler(fakeReq('GET', SKILL_HUB_API.catalog, undefined, '10.0.0.5'), res as never)
     expect(res.status).toBe(403)
+    expect(res.json()).toEqual({ error: 'forbidden: untrusted authority' })
+  })
+
+  it('delegates to the host fence and passes its verdict through verbatim (issue #17)', async () => {
+    // 反代形态：socket 是网关地址、Host 是公开域名。宿主栅栏认它，本插件不许再挡一道。
+    const seen: string[] = []
+    deps.fence = (request) => {
+      seen.push(String(request.headers.host))
+      return undefined
+    }
+    const ok = new FakeResponse()
+    await routeFor(SKILL_HUB_API.catalog)
+      .handler(fakeReq('GET', SKILL_HUB_API.catalog, undefined, '172.19.0.1', 'dsh.example.com'), ok as never)
+    expect(seen).toEqual(['dsh.example.com'])
+    expect(ok.status).toBe(200)
+
+    // 宿主判定「栅栏过了但没有浏览器会话」时，401 同样原样透传。
+    deps.fence = () => 401
+    const unauth = new FakeResponse()
+    await routeFor(SKILL_HUB_API.catalog).handler(fakeReq('GET', SKILL_HUB_API.catalog), unauth as never)
+    expect(unauth.status).toBe(401)
+    expect(unauth.json()).toEqual({ error: 'unauthorized: browser session required' })
+  })
+
+  it('hostTrustFence: literal fallback without Connection, delegation with it, fail closed when it throws', () => {
+    const remote = fakeReq('GET', '/', undefined, '10.0.0.5')
+    expect(hostTrustFence(() => undefined)(remote)).toBe(403)
+    expect(hostTrustFence(() => undefined)(fakeReq('GET', '/'))).toBeUndefined()
+
+    let calls = 0
+    const delegated = hostTrustFence(() => ({
+      requestRejection: () => { calls += 1; return 401 },
+    } as never))
+    expect(delegated(remote)).toBe(401)
+    expect(calls).toBe(1)
+
+    const broken = hostTrustFence(() => ({
+      requestRejection: () => { throw new Error('fence unavailable') },
+    } as never))
+    expect(broken(remote)).toBe(403)
+  })
+
+  it('hostTrustFence: a service appearing later un-latches the fallback, and onMissing fires once (issue #17)', () => {
+    const remote = fakeReq('GET', '/', undefined, '10.0.0.5')
+    let connection: import('@deepseek-ai/dsh-client-connection').HostConnectionHandle | undefined
+    let misses = 0
+    const fence = hostTrustFence(
+      () => connection,
+      () => { misses += 1 },
+    )
+
+    // 启动早于 Connection：前几次请求走降级，且只报一次缺失。
+    expect(fence(remote)).toBe(403)
+    expect(fence(remote)).toBe(403)
+    expect(misses).toBe(1)
+
+    // Connection 上线后同一 fence 立即切换，不锁死在降级分支。
+    connection = { requestRejection: () => undefined } as unknown as import('@deepseek-ai/dsh-client-connection').HostConnectionHandle
+    expect(fence(remote)).toBeUndefined()
+    expect(misses).toBe(1)
+
+    // 服务再次消失（理论上不该发生）不重复报警，判定回到降级。
+    connection = undefined
+    expect(fence(remote)).toBe(403)
+    expect(misses).toBe(1)
   })
 
   it('reports stats unavailable without a reader, or when all usage displays are off', async () => {

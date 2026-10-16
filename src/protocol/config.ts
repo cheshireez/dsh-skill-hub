@@ -60,7 +60,7 @@ export type HubSettingsValue = {
   statsWindowDays?: number
   /** 自动统计扫描间隔（分钟）。 */
   statsScanMinutes?: number
-  /** GitHub token（明文存本地设置文档，仅回环可读；缺省为匿名）。 */
+  /** GitHub token（明文存本地设置文档，仅经 dsh 的 /api 信任栅栏可读；缺省为匿名）。 */
   githubToken?: string
 }
 
