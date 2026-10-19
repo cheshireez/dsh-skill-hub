@@ -221,7 +221,40 @@ export function apply(ctx: Context, config?: Config): void {
   // (including the config route) stays mounted even with the master switch
   // off so the settings card can always read and re-enable the hub; the
   // business routes answer 503 while disabled.
+  /**
+   * Whether this plugin's fiber is still mounted.
+   *
+   * Async work started from `apply()` — the stats wiring and the persistence
+   * probe — can settle after the fiber unloaded: a config rewrite reloads the
+   * plugin, and disable/enable tears it down. Service reads on an inactive
+   * context throw instead of returning undefined, so every continuation
+   * re-checks this before touching `ctx` (issue #19: a cold-start abort with
+   * `cannot get required service "systemPrompt" in inactive context`).
+   *
+   * The generation counters cannot cover this: they only invalidate a build
+   * superseded by a *newer* build, and teardown does not bump them.
+   */
+  const mounted = (): boolean => {
+    // `fiber` has always been public on a Cordis context, but stay tolerant of
+    // a host whose Cordis predates it: absent means "we cannot tell", and the
+    // pre-#19 behaviour is the safer answer there.
+    const fiber = (ctx as { fiber?: { uid: number | null } }).fiber
+    return fiber === undefined || fiber.uid !== null
+  }
+
+  /** Logger for continuations that may outlive the fiber (#19). */
+  const logInfo = (message: string): void => {
+    if (mounted()) ctx.logger.info(message)
+  }
+  const logWarn = (message: string, error?: unknown): void => {
+    if (!mounted()) return
+    if (error === undefined) ctx.logger.warn(message)
+    else ctx.logger.warn(message, error)
+  }
+
   const sync = (): void => {
+    // A late stats continuation may still reach here after teardown (#19).
+    if (!mounted()) return
     if (disposeSection !== undefined) {
       disposeSection()
       disposeSection = undefined
@@ -304,9 +337,9 @@ export function apply(ctx: Context, config?: Config): void {
     for (const root of [join(home, 'skills'), join(agentsHome, 'skills')]) {
       try {
         const c = await cleanupLeftoverImportDirs(root)
-        if (c > 0) ctx.logger.info(`[dsh-skill-hub] startup cleaned ${c} leftover import temp dir(s) in ${root}`)
+        if (c > 0) logInfo(`[dsh-skill-hub] startup cleaned ${c} leftover import temp dir(s) in ${root}`)
       } catch (error) {
-        ctx.logger.warn('[dsh-skill-hub] startup cleanup failed', error)
+        logWarn('[dsh-skill-hub] startup cleanup failed', error)
       }
     }
     // 对账：磁盘上已有 .disabled、sidecar 却无记录（状态文件被恢复/手改、旧版本
@@ -314,32 +347,34 @@ export function apply(ctx: Context, config?: Config): void {
     try {
       const reconciled = await reconcileDisabledSkills(store, home)
       if (reconciled.length > 0) {
-        ctx.logger.info(`[dsh-skill-hub] startup reconciled ${reconciled.length} disabled skill record(s): ${reconciled.map((entry) => entry.name).join(', ')}`)
+        logInfo(`[dsh-skill-hub] startup reconciled ${reconciled.length} disabled skill record(s): ${reconciled.map((entry) => entry.name).join(', ')}`)
       }
     } catch (error) {
-      ctx.logger.warn('[dsh-skill-hub] startup disabled-skill reconcile failed', error)
+      logWarn('[dsh-skill-hub] startup disabled-skill reconcile failed', error)
     }
     // 反向对账：记录还在、文件已不在 → 修路径或删记录。不做这一步，那条记录会
     // 把名字永久锁死（启用/新建/删除三条路都失败）。
     try {
       const pruned = await pruneStaleDisabledSkills(store, home)
       if (pruned.repaired.length > 0 || pruned.removed.length > 0) {
-        ctx.logger.info(`[dsh-skill-hub] startup pruned disabled records: repaired ${pruned.repaired.length} (${pruned.repaired.map((entry) => entry.name).join(', ') || '-'}), removed ${pruned.removed.length} (${pruned.removed.join(', ') || '-'})`)
+        logInfo(`[dsh-skill-hub] startup pruned disabled records: repaired ${pruned.repaired.length} (${pruned.repaired.map((entry) => entry.name).join(', ') || '-'}), removed ${pruned.removed.length} (${pruned.removed.join(', ') || '-'})`)
       }
     } catch (error) {
-      ctx.logger.warn('[dsh-skill-hub] startup disabled-record prune failed', error)
+      logWarn('[dsh-skill-hub] startup disabled-record prune failed', error)
     }
   })()
 
   void (async () => {
     try {
       const legacy = await store.getConfig()
+      // The read is awaited; the plugin may have unloaded meanwhile (#19).
+      if (!mounted()) return
       if (Object.keys(legacy).length > 0 && Object.keys(saved()).length === 0) {
         const settings = settingsOf()
         if (settings !== undefined) await settings.update(ENTRY_ID, legacy as Record<string, unknown>)
       }
     } catch (error) {
-      ctx.logger.warn('[dsh-skill-hub] sidecar config migration into the settings namespace failed', error)
+      logWarn('[dsh-skill-hub] sidecar config migration into the settings namespace failed', error)
     }
   })()
 
@@ -375,7 +410,7 @@ export function apply(ctx: Context, config?: Config): void {
       // 重启后面板秒出旧数、后台重扫。扫描间隔与滚动窗口都从设置命名空间
       // 实时读取——卡片里改完即生效，无需重启。
       const checkpoint = await store.getSkillStatsState().catch(() => undefined)
-      if (generation !== statsGeneration) return
+      if (generation !== statsGeneration || !mounted()) return
       const scanMinutes = (): number => {
         const value = current().statsScanMinutes
         return typeof value === 'number' && value >= 1 ? Math.floor(value) : HUB_CONFIG_DEFAULTS.statsScanMinutes
@@ -407,11 +442,11 @@ export function apply(ctx: Context, config?: Config): void {
         }),
         onCheckpoint: (next) => {
           void store.saveSkillStatsState(next).catch((error) => {
-            ctx.logger.warn('[dsh-skill-hub] persisting skill-stats checkpoint failed', error)
+            if (mounted()) ctx.logger.warn('[dsh-skill-hub] persisting skill-stats checkpoint failed', error)
           })
         },
       })
-      if (generation !== statsGeneration) return
+      if (generation !== statsGeneration || !mounted()) return
       ctx.logger.info(`[dsh-skill-hub] stats seam: ${cold === undefined ? 'session-query (fallback)' : 'session-persistence (cold)'}`)
       stats = reader
       sync()
@@ -427,15 +462,17 @@ export function apply(ctx: Context, config?: Config): void {
         const raw = (pctx as unknown as { sessionPersistence?: unknown }).sessionPersistence
         const seam = asPersistenceSeam(raw)
         if (seam === undefined) {
-          ctx.logger.warn('[dsh-skill-hub] sessionPersistence shape mismatch, staying on query fallback')
+          if (mounted()) ctx.logger.warn('[dsh-skill-hub] sessionPersistence shape mismatch, staying on query fallback')
           return
         }
         try {
           await seam.list() // probe: headers only, must succeed before trusting the cold path
         } catch (error) {
-          ctx.logger.warn('[dsh-skill-hub] persistence seam probe failed, staying on query fallback', error)
+          if (mounted()) ctx.logger.warn('[dsh-skill-hub] persistence seam probe failed, staying on query fallback', error)
           return
         }
+        // The probe is awaited, so the plugin may have unloaded meanwhile (#19).
+        if (!mounted()) return
         statsPersistence = seam
         wireStats()
       })()
