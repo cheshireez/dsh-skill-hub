@@ -84,6 +84,37 @@ async function readJson<T>(response: Response): Promise<T> {
 }
 
 /**
+ * Resolve one route path against the page's base.
+ *
+ * Every route in this family is registered on the server as a root-absolute
+ * path (`/api/skill-hub/...`), which is right there but wrong in a browser
+ * behind a reverse proxy that owns a path prefix: the page loads from
+ * `https://host/app/dsh/` while a root-absolute URL drops the prefix entirely,
+ * so the gateway answers 404 HTML and `readJson` reports "invalid JSON
+ * response" (issue #18). Resolving against `document.baseURI` is the host's own
+ * convention — `dsh-client-connection` opens its browser carrier with
+ * `new URL(path.slice(1), document.baseURI)` — so a root deployment resolves to
+ * exactly the same absolute path while a prefixed one keeps its prefix, and the
+ * gateway strips it before forwarding: the server still receives
+ * `/api/skill-hub/*`.
+ *
+ * `SKILL_HUB_API_ROOT` must stay absolute (the same constant registers the
+ * routes on the server), which is why the prefix is applied here at the single
+ * outbound boundary rather than in the constants.
+ * @param path - one route path, root-absolute unless it is already a full URL.
+ * @returns the URL to fetch.
+ */
+export function resolveApiUrl(path: string): string {
+  if (!path.startsWith('/')) return path
+  if (typeof document === 'undefined') return path
+  try {
+    return new URL(path.slice(1), document.baseURI).href
+  } catch {
+    return path
+  }
+}
+
+/**
  * Fetch with a hard timeout: a hung connection (proxy, stalled keep-alive,
  * host wedged) must never leave the panel stuck on "loading" forever — it
  * fails fast and surfaces the error banner instead.
@@ -92,7 +123,7 @@ async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ms
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), ms)
   try {
-    return await fetch(input, { ...init, signal: controller.signal })
+    return await fetch(typeof input === 'string' ? resolveApiUrl(input) : input, { ...init, signal: controller.signal })
   } finally {
     clearTimeout(timer)
   }
