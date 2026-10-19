@@ -26,6 +26,7 @@ import {
   repoSlug,
   skillManifest,
   skillPathIn,
+  SkillSecurityError,
 } from '../repo.ts'
 import { occupancyOf, rootPath } from '../skillfs.ts'
 import { errorText } from '../error-text.ts'
@@ -153,6 +154,7 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           imported: [],
           skipped: [],
           failed: [],
+          blocked: [],
           replaced: [],
           status: 'running',
           controller,
@@ -219,7 +221,13 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
                 // 取消时不记为 failed，保留已完成的 imported/skipped，直接跳出
                 break
               }
-              job.failed.push({ name: entry.name, error: errorText(error) })
+              // 安全审查拦截与「下载失败」不是一回事，分开上报：前者是刻意拒绝，
+              // 如果混进 failed 列表，用户会以为网络抖动重试即可，反而反复撞墙。
+              if (error instanceof SkillSecurityError) {
+                job.blocked.push({ name: entry.name, reason: error.message })
+              } else {
+                job.failed.push({ name: entry.name, error: errorText(error) })
+              }
             } finally {
               job.done += 1
             }
@@ -271,6 +279,7 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           imported: [...job.imported],
           skipped: [...job.skipped],
           failed: [...job.failed],
+          ...(job.blocked.length > 0 ? { blocked: [...job.blocked] } : {}),
           ...(job.replaced.length > 0 ? { replaced: [...job.replaced] } : {}),
           ...(job.error !== undefined ? { error: job.error } : {}),
         } satisfies RepoImportProgressResponse)
