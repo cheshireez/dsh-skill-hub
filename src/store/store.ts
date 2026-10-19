@@ -282,6 +282,17 @@ export class SkillHubStore {
    * Upsert one skill into a source record. When the repo has no record yet a
    * new one is created (root + commit snapshot from the caller).
    */
+  /**
+   * Record one imported skill in its repo-level source row.
+   *
+   * A repo owns exactly one source row, hence one pinned ref, so a later import
+   * must re-pin it: keeping the first import's `ref` / `commitSha` makes
+   * `sources/check` compare against a stale sha and `sources/sync` re-download
+   * the old ref over content that was imported from a tag — the "pinning a tag
+   * means nothing" failure of issue #15, reached through the bookkeeping
+   * instead of the download. An absent `ref` means the import ran on the
+   * default branch, which clears the pin rather than silently keeping it.
+   */
   async addSourceSkill(repo: string, root: string, commitSha: string, ref: string | undefined, skillName: string): Promise<void> {
     await this.ensureLoaded()
     const existing = this.sourcesByRepo.get(repo)
@@ -295,7 +306,11 @@ export class SkillHubStore {
       })
     } else {
       const skills = existing.skills.includes(skillName) ? existing.skills : [...existing.skills, skillName].sort((a, b) => a.localeCompare(b))
-      this.sourcesByRepo.set(repo, { ...existing, skills })
+      const next: SourceRecord = { ...existing, skills }
+      if (ref !== undefined && ref !== '') next.ref = ref
+      else delete next.ref
+      if (commitSha !== '') next.commitSha = commitSha
+      this.sourcesByRepo.set(repo, next)
     }
     await this.persist()
   }

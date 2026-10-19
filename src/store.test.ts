@@ -125,6 +125,31 @@ describe('SkillHubStore', () => {
     expect(again[0].manifest).toEqual({ 'skills/docx/SKILL.md': 120 })
   })
 
+  // issue #15 follow-up: one repo owns one source row, hence one pinned ref, so
+  // a later import must re-pin it. Keeping the first import's ref/sha made
+  // `check` compare a stale sha and `sync` re-download the old ref over
+  // tag-pinned content — the same "pinning a tag means nothing" failure.
+  it('re-pins the source to the ref and sha of the latest import', async () => {
+    await store.addSourceSkill('a/b', 'skills', 'sha-main', 'main', 'one')
+    expect(await store.getSource('a/b')).toMatchObject({ ref: 'main', commitSha: 'sha-main' })
+
+    await store.addSourceSkill('a/b', 'skills', 'sha-tag', 'v1.2.0', 'two')
+    expect(await store.getSource('a/b')).toMatchObject({ ref: 'v1.2.0', commitSha: 'sha-tag', skills: ['one', 'two'] })
+
+    // An import from the default branch clears the pin instead of keeping it.
+    await store.addSourceSkill('a/b', 'skills', 'sha-default', undefined, 'three')
+    const unpinned = await store.getSource('a/b')
+    expect(unpinned?.ref).toBeUndefined()
+    expect(unpinned?.commitSha).toBe('sha-default')
+    expect(unpinned?.skills).toEqual(['one', 'three', 'two'])
+
+    // The cleared pin survives the sidecar round trip.
+    const reloaded = new SkillHubStore(file)
+    const persisted = await reloaded.getSource('a/b')
+    expect(persisted?.ref).toBeUndefined()
+    expect(persisted?.commitSha).toBe('sha-default')
+  })
+
   it('drops only the given skill directory from the baseline', async () => {
     await store.addSourceSkill('a/b', 'skills', 'sha-1', undefined, 'docx')
     await store.addSourceSkill('a/b', 'skills', 'sha-1', undefined, 'pdf')
