@@ -96,6 +96,11 @@ export interface RepoImportProgressResponse {
   skipped: Array<{ name: string; reason: 'exists' }>
   failed: Array<{ name: string; error: string }>
   /**
+   * 被安全审查拦截的技能（刻意拒绝，不是下载失败）。可选：老服务端不发这个
+   * 字段，老客户端不认识也忽略即可，两侧都能平滑降级。
+   */
+  blocked?: Array<{ name: string; reason: string }>
+  /**
    * 本次导入中「让位的已禁用同名占位」名字（issue #16）：这些条目的旧目录已
    * 移入回收站，新技能随后落地。旧目录挪走即计入，下载失败时也在列。老客户端
    * 不认这个字段时忽略即可，故为可选。

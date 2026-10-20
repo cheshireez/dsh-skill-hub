@@ -9,10 +9,32 @@ import { dirname, join } from 'node:path'
 import type { RepoSkillEntry } from '../protocol.ts'
 import { errorText } from '../error-text.ts'
 import { mapConcurrent } from '../concurrency.ts'
+import { scanSkillDir, type SecurityReport } from '../security.ts'
 import { parseFrontmatter } from '../skillfs.ts'
 import { NO_COMPRESSION, RepoFetchError, fetchError, githubAuthHeaders, isAbortError } from './github-client.ts'
 import { relativeToSkillDir } from './discovery.ts'
 import type { RepoFile } from './types.ts'
+
+/**
+ * A downloaded skill was refused by the security review.
+ *
+ * Carries the report so callers can surface the exact rules that fired instead
+ * of a generic failure: "refused" without the reason leaves the user unable to
+ * tell a false positive from a real payload.
+ */
+export class SkillSecurityError extends RepoFetchError {
+  readonly report: SecurityReport
+
+  constructor(report: SecurityReport) {
+    const top = report.findings.slice(0, 6).map((finding) => {
+      const where = finding.line > 0 ? finding.file + ':' + finding.line : finding.file
+      return where + ' — ' + finding.message
+    }).join('; ')
+    super('blocked by the skill security review. ' + top, 422)
+    this.name = 'SkillSecurityError'
+    this.report = report
+  }
+}
 
 /**
  * Download one GitHub file as a buffer. Tries raw.githubusercontent.com
@@ -58,9 +80,16 @@ export async function downloadGitHubFile(repo: string, ref: string, path: string
 }
 
 /**
- * Download a full skill directory into a temporary dir, validate SKILL.md,
- * then atomically rename it into place. The target root is created when missing.
- * Callers pass a target root and a skill entry plus its collected files.
+ * Download a full skill directory into a temporary dir, audit it, validate
+ * SKILL.md, then atomically rename it into place. The target root is created
+ * when missing. Callers pass a target root and a skill entry plus its collected
+ * files.
+ *
+ * The audit sits between "files are on disk in the staging dir" and "files are
+ * visible as a skill". A blocked skill throws `SkillSecurityError` and the
+ * existing `finally` removes the staging dir, so nothing reaches the skill root
+ * — a review that runs after the rename could only report damage, not prevent
+ * it.
  */
 export async function downloadRepoSkill(
   repo: string,
@@ -71,7 +100,7 @@ export async function downloadRepoSkill(
   fetchImpl: typeof fetch = fetch,
   signal?: AbortSignal,
   onProgress?: (bytes: number, file: string) => void,
-): Promise<{ targetDir: string; skillPath: string }> {
+): Promise<{ targetDir: string; skillPath: string; security: SecurityReport }> {
   if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
   const targetDir = join(targetRoot, entry.name)
   await mkdir(targetRoot, { recursive: true })
@@ -105,9 +134,13 @@ export async function downloadRepoSkill(
       throw new RepoFetchError('downloaded skill declares name "' + parsed.value.name + '", expected "' + entry.name + '"', 422)
     }
 
+    // Security review, still inside the staging dir.
+    const security = scanSkillDir(tempDir, entry.name)
+    if (security.verdict === 'blocked') throw new SkillSecurityError(security)
+
     await rename(tempDir, targetDir)
     renamed = true
-    return { targetDir, skillPath: join(targetDir, 'SKILL.md') }
+    return { targetDir, skillPath: join(targetDir, 'SKILL.md'), security }
   } finally {
     if (!renamed) {
       // 尽力清理临时目录，失败只打日志，不再静默吞掉；finally 保证 abort/异常都能清理

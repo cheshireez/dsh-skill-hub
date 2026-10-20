@@ -53,6 +53,11 @@ export interface ImportJob {
   skipped: Array<{ name: string; reason: 'exists' }>
   failed: Array<{ name: string; error: string }>
   /**
+   * 被安全审查拦截的技能（刻意拒绝，不是下载失败）。与 failed 分开上报：failed
+   * 可以重试，blocked 重试只会再撞一次同样的规则。
+   */
+  blocked: Array<{ name: string; reason: string }>
+  /**
    * 导入时被移入回收站让位的「已禁用同名占位」名字（issue #16）。占位已挪走
    * 即计入，即使随后的下载失败也在列 —— 否则用户不知道自己的占位不见了。
    */

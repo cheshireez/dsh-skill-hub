@@ -45,4 +45,4 @@ export {
   loadRepoTreeAt,
 } from './repo/api.ts'
 
-export { downloadGitHubFile, downloadRepoSkill, cleanupLeftoverImportDirs } from './repo/install.ts'
+export { downloadGitHubFile, downloadRepoSkill, cleanupLeftoverImportDirs, SkillSecurityError } from './repo/install.ts'
