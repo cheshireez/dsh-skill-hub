@@ -212,6 +212,6 @@ export function useSkillHub(api: SkillHubApi) {
     clearScan: marketFlow.clearScan,
     checkMarket: marketFlow.checkMarket, loadMarketStats: marketFlow.loadMarketStats,
     syncMarketSource: marketFlow.syncMarketSource, confirmMarketSync: marketFlow.confirmMarketSync,
-    updateAll: marketFlow.updateAll, create: catalogFlow.create,
+    updateAll: marketFlow.updateAll, create: catalogFlow.create, reloadCatalog: catalogFlow.load,
   }
 }

@@ -26,6 +26,7 @@ import { SourcesView } from './SourcesView.tsx'
 import { ScenesView } from './ScenesView.tsx'
 import { MarketView } from './MarketView.tsx'
 import { PanelDialogs } from './PanelDialogs.tsx'
+import { ForeignImportDialog } from './ForeignImportDialog.tsx'
 import { useSkillHub } from './useSkillHub.ts'
 import css from './panel.module.css'
 
@@ -37,6 +38,8 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
   const hub = useSkillHub(props.api)
   /** 工作区输入草稿：回车才应用，避免每次按键都触发目录重拉。 */
   const [workspaceDraft, setWorkspaceDraft] = useState('')
+  /** 「从其他 Agent 导入」弹窗开合。 */
+  const [showForeign, setShowForeign] = useState(false)
   /** 「筛选」面板开合（来源 + 调用方式收进这里；搜索/排序/视图切换始终可见）。 */
   const [filtersOpen, setFiltersOpen] = useState(false)
   const {
@@ -52,7 +55,7 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
     setConfirmClearTrash, setBranchChoice, setMarketSyncDialog, setEditingTag, setEditName, setMembersDraft, setEditSearch,
     setShowLegend, setEditMode,
     checkUpdate, loadMarket, checkSources, requestSync, requestDelete, restoreTrash, clearTrash, runDeleteSkill, runDeleteGroup,
-    runConfirmed, resolveConflict, confirmBranchChoice, confirmMarketSync, create, saveTag, deleteTag, enableDisabled,
+    runConfirmed, resolveConflict, confirmBranchChoice, confirmMarketSync, create, saveTag, deleteTag, enableDisabled, reloadCatalog,
   } = hub
   const { shortenedCount, fixingPaths, clearListFilters } = hub
 
@@ -171,9 +174,21 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
         </span>
         <button type='button' className={css.legendToggle + (showLegend ? ' ' + css.legendToggleActive : '')} onClick={() => { setShowLegend((value) => !value) }} title={tt('legend.hint')}>?</button>
         <span className={css.actions}>
+          <button type='button' className={css.button} onClick={() => { setShowForeign(true) }}>{tt('foreign.open')}</button>
           <button type='button' className={css.button + ' ' + css.primary} onClick={() => { setShowForm((value) => !value) }}>{tt('panel.new')}</button>
         </span>
       </div>
+
+      {showForeign ? (
+        <ForeignImportDialog
+          api={props.api}
+          onClose={() => { setShowForeign(false) }}
+          onImported={(imported, replaced) => {
+            void reloadCatalog()
+            setSuccessBanner(tt(replaced > 0 ? 'foreign.importedReplacedBanner' : 'foreign.importedBanner', { count: imported.length, replaced }))
+          }}
+        />
+      ) : null}
 
       {showForm ? (
         <form className={css.form} onSubmit={(event) => { void create(event) }}>
@@ -291,6 +306,17 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
             </div>
           ) : null}
 
+          {catalog !== null && catalog.announcement !== undefined && catalog.announcement.skills > 0 ? (
+            <div className={css.hintLine} style={{ margin: '2px 2px 0', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <span title={tt('panel.announcementHint', { budget: catalog.announcement.budget })}>
+                {tt('panel.announcement', { chars: catalog.announcement.chars, tokens: catalog.announcement.approxTokens, skills: catalog.announcement.skills })}
+              </span>
+              {catalog.announcement.overBudget
+                ? <span style={{ color: 'var(--hub-danger)' }}>{tt('panel.announcementOver', { budget: catalog.announcement.budget })}</span>
+                : null}
+            </div>
+          ) : null}
+
           {filtered.length === 0 && search.trim() !== '' ? <div className={css.empty}>{tt('panel.empty')}</div> : null}
           {filtered.length === 0 && search.trim() === '' && catalog.skills.length === 0 && catalog.disabled.length === 0 && catalog.diagnostics.length === 0
             ? <div className={css.empty}>{tt('panel.emptyAll')}</div>
@@ -319,10 +345,13 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
           {catalog.diagnostics.length > 0 ? (
             <section className={css.section}>
               <div className={css.sectionTitle}>{tt('panel.diagnostics')}</div>
-              {catalog.diagnostics.map((entry) => (
-                <div key={entry.path} className={css.diagRow} style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
+              {catalog.diagnostics.map((entry, index) => (
+                <div key={entry.path + '|' + String(index)} className={css.diagRow + (entry.severity === 'block' ? ' ' + css.diagRowBlock : '')} style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
                   <div style={{ flex:1, minWidth:0 }}>
-                    <div className={css.diagPath}>{entry.path}</div>
+                    <div className={css.diagPath}>
+                      {entry.kind === 'security' ? <span className={css.auditBadge}>{tt('panel.auditBadge')}</span> : null}
+                      {entry.path}
+                    </div>
                     <div className={css.diagReason}>{entry.reason}</div>
                   </div>
                   {entry.fixable === true ? (
@@ -350,6 +379,7 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
         confirmDialog={confirmDialog}
         setConfirmDialog={setConfirmDialog}
         runConfirmed={runConfirmed}
+        sourceCheck={sourceCheck}
         branchChoice={branchChoice}
         branchBusy={branchBusy}
         setBranchChoice={setBranchChoice}

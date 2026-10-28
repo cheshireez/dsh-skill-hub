@@ -79,6 +79,16 @@ export const zhMarket = {
   'repo.root.skills': 'skills',
   'repo.root.designTemplates': 'design-templates',
   'repo.root.generic': '{root}',
+  'foreign.open': '从其他 Agent 导入',
+  'foreign.title': '从其他 Agent 导入',
+  'foreign.text': '读取 Claude Code / Codex / Cursor 等工具的用户级技能目录（只读），把所选技能复制到 ~/.dsh/skills。原目录不受影响。',
+  'foreign.empty': '没有在这些工具的技能目录里发现技能。',
+  'foreign.exists': '已存在',
+  'foreign.import': '导入所选（{count}）',
+  'foreign.importing': '导入中…',
+  'foreign.skipped': '{count} 个因同名已存在被跳过。',
+  'foreign.importedBanner': '已导入 {count} 个技能。',
+  'foreign.importedReplacedBanner': '已导入 {count} 个技能，另有 {replaced} 个同名占位被移入回收站（可恢复）。',
 } as const
 
 export const enMarket: Record<keyof typeof zhMarket, string> = {
@@ -161,4 +171,14 @@ export const enMarket: Record<keyof typeof zhMarket, string> = {
   'repo.root.skills': 'Skills',
   'repo.root.designTemplates': 'Templates',
   'repo.root.generic': '{root}',
+  'foreign.open': 'Import from another agent',
+  'foreign.title': 'Import from another agent',
+  'foreign.text': 'Reads the user-level skill folders of Claude Code / Codex / Cursor and friends (read-only) and copies the selected skills into ~/.dsh/skills. The originals are left untouched.',
+  'foreign.empty': 'No skills found in those tool folders.',
+  'foreign.exists': 'exists',
+  'foreign.import': 'Import {count}',
+  'foreign.importing': 'Importing…',
+  'foreign.skipped': '{count} skipped because the name already exists.',
+  'foreign.importedBanner': 'Imported {count} skill(s).',
+  'foreign.importedReplacedBanner': 'Imported {count} skill(s); {replaced} same-name placeholder(s) moved to trash (restorable).',
 }

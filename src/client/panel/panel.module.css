@@ -70,6 +70,10 @@
 
 .empty { font-size: 13px; color: var(--hub-text-3); padding: 20px 0; text-align: center; }
 .diagRow { font-size: 12px; padding: 9px 14px; border-left: 3px solid var(--hub-warn); background: rgba(210,153,34,.06); }
+/* 审计条目与发现诊断共用一块 UI：block 级换成红色边框，一眼分得出「文件没加载」
+   和「文件能加载但正文有问题」。 */
+.diagRowBlock { border-left-color: var(--hub-danger); background: rgba(209,36,47,.06); }
+.auditBadge { display: inline-block; margin-right: 6px; padding: 0 5px; border-radius: 4px; font-size: 11px; font-weight: 700; color: var(--hub-danger); background: rgba(209,36,47,.12); vertical-align: 1px; }
 .diagPath { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--hub-text-2); word-break: break-all; }
 .diagReason { color: var(--hub-text-3); margin-top: 1px; }
 .updateLink { color: inherit; font-weight: 600; text-decoration: underline; }
@@ -163,6 +167,8 @@
 .statusOk { color: var(--hub-success); border-color: currentColor; background: transparent; }
 .statusUpdated { color: var(--hub-warn); border-color: currentColor; background: rgba(210,153,34,.08); }
 .statusError { color: var(--hub-danger); border-color: currentColor; background: rgba(209,36,47,.08); }
+/* 本地已改动：既不是上游有更新，也不是错误 —— 是「这份磁盘内容和你导入的不一样」。 */
+.statusLocal { color: var(--hub-accent); border-color: currentColor; background: rgba(47,129,247,.08); }
 
 /* Clickable status badge (group-header re-check affordance). */
 .statusWrap { display: inline-flex; gap: 4px; align-items: center; border: none; background: none; padding: 0; cursor: pointer; font-family: inherit; }

@@ -125,6 +125,30 @@ describe('SkillHubStore', () => {
     expect(again[0].manifest).toEqual({ 'skills/docx/SKILL.md': 120 })
   })
 
+  it('persists a per-skill local hash across reloads (hydrate must not whitelist it away)', async () => {
+    await store.addSourceSkill('a/b', 'skills', 'sha-1', undefined, 'one')
+    await store.addSourceSkill('a/b', 'skills', 'sha-1', undefined, 'two')
+    await store.setSourceSkillHash('a/b', 'one', 'hash-one')
+    await store.setSourceSkillHash('a/b', 'two', 'hash-two')
+    // hydrateMigratedState 每次装载都会白名单重建来源记录：漏掉新字段就会
+    // 「写得进去、读不回来」，第一次 check 之后哈希全丢。
+    const reloaded = new SkillHubStore(file)
+    expect((await reloaded.getSource('a/b'))?.localHashes).toEqual({ one: 'hash-one', two: 'hash-two' })
+  })
+
+  it('drops hashes for skills that leave the source', async () => {
+    await store.addSourceSkill('a/b', 'skills', 'sha-1', undefined, 'one')
+    await store.addSourceSkill('a/b', 'skills', 'sha-1', undefined, 'two')
+    await store.setSourceSkillHash('a/b', 'one', 'hash-one')
+    await store.setSourceSkillHash('a/b', 'two', 'hash-two')
+    // 裁剪来源成员：留下的技能保留哈希，被移除的不能再留着（同名技能下次
+    // 导入会拿旧哈希比对，误报「本地已改」）。
+    await store.setSourceSkills('a/b', ['two'])
+    expect((await store.getSource('a/b'))?.localHashes).toEqual({ two: 'hash-two' })
+    await store.removeSkillFromSources('two')
+    expect(await store.getSource('a/b')).toBeUndefined()
+  })
+
   // issue #15 follow-up: one repo owns one source row, hence one pinned ref, so
   // a later import must re-pin it. Keeping the first import's ref/sha made
   // `check` compare a stale sha and `sync` re-download the old ref over

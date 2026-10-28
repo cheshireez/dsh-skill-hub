@@ -7,6 +7,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { SkillDefinition, SkillSummary } from '@deepseek-ai/dsh-skill'
 import {
+  computeAnnouncementBudget,
   isProjectSource,
   type CatalogResponse,
   type CatalogSkill,
@@ -213,6 +214,7 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
     skills,
     disabled,
     diagnostics,
+    announcement: computeAnnouncementBudget(skills),
     ...(duplicateNames.length > 0 ? { duplicateNames } : {}),
   }
 }

@@ -25,6 +25,7 @@ import { marketRoutes } from './routes/market.ts'
 import { repoImportRoutes } from './routes/repo-import.ts'
 import { groupRoutes } from './routes/groups.ts'
 import { sourceRoutes } from './routes/sources.ts'
+import { foreignRoutes } from './routes/foreign.ts'
 
 export type { SkillHubRouteDeps, SkillLookupLike } from './routes/helpers.ts'
 export type { RouteFence } from './routes/http.ts'
@@ -83,6 +84,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
     ...repoImportRoutes(deps),
     ...groupRoutes(deps),
     ...sourceRoutes(deps),
+    ...foreignRoutes(deps),
   ]
   return [
     ...specs.map((spec) => createRoute(deps, spec)),

@@ -36,9 +36,13 @@ Two surfaces — the hub panel lives at **Settings → 技能**, and this plugin
 - **Toggle** — per-skill switches and per-group tri-state switches with a conflict dialog (close all / keep on). Disabling renames the discovery file (never deletes); disabled skills stay inspectable and re-enableable from their detail page. Only `~/.dsh/skills` & `~/.agents/skills` are writable; everything else is read-only.
 - **Organize** — scenes (tags) plus auto-aggregated source collections, all drag-reorderable and persisted in `~/.dsh/dsh-skill-hub.json`. Edit mode reveals delete/reorder without cluttering the read view.
 - **Diagnose & fix** — files the provider skips (missing frontmatter, bad YAML, name mismatch, short description) show up with reasons; auto-fixable ones (e.g. unquoted `:` in descriptions) get a one-click Fix button.
+- **Content audit** — enabled skills' bodies (`SKILL.md`) are checked too: raw ESC control characters, Unicode tag characters, and bidirectional controls (these three make "reviewed" not equal "seen" — a market import carrying them is refused outright), zero-width characters, `curl … | sh` remote execution, SSH/cloud-credential/keychain paths, over-long descriptions, and the 2 MiB per-file / 10 MiB per-skill / 500-file limits. Pure local static matching: no model call, no network. A market import scans the whole bundle (including `scripts/`); the standing check only reads `SKILL.md` — it runs on every 5-second poll, and walking every directory would slow the panel down.
+- **Announcement budget** — the name + description total that the first progressive-disclosure layer injects comes back with the catalog, so the panel can show characters and an estimated token count; past 8000 characters it turns red (clients truncate the tail there, which shows up as "installed but never triggers").
 - **Scaffold** — new-skill wizard writing to `~/.dsh/skills` or `~/.agents/skills` (`SKILL.md` template below).
-- **Market** — built-in curated repos plus custom `owner/repo` sources. Any top-level directory containing `SKILL.md` scans as a root (no allowlist), and a `SKILL.md` at the repo root itself scans as a single skill named after the repo (minus repo tooling such as `.github/`). Async import with byte-level progress and cancel. Each source pins a version — click the ref badge to switch between releases, branches, or a custom ref.
+- **Market** — built-in curated repos plus custom `owner/repo` sources. Any top-level directory containing `SKILL.md` scans as a root (no allowlist), and a `SKILL.md` at the repo root itself scans as a single skill named after the repo (minus repo tooling such as `.github/`). Async import with byte-level progress and cancel. Each source pins a version — click the ref badge to switch between releases, branches, or a custom ref. Every import passes the content audit first: a skill with a blocking finding is refused as a whole and its temp directory is removed (nothing left on disk).
 - **Track updates** — imported skills record a repo + commit snapshot. Check all / update-all, per-source badges (installed / updatable / deleted upstream / new release). Sync overwrites local edits (with confirm); upstream deletions move into a restorable trash that keeps source and scene membership.
+- **Local-edit detection** — a content hash of the whole skill (path + size + body) is sampled right after the bytes land and compared on every check: skills that no longer match get an "edited locally" badge, and the sync dialog marks exactly which ones the overwrite will discard. Records without a hash are treated as unknown, never as edited.
+- **Import from another agent** — read-only scan of the user-level skill folders of Claude Code / Codex / Cursor / Gemini CLI / Copilot / OpenCode / Goose, then copy the selected ones into `~/.dsh/skills`. The originals are untouched; flat skills land as directory bundles; the same content audit and size caps apply.
 - **Stats** — per-skill call counts + last-used times from session logs (incremental cache), group summaries; window and scan interval live-configurable from the settings card.
 - **Settings card** — registered on the plugin's own page in the **Plugins manager** (sidebar → 插件 → dsh-skill-hub; collapsed until you expand the title): master switch, announce-to-agent, invocation dot colors, usage display toggles, stats window/interval.
 
@@ -51,6 +55,8 @@ Two surfaces — the hub panel lives at **Settings → 技能**, and this plugin
 | Catalog | user roots, self-scanned | `ctx.skills` registry, all roots + third-party |
 | Toggle | ❌ | ✅ per-skill + per-group, never deletes |
 | Diagnostics | ❌ | ✅ reasons + one-click fix |
+| Content audit | ❌ | ✅ hidden characters / dangerous commands / credential paths, blocked at import |
+| Cross-agent import | ❌ | ✅ read-only scan of 7 tool folders, pick and adopt |
 | Market | ❌ | ✅ built-in + custom, version pins, update-all |
 | Source tracking | ❌ | ✅ check/sync/trash with restore |
 | Stats | ❌ | ✅ counts + last-used |
@@ -101,6 +107,8 @@ Host uses only `ctx.skills.snapshot/get`, `ctx.webServer.register`, `ctx.systemP
 | `/api/skill-hub/repo/import/progress?jobId=` | GET | poll job |
 | `/api/skill-hub/repo/import/cancel` | POST | cancel job |
 | `/api/skill-hub/sources` etc. | GET/POST | list/check/sync/delete/restore/clear trash |
+| `/api/skill-hub/foreign` | GET | read-only scan of other agents' user-level skill folders |
+| `/api/skill-hub/foreign/import` | POST | `{items:[{agent,name}]}` copied into `~/.dsh/skills` |
 | `/api/skill-hub/update` | GET | plugin latest release |
 | unknown `/api/skill-hub/*` | GET/POST | `404 {error}` naming the path — a typo must not read as an auth failure (the SPA fallback answers 401 for `/api/*` it does not own) |
 
@@ -108,7 +116,7 @@ Host uses only `ctx.skills.snapshot/get`, `ctx.webServer.register`, `ctx.systemP
 
 ```bash
 npm run typecheck  # tsc --noEmit
-npm test           # 295 tests, 16 suites
+npm test           # 366 tests, 20 suites
 npm run build      # tsc + tsdown → lib/index.js + lib/client.js
 ```
 

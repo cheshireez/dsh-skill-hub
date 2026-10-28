@@ -32,30 +32,40 @@ export function SourceStatusBadge(props: {
       </button>
     )
   }
-  const badges = ((): JSX.Element | null => {
+  // 单一容器：状态徽章与「本地改动」是并列关系，多套一层 flex 会多出一份 gap。
+  const items: JSX.Element[] = (() => {
     if (check.error !== undefined) {
-      return <span className={css.statusBadge + ' ' + css.statusError}>{tt('source.error')}</span>
+      return [<span key='error' className={css.statusBadge + ' ' + css.statusError}>{tt('source.error')}</span>]
     }
     if (check.throttled === true) {
-      return <span className={css.statusBadge}>{tt('source.throttled')}</span>
+      return [<span key='throttled' className={css.statusBadge}>{tt('source.throttled')}</span>]
     }
     if (check.unverified === true) {
-      return <span className={css.statusBadge}>{tt('source.unverified')}</span>
+      return [<span key='unverified' className={css.statusBadge}>{tt('source.unverified')}</span>]
     }
     if (check.changed) {
-      return (
-        <span className={css.statusBadges}>
-          {check.updated.length > 0 ? <span className={css.statusBadge + ' ' + css.statusUpdated}>{tt('source.updated', { count: check.updated.length })}</span> : null}
-          {check.deleted.length > 0 ? <span className={css.statusBadge + ' ' + css.statusError}>{tt('source.deleted', { count: check.deleted.length })}</span> : null}
-        </span>
-      )
+      return [
+        ...(check.updated.length > 0 ? [<span key='updated' className={css.statusBadge + ' ' + css.statusUpdated}>{tt('source.updated', { count: check.updated.length })}</span>] : []),
+        ...(check.deleted.length > 0 ? [<span key='deleted' className={css.statusBadge + ' ' + css.statusError}>{tt('source.deleted', { count: check.deleted.length })}</span>] : []),
+      ]
     }
-    return <span className={css.statusBadge + ' ' + css.statusOk}>{tt('source.upToDate')}</span>
+    return [<span key='ok' className={css.statusBadge + ' ' + css.statusOk}>{tt('source.upToDate')}</span>]
   })()
-  if (onCheck === undefined) return badges
+  // 本地改动与上游状态正交：上游没变时它同样存在，所以挂在状态旁边而不是
+  // 塞进状态分支里。
+  const modified = check.localModified ?? []
+  if (modified.length > 0) {
+    items.push(
+      <span key='local' className={css.statusBadge + ' ' + css.statusLocal} title={tt('source.localModifiedHint') + '\n' + modified.join(', ')}>
+        {tt('source.localModified', { count: modified.length })}
+      </span>,
+    )
+  }
+  const combined = <span className={css.statusBadges}>{items}</span>
+  if (onCheck === undefined) return combined
   return (
     <button type='button' className={css.statusWrap} title={tt('source.checkHint')} onClick={onCheck}>
-      {badges}
+      {combined}
     </button>
   )
 }

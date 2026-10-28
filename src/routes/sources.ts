@@ -30,8 +30,9 @@ import {
   skillFileAt,
   skillManifest,
 } from '../repo.ts'
-import { clearTrash, occupancyOf, restoreSkill, rootOfPath, rootPath, trashSkill, trashSourceOf, WRITABLE_ROOTS } from '../skillfs.ts'
+import { clearTrash, hashSkillAt, occupancyOf, restoreSkill, rootOfPath, rootPath, trashSkill, trashSourceOf, WRITABLE_ROOTS } from '../skillfs.ts'
 import { errorText } from '../error-text.ts'
+import { mapConcurrent } from '../concurrency.ts'
 import {
   buildCollections,
   homeOf,
@@ -44,6 +45,32 @@ import {
   type SkillHubRouteDeps,
 } from './helpers.ts'
 import { MIN_CHECK_INTERVAL_MS, lastSourceCheck, replaceInPlace, retireNamePlaceholders } from './route-state.ts'
+
+/**
+ * 本地被改过的技能：磁盘内容哈希 ≠ 导入/同步时记录的哈希。
+ *
+ * 只对「记录里已有哈希」的技能判定 —— 旧记录没采集过哈希，硬比会得到
+ * 「全部已改」的假警报。技能目录读不到（被删/被移走）同样不算改过：
+ * 那是另一种状态，由发现诊断去报。
+ */
+async function localModifiedSkills(source: { skills: readonly string[]; localHashes?: Record<string, string> }, home: string): Promise<string[]> {
+  const hashes = source.localHashes
+  if (hashes === undefined || Object.keys(hashes).length === 0) return []
+  const base = rootPath('user-dsh', home)
+  const modified: string[] = []
+  // 有界并发，与 scanDiagnostics 同一理由：一个来源可能跟踪几十个技能，
+  // 裸 Promise.all 会同时打开上百个文件句柄。
+  await mapConcurrent(source.skills, 8, async (name) => {
+    const expected = hashes[name]
+    if (expected === undefined) return
+    const occupancy = await occupancyOf(base, name)
+    const path = occupancy.enabled[0] ?? occupancy.disabled[0]
+    if (path === undefined) return
+    const actual = await hashSkillAt(path)
+    if (actual !== undefined && actual !== expected) modified.push(name)
+  })
+  return modified.sort((a, b) => a.localeCompare(b))
+}
 
 /** 来源跟踪域全部路由 spec（由 routes.ts 经 createRoute 包上统一围栏）。 */
 export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
@@ -78,9 +105,16 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         if (only !== undefined && source === undefined) { writeError(res, 404, 'source not found: ' + only); return }
         const sources = source !== undefined ? [source] : await deps.store.listSources()
         if (lastSourceCheck.size > 500) lastSourceCheck.clear()
+        const home = homeOf(deps)
         const results: SourceCheckResult[] = []
         for (const item of sources) {
-          const base = { repo: item.repo, ...(item.ref !== undefined ? { ref: item.ref } : {}) }
+          // 本地改动是磁盘事实，与网络检查成败无关，所以放在节流判断之前。
+          const modified = await localModifiedSkills(item, home)
+          const base = {
+            repo: item.repo,
+            ...(item.ref !== undefined ? { ref: item.ref } : {}),
+            ...(modified.length > 0 ? { localModified: modified } : {}),
+          }
           const now = Date.now()
           const last = lastSourceCheck.get(item.repo) ?? 0
           if (now - last < MIN_CHECK_INTERVAL_MS) {
@@ -131,6 +165,7 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         const targetRoot = rootPath('user-dsh', homeOf(deps))
         await mkdir(targetRoot, { recursive: true })
         const synced: string[] = []
+        const overwritten: string[] = []
         const failed: Array<{ name: string; error: string }> = []
         for (const name of targets) {
           // Sync writes under the user root: only accept real skill names
@@ -154,6 +189,14 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             // 落盘位置永远是目录包，所以本地无论是目录包还是扁平文件（启用或禁用）
             // 都得先让开，否则同名两形态会并存（issue #16 类）。
             const download = () => downloadRepoSkill(repo, latest.commitSha, entry, files, targetRoot)
+            // 覆盖前的如实上报：本地内容与记录不符时，这次同步会丢掉用户的改动。
+            // 是否继续由调用方（GUI 确认弹窗）决定，这里只负责不隐瞒。
+            const expectedHash = source.localHashes?.[name]
+            const localPath = occupancy.enabled[0] ?? occupancy.disabled[0]
+            if (expectedHash !== undefined && localPath !== undefined) {
+              const actualHash = await hashSkillAt(localPath)
+              if (actualHash !== undefined && actualHash !== expectedHash) overwritten.push(name)
+            }
             // 1) 禁用件与空壳让位（顺带清掉 sidecar 禁用记录）。
             await retireNamePlaceholders(deps, targetRoot, name)
             // 2) 启用件按「替换」语义处理：先挪到点前缀备份，下载失败则原样恢复。
@@ -175,6 +218,13 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
               await deps.store.removeDisabled(name)
             }
             await deps.store.mergeSourceManifest(repo, skillManifest(tree, entry.dir), entry.dir)
+            // 落盘后的实际内容才是新基线：禁用态文件已改名，所以要重新解析占位。
+            const settled = await occupancyOf(targetRoot, name)
+            const settledPath = settled.enabled[0] ?? settled.disabled[0]
+            if (settledPath !== undefined) {
+              const hash = await hashSkillAt(settledPath)
+              if (hash !== undefined) await deps.store.setSourceSkillHash(repo, name, hash)
+            }
             synced.push(name)
           } catch (error) {
             failed.push({ name, error: errorText(error) })
@@ -187,7 +237,7 @@ export function sourceRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           await deps.store.setSourceCommit(repo, latest.commitSha)
         }
         deps.invalidate?.()
-        writeJson(res, 200, { ok: true, repo, commitSha: latest.commitSha, synced, failed } satisfies SourceSyncResponse)
+        writeJson(res, 200, { ok: true, repo, commitSha: latest.commitSha, synced, ...(overwritten.length > 0 ? { overwritten } : {}), failed } satisfies SourceSyncResponse)
       },
     },
     // ------------------------------------------------------- sources/delete

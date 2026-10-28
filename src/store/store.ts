@@ -324,7 +324,18 @@ export class SkillHubStore {
     if (names.length === 0) {
       this.sourcesByRepo.delete(repo)
     } else {
-      this.sourcesByRepo.set(repo, { ...existing, skills: names })
+      const next: SourceRecord = { ...existing, skills: names }
+      // 被移出来源的技能不该留着哈希：下次同名导入会拿旧哈希比对，误报「本地已改」。
+      if (existing.localHashes !== undefined) {
+        const localHashes: Record<string, string> = {}
+        for (const name of names) {
+          const hash = existing.localHashes[name]
+          if (hash !== undefined) localHashes[name] = hash
+        }
+        if (Object.keys(localHashes).length > 0) next.localHashes = localHashes
+        else delete next.localHashes
+      }
+      this.sourcesByRepo.set(repo, next)
     }
     await this.persist()
     return this.sourcesByRepo.get(repo)
@@ -337,8 +348,17 @@ export class SkillHubStore {
     for (const [repo, source] of this.sourcesByRepo) {
       if (!source.skills.includes(name)) continue
       const skills = source.skills.filter((n) => n !== name)
-      if (skills.length === 0) this.sourcesByRepo.delete(repo)
-      else this.sourcesByRepo.set(repo, { ...source, skills })
+      if (skills.length === 0) {
+        this.sourcesByRepo.delete(repo)
+      } else {
+        // 名字没了，哈希也没有意义；留着会让同名技能下次导入时被误判成「已改」。
+        const localHashes: Record<string, string> = {}
+        for (const [key, value] of Object.entries(source.localHashes ?? {})) if (key !== name) localHashes[key] = value
+        const next: SourceRecord = { ...source, skills }
+        if (Object.keys(localHashes).length > 0) next.localHashes = localHashes
+        else delete next.localHashes
+        this.sourcesByRepo.set(repo, next)
+      }
       changed = true
     }
     if (changed) await this.persist()
@@ -350,6 +370,19 @@ export class SkillHubStore {
     const existing = this.sourcesByRepo.get(repo)
     if (existing === undefined) return
     this.sourcesByRepo.set(repo, { ...existing, commitSha })
+    await this.persist()
+  }
+
+  /**
+   * Record one skill's local content hash (sampled right after the bytes land).
+   * This is the only thing that can tell "the user edited this" apart from
+   * "upstream moved", so it is written on every import and every sync.
+   */
+  async setSourceSkillHash(repo: string, skillName: string, hash: string): Promise<void> {
+    await this.ensureLoaded()
+    const existing = this.sourcesByRepo.get(repo)
+    if (existing === undefined || hash === '') return
+    this.sourcesByRepo.set(repo, { ...existing, localHashes: { ...(existing.localHashes ?? {}), [skillName]: hash } })
     await this.persist()
   }
 

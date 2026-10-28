@@ -2,6 +2,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { load } from 'js-yaml'
 import { parseFrontmatter, repairFrontmatterFileText } from './frontmatter.ts'
+import { auditDescription, auditSkillText, type AuditFinding } from './audit.ts'
 import { rootPath } from './paths.ts'
 import { errorText } from '../error-text.ts'
 import { mapConcurrent } from '../concurrency.ts'
@@ -207,6 +208,22 @@ export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Pro
       const fixable = repairFrontmatterFileText(text) !== null
       found.push({ path: entry.path, root, reason: parsed.error, ...(fixable ? { fixable: true } : {}) })
       return found
+    }
+    // 内容审计：文件能被加载，不代表正文干净。隐藏字符与危险命令不会让
+    // provider 报错，只会让人「看过却没看见」—— 和发现诊断放在同一块 UI 里，
+    // 用 kind 区分（security 条目不可修复，只定位行号）。
+    const auditFindings: AuditFinding[] = [
+      ...auditSkillText(basename(entry.path), text),
+      ...auditDescription(basename(entry.path), parsed.value.description),
+    ]
+    for (const finding of auditFindings) {
+      found.push({
+        path: entry.path,
+        root,
+        reason: (finding.line !== undefined ? `line ${finding.line}: ` : '') + finding.message,
+        kind: 'security',
+        severity: finding.severity,
+      })
     }
     // File was auto-repaired in memory (e.g. unquoted `:`); surface a fixable hint so the user can persist it.
     const repaired = repairFrontmatterFileText(text)

@@ -4,6 +4,7 @@
  */
 
 import type { ServerResponse } from 'node:http'
+import { homedir } from 'node:os'
 import type { SkillDefinition, SkillSummary } from '@deepseek-ai/dsh-skill'
 import { resolveHubConfig, type HubConfig, type WritableRoot } from '../protocol.ts'
 import { rootOfPath } from '../skillfs.ts'
@@ -35,6 +36,12 @@ export interface SkillHubRouteDeps {
   fence?: RouteFence
   /** DSH home override (tests isolate the writable roots; defaults to ~/.dsh). */
   home?: string
+  /**
+   * 用户主目录覆盖（其他 agent 的 `~/.claude/skills` 等相对它解析）。
+   * 与 `home` 是两个概念：`home` 是 DSH 自己的状态根（`~/.dsh`），
+   * 这个才是 `/Users/<user>`。测试用它把外部扫描圈在临时目录里。
+   */
+  userHome?: string
   /** Invalidate the registry catalog cache after hub-driven mutations. */
   invalidate?: () => void
   /** Optional invocation-count reader; absent means the stats route reports unavailable. */
@@ -72,6 +79,14 @@ export function disabledGate(deps: SkillHubRouteDeps, res: ServerResponse): bool
 /** Resolve the home used for writable-root operations. */
 export function homeOf(deps: SkillHubRouteDeps): string {
   return deps.home ?? dshHome()
+}
+
+/**
+ * Resolve the user's home directory — the base every other agent's user-level
+ * skill folder hangs off. Distinct from `homeOf` (the DSH state root).
+ */
+export function userHomeOf(deps: SkillHubRouteDeps): string {
+  return deps.userHome ?? homedir()
 }
 
 /** A skill resolved as a hub-writable user-level file. */

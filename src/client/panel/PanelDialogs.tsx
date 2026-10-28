@@ -22,6 +22,8 @@ export interface PanelDialogsProps {
   confirmDialog: SkillHubState['confirmDialog']
   setConfirmDialog: SkillHubState['setConfirmDialog']
   runConfirmed: SkillHubState['runConfirmed']
+  /** 来源检查结果（同步确认里标出本地改动过的技能）。 */
+  sourceCheck: SkillHubState['sourceCheck']
   /** 无 release 的市场源分支选择。 */
   branchChoice: SkillHubState['branchChoice']
   branchBusy: SkillHubState['branchBusy']
@@ -54,7 +56,7 @@ export interface PanelDialogsProps {
 export function PanelDialogs(props: PanelDialogsProps): JSX.Element {
   const {
     conflictDialog, tags, collections, setConflictDialog, resolveConflict,
-    confirmDialog, setConfirmDialog, runConfirmed,
+    confirmDialog, setConfirmDialog, runConfirmed, sourceCheck,
     branchChoice, branchBusy, setBranchChoice, confirmBranchChoice,
     versionDialog, versionBusy, setVersionDialog, confirmVersionDialog,
     marketSyncDialog, syncBusy, setMarketSyncDialog, confirmMarketSync,
@@ -80,6 +82,7 @@ export function PanelDialogs(props: PanelDialogsProps): JSX.Element {
           title={confirmDialog.kind === 'sync' ? tt('source.syncConfirmTitle') : tt('source.deleteConfirmTitle')}
           text={confirmDialog.kind === 'sync' ? tt('source.syncConfirmText') : tt('source.deleteConfirmText')}
           items={confirmDialog.skills}
+          {...(confirmDialog.kind === 'sync' ? { marked: sourceCheck[confirmDialog.repo]?.localModified ?? [] } : {})}
           confirmLabel={confirmDialog.kind === 'sync' ? tt('source.sync') : tt('source.followDelete')}
           danger={confirmDialog.kind === 'delete'}
           onCancel={() => { setConfirmDialog(null) }}

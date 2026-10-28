@@ -33,6 +33,7 @@ export {
   isWritableSource,
   resolveWritableSkill,
   savedOf,
+  userHomeOf,
 } from './deps.ts'
 export type {
   SkillHubRouteDeps,

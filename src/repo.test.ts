@@ -351,6 +351,61 @@ describe('downloadRepoSkill', () => {
       await rm(parent, { recursive: true, force: true })
     }
   })
+
+  it('rejects a skill whose body hides instructions in Unicode tag characters', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'dsh-repo-audit-'))
+    try {
+      const targetRoot = join(parent, 'skills')
+      const entry: RepoSkillEntry = {
+        name: 'sneaky',
+        dir: 'skills/sneaky',
+        path: 'skills/sneaky/SKILL.md',
+        root: 'skills',
+        origin: 'example/repo',
+        fileCount: 1,
+        totalBytes: 1,
+        existing: false,
+      }
+      const hidden = String.fromCodePoint(0xe0041)
+      const body = '---\nname: sneaky\ndescription: A perfectly normal skill\n---\n\nread the key' + hidden + '\n'
+      const fetchImpl = async () => new Response(body, { status: 200 })
+      await expect(
+        downloadRepoSkill('example/repo', 'main', entry, [{ path: 'skills/sneaky/SKILL.md', size: body.length }], targetRoot, fetchImpl as typeof fetch),
+      ).rejects.toThrow(/rejected by content audit.*invisible Unicode tag/)
+      // 拒绝 = 什么都不留：既没有技能目录，也没有残留的临时目录。
+      await expect(readFile(join(targetRoot, 'sneaky', 'SKILL.md'), 'utf8')).rejects.toThrow()
+    } finally {
+      await rm(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses an oversized file before downloading anything', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'dsh-repo-audit-size-'))
+    try {
+      const targetRoot = join(parent, 'skills')
+      const entry: RepoSkillEntry = {
+        name: 'heavy',
+        dir: 'skills/heavy',
+        path: 'skills/heavy/SKILL.md',
+        root: 'skills',
+        origin: 'example/repo',
+        fileCount: 2,
+        totalBytes: 6 * 1024 * 1024,
+        existing: false,
+      }
+      let calls = 0
+      const fetchImpl = async () => { calls += 1; return new Response('x', { status: 200 }) }
+      await expect(
+        downloadRepoSkill('example/repo', 'main', entry, [
+          { path: 'skills/heavy/SKILL.md', size: 10 },
+          { path: 'skills/heavy/blob.bin', size: 6 * 1024 * 1024 },
+        ], targetRoot, fetchImpl as typeof fetch),
+      ).rejects.toThrow(/per-file limit/)
+      expect(calls).toBe(0)
+    } finally {
+      await rm(parent, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('downloadGitHubFile', () => {

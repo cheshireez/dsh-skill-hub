@@ -27,7 +27,7 @@ import {
   skillManifest,
   skillPathIn,
 } from '../repo.ts'
-import { occupancyOf, rootPath } from '../skillfs.ts'
+import { hashSkillAt, occupancyOf, rootPath } from '../skillfs.ts'
 import { errorText } from '../error-text.ts'
 import {
   homeOf,
@@ -211,6 +211,9 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
               })
               await deps.store.addSourceSkill(repo, entry.root, commitSha, resolvedRef, entry.name)
               await deps.store.mergeSourceManifest(repo, skillManifest(tree, entry.dir), entry.dir)
+              // 采集刚落盘内容的哈希：这是之后区分「上游变了」与「本地改过」的唯一依据。
+              const hash = await hashSkillAt(result.skillPath)
+              if (hash !== undefined) await deps.store.setSourceSkillHash(repo, entry.name, hash)
               if (defaultTag !== undefined) await deps.store.addSkillToTag(defaultTag.id, entry.name)
               job.imported.push({ name: entry.name, origin: entry.origin, path: result.skillPath })
               needInvalidate = true

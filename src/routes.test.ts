@@ -5,9 +5,10 @@ import type { IncomingMessage } from 'node:http'
 import type { SkillDefinition, SkillSummary } from '@deepseek-ai/dsh-skill'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { hostTrustFence, makeRoutes, type SkillHubRouteDeps } from './routes.ts'
+import { hashSkillAt } from './skillfs.ts'
 import { lastMarketCheck } from './routes/route-state.ts'
 import { SkillHubStore, statePath } from './store.ts'
-import { SKILL_HUB_API, SKILL_HUB_API_ROOT, type CatalogResponse, type ConfigResponse, type ErrorResponse, type HubConfig } from './protocol.ts'
+import { SKILL_HUB_API, SKILL_HUB_API_ROOT, ANNOUNCEMENT_CHAR_BUDGET, type CatalogResponse, type ConfigResponse, type ErrorResponse, type HubConfig } from './protocol.ts'
 
 /** Minimal response double recording status/headers/body. */
 class FakeResponse {
@@ -91,7 +92,7 @@ describe('skill-hub routes', () => {
       snapshot: async () => ({ skills: [], complete: true }),
       get: async () => undefined,
     }
-    deps = { skills, store, home }
+    deps = { skills, store, home, userHome: dir }
   })
 
   afterEach(async () => {
@@ -228,6 +229,11 @@ describe('skill-hub routes', () => {
     expect(body.diagnostics[0].reason).toBe('missing YAML frontmatter (--- block)')
     // 面板标题旁的插件版本徽标数据源：随 catalog 附带当前安装版本。
     expect(body.pluginVersion).toMatch(/^\d+\.\d+\.\d+$/)
+    // 公告预算：一层渐进加载注入的 name+description 总量必须能看见。
+    expect(body.announcement.skills).toBe(2)
+    expect(body.announcement.chars).toBe('demo-skill'.length + 'demo'.length + 'bundled-x'.length + 'demo'.length)
+    expect(body.announcement.budget).toBe(ANNOUNCEMENT_CHAR_BUDGET)
+    expect(body.announcement.overBudget).toBe(false)
   })
 
   it('forwards the cwd query to the registry snapshot', async () => {
@@ -1074,6 +1080,62 @@ describe('skill-hub routes', () => {
     }
   })
 
+  it('detects local edits in a check and reports them as overwritten on sync', async () => {
+    const dir = join(home, 'skills', 'tweak')
+    await mkdir(dir, { recursive: true })
+    const original = '---\nname: tweak\ndescription: local\n---\n\nbody v1\n'
+    await writeFile(join(dir, 'SKILL.md'), original, 'utf8')
+    await store.addSourceSkill('repo/local-a', 'skills', 'old-sha', undefined, 'tweak')
+    const firstHash = await hashSkillAt(join(dir, 'SKILL.md'))
+    expect(firstHash).toBeDefined()
+    await store.setSourceSkillHash('repo/local-a', 'tweak', firstHash!)
+
+    // 未改动：哈希与记录一致，不报本地改动。
+    stubFetch([['repos/repo/local-a/commits', jsonResponse({ sha: 'old-sha', commit: { tree: { sha: 't' } } })]])
+    try {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.sourceCheck).handler(fakeReq('POST', SKILL_HUB_API.sourceCheck, { repo: 'repo/local-a' }), res as never)
+      const body = res.json() as import('./protocol.ts').SourceCheckResponse
+      expect(body.results[0].localModified).toBeUndefined()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+
+    // 本地改一个字节：check 必须指出来，且不受 5 分钟节流影响（本地信息不走网络）。
+    await writeFile(join(dir, 'SKILL.md'), original + 'extra local line\n', 'utf8')
+    stubFetch([['repos/repo/local-a/commits', jsonResponse({ sha: 'old-sha', commit: { tree: { sha: 't' } } })]])
+    try {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.sourceCheck).handler(fakeReq('POST', SKILL_HUB_API.sourceCheck, { repo: 'repo/local-a' }), res as never)
+      const body = res.json() as import('./protocol.ts').SourceCheckResponse
+      expect(body.results[0].throttled).toBe(true)
+      expect(body.results[0].localModified).toEqual(['tweak'])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+
+    // 同步：覆盖前如实上报，落盘后哈希换成新内容的（下次不再误报）。
+    const fresh = '---\nname: tweak\ndescription: fresh\n---\n\nnew body'
+    stubFetch([
+      ['repos/repo/local-a/commits', jsonResponse({ sha: 'new-sha', commit: { tree: { sha: 'treeL' } } })],
+      ['repos/repo/local-a/git/trees/treeL', jsonResponse({ tree: [{ path: 'skills/tweak/SKILL.md', type: 'blob', size: 80 }] })],
+      ['raw.githubusercontent.com/repo/local-a/new-sha/skills/tweak/SKILL.md', new Response(fresh, { status: 200 })],
+    ])
+    try {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.sourceSync).handler(fakeReq('POST', SKILL_HUB_API.sourceSync, { repo: 'repo/local-a' }), res as never)
+      expect(res.status).toBe(200)
+      const body = res.json() as import('./protocol.ts').SourceSyncResponse
+      expect(body.synced).toEqual(['tweak'])
+      expect(body.overwritten).toEqual(['tweak'])
+      const after = await store.getSource('repo/local-a')
+      expect(after?.localHashes?.tweak).toBe(await hashSkillAt(join(dir, 'SKILL.md')))
+      expect(after?.localHashes?.tweak).not.toBe(firstHash)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('reports a per-source check error without failing the batch', async () => {
     await store.addSourceSkill('repo/error-x', 'skills', 'old', undefined, 'one')
     stubFetch([
@@ -1127,6 +1189,103 @@ describe('skill-hub routes', () => {
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+
+  it('discovers and imports a skill from another agent, leaving the origin untouched', async () => {
+    const src = join(dir, '.claude', 'skills', 'borrowed')
+    await mkdir(src, { recursive: true })
+    await writeFile(join(src, 'SKILL.md'), '---\nname: borrowed\ndescription: A borrowed skill for tests\n---\nbody\n', 'utf8')
+
+    const listRes = new FakeResponse()
+    await routeFor(SKILL_HUB_API.foreign).handler(fakeReq('GET', SKILL_HUB_API.foreign), listRes as never)
+    expect(listRes.status).toBe(200)
+    const list = listRes.json() as import('./protocol.ts').ForeignListResponse
+    expect(list.skills.map((skill) => skill.agent + ':' + skill.name)).toContain('claude-code:borrowed')
+    expect(list.skills[0]?.existing).toBe(false)
+
+    const importRes = new FakeResponse()
+    await routeFor(SKILL_HUB_API.foreignImport).handler(
+      fakeReq('POST', SKILL_HUB_API.foreignImport, { items: [{ agent: 'claude-code', name: 'borrowed' }] }),
+      importRes as never,
+    )
+    expect(importRes.status).toBe(200)
+    const imported = importRes.json() as import('./protocol.ts').ForeignImportResponse
+    expect(imported.imported).toEqual(['borrowed'])
+    expect(imported.failed).toEqual([])
+    await expect(access(join(home, 'skills', 'borrowed', 'SKILL.md'))).resolves.toBeUndefined()
+    // 外部目录是别的 agent 的资产：只读扫描 + 复制，原件必须原样在。
+    await expect(readFile(join(src, 'SKILL.md'), 'utf8')).resolves.toContain('name: borrowed')
+  })
+
+  it('skips an already-installed name and rejects one that is not there', async () => {
+    const src = join(dir, '.codex', 'skills', 'taken')
+    await mkdir(src, { recursive: true })
+    await writeFile(join(src, 'SKILL.md'), '---\nname: taken\ndescription: Already installed skill\n---\nbody\n', 'utf8')
+    // 本地已有同名技能：发现时就要标 exists，导入时必须跳过而不是覆盖。
+    const local = join(home, 'skills', 'taken')
+    await mkdir(local, { recursive: true })
+    await writeFile(join(local, 'SKILL.md'), '---\nname: taken\ndescription: local copy\n---\nlocal\n', 'utf8')
+
+    const listRes = new FakeResponse()
+    await routeFor(SKILL_HUB_API.foreign).handler(fakeReq('GET', SKILL_HUB_API.foreign), listRes as never)
+    const list = listRes.json() as import('./protocol.ts').ForeignListResponse
+    expect(list.skills.find((skill) => skill.name === 'taken')?.existing).toBe(true)
+
+    const importRes = new FakeResponse()
+    await routeFor(SKILL_HUB_API.foreignImport).handler(
+      fakeReq('POST', SKILL_HUB_API.foreignImport, { items: [{ agent: 'codex', name: 'taken' }, { agent: 'codex', name: 'ghost' }] }),
+      importRes as never,
+    )
+    expect(importRes.status).toBe(200)
+    const imported = importRes.json() as import('./protocol.ts').ForeignImportResponse
+    expect(imported.imported).toEqual([])
+    expect(imported.skipped.map((entry) => entry.name)).toEqual(['taken'])
+    expect(imported.failed.map((entry) => entry.name)).toEqual(['ghost'])
+    // 本地那份不能被改写。
+    await expect(readFile(join(local, 'SKILL.md'), 'utf8')).resolves.toContain('local copy')
+  })
+
+  it('takes over a disabled placeholder instead of failing on a non-empty target', async () => {
+    const src = join(dir, '.claude', 'skills', 'ph')
+    await mkdir(src, { recursive: true })
+    await writeFile(join(src, 'SKILL.md'), '---\nname: ph\ndescription: Fresh copy from another agent\n---\nfresh\n', 'utf8')
+    // 本地已有同名禁用占位：目标目录非空，裸 rename 会 ENOTEMPTY。
+    const localDir = join(home, 'skills', 'ph')
+    await mkdir(localDir, { recursive: true })
+    const disabledPath = join(localDir, 'SKILL.md.disabled')
+    await writeFile(disabledPath, '---\nname: ph\ndescription: old disabled copy\n---\nold\n', 'utf8')
+    await store.addDisabled({ name: 'ph', description: 'old', path: disabledPath, root: 'user-dsh', disabledAt: 1 })
+
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.foreignImport).handler(
+      fakeReq('POST', SKILL_HUB_API.foreignImport, { items: [{ agent: 'claude-code', name: 'ph' }] }),
+      res as never,
+    )
+    expect(res.status).toBe(200)
+    const body = res.json() as import('./protocol.ts').ForeignImportResponse
+    expect(body.failed).toEqual([])
+    expect(body.imported).toEqual(['ph'])
+    expect(body.replaced).toEqual(['ph'])
+    // 新内容启用态就位，禁用记录清掉，旧内容在回收站里可恢复。
+    await expect(access(join(localDir, 'SKILL.md'))).resolves.toBeUndefined()
+    expect(await store.getDisabled('ph')).toBeUndefined()
+    expect((await store.listTrash()).some((entry) => entry.name === 'ph')).toBe(true)
+  })
+
+  it('does not report a disabled placeholder as already-existing', async () => {
+    const src = join(dir, '.claude', 'skills', 'ph2')
+    await mkdir(src, { recursive: true })
+    await writeFile(join(src, 'SKILL.md'), '---\nname: ph2\ndescription: Fresh copy\n---\nfresh\n', 'utf8')
+    // 只有禁用占位：目录在，但没有启用态的发现文件。
+    const localDir = join(home, 'skills', 'ph2')
+    await mkdir(localDir, { recursive: true })
+    await writeFile(join(localDir, 'SKILL.md.disabled'), '---\nname: ph2\ndescription: old\n---\nold\n', 'utf8')
+
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.foreign).handler(fakeReq('GET', SKILL_HUB_API.foreign), res as never)
+    const body = res.json() as import('./protocol.ts').ForeignListResponse
+    // 标成「已存在」会让用户根本选不了，而实际上导入时会接管这个占位。
+    expect(body.skills.find((skill) => skill.name === 'ph2')?.existing).toBe(false)
   })
 
   it('follows upstream deletion into the trash and restores it', async () => {
@@ -1510,7 +1669,7 @@ describe('skill-hub API surface', () => {
     home = join(dir, 'home')
     await mkdir(join(home, 'skills'), { recursive: true })
     store = new SkillHubStore(statePath(home))
-    deps = { skills: { snapshot: async () => ({ skills: [], complete: true }), get: async () => undefined }, store, home }
+    deps = { skills: { snapshot: async () => ({ skills: [], complete: true }), get: async () => undefined }, store, home, userHome: dir }
   })
 
   afterEach(async () => {

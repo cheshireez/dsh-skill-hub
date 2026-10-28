@@ -15,6 +15,7 @@ export type {
   CatalogSkill,
   DisabledSkill,
   DiagnosticEntry,
+  AnnouncementBudget,
   DiagnosticFixRequest,
   DiagnosticFixResponse,
   CatalogResponse,
@@ -29,6 +30,7 @@ export type {
   CreateRequest,
   CreateResponse,
 } from './protocol/catalog.ts'
+export { ANNOUNCEMENT_CHAR_BUDGET, computeAnnouncementBudget } from './protocol/catalog.ts'
 export type { SkillStat, StatsResponse, SkillStatsCheckpoint } from './protocol/stats.ts'
 export type { ErrorResponse, HubConfig, HubSettingsValue, RedactedHubConfig, ConfigResponse, ConfigRequest } from './protocol/config.ts'
 export { HUB_CONFIG_DEFAULTS, HUB_ENTRY_ID, HEX_COLOR_RE, GITHUB_TOKEN_RE, resolveHubConfig, redactGithubToken } from './protocol/config.ts'
@@ -89,3 +91,4 @@ export type {
   SourceTrashClearResponse,
 } from './protocol/sources.ts'
 export { isProjectSource } from './protocol/sources.ts'
+export type { ForeignRootView, ForeignSkillView, ForeignListResponse, ForeignImportRequest, ForeignImportResponse } from './protocol/foreign.ts'

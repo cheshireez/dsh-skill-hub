@@ -49,4 +49,6 @@ export const SKILL_HUB_API = {
   diagnosticFix: '/api/skill-hub/diagnostic/fix',
   marketSourceVersions: '/api/skill-hub/market/source/versions',
   marketStats: '/api/skill-hub/market/stats',
+  foreign: '/api/skill-hub/foreign',
+  foreignImport: '/api/skill-hub/foreign/import',
 } as const

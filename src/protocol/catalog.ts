@@ -54,6 +54,60 @@ export interface DiagnosticEntry {
   reason: string
   /** Whether this diagnostic can be auto-fixed (e.g. unquoted colon). */
   fixable?: boolean
+  /**
+   * 条目来源。缺省 = 发现诊断（provider 跳过了这个文件）；`security` = 内容审计
+   * （文件能被加载，但正文里有值得看一眼的东西）。两者共用同一块 UI，但
+   * security 条目不能「修复」，只能说清问题在哪一行。
+   */
+  kind?: 'security'
+  /** security 条目的严重度；发现诊断条目省略。 */
+  severity?: 'block' | 'warn'
+}
+
+/**
+ * 技能目录在 system prompt 里占用的公告预算。渐进加载的第一层只放
+ * name + description，但技能多了这一层本身就会顶到客户端的上限而被截断，
+ * 表现为「装了却不触发」—— 面板必须能看见这个数字。
+ */
+export interface AnnouncementBudget {
+  /** 参与公告的技能数（已启用且 modelInvocable）。 */
+  skills: number
+  /** name + description + whenToUse 的总字符数。 */
+  chars: number
+  /** 粗略 token 估算（按 3 字符/token）。 */
+  approxTokens: number
+  /** 建议预算（字符），超出即 overBudget。 */
+  budget: number
+  overBudget: boolean
+}
+
+/**
+ * 技能目录的建议字符预算。取 8000：这是 Codex 在上下文窗口未知时对初始
+ * 技能清单的硬上限，也是目前公开客户端里最保守的一档。超出后尾部条目会被
+ * 静默丢弃（技能看起来装了，实际不触发）。
+ */
+export const ANNOUNCEMENT_CHAR_BUDGET = 8000
+
+/**
+ * 按「已启用且模型可调用」的技能估算公告成本。只统计一层渐进加载真正注入的
+ * 字段（name + description + whenToUse），不含正文 —— 正文是激活后才载入的，
+ * 不占常驻预算。
+ */
+export function computeAnnouncementBudget(skills: readonly CatalogSkill[]): AnnouncementBudget {
+  let chars = 0
+  let count = 0
+  for (const skill of skills) {
+    if (!skill.invocation.modelInvocable) continue
+    count += 1
+    chars += skill.name.length + skill.description.length + (skill.whenToUse?.length ?? 0)
+  }
+  return {
+    skills: count,
+    chars,
+    approxTokens: Math.ceil(chars / 3),
+    budget: ANNOUNCEMENT_CHAR_BUDGET,
+    overBudget: chars > ANNOUNCEMENT_CHAR_BUDGET,
+  }
 }
 
 /** POST /api/skill-hub/diagnostic/fix — repair a fixable diagnostic in place. */
@@ -78,6 +132,8 @@ export interface CatalogResponse {
   disabled: DisabledSkill[]
   /** Files in the writable roots the provider ignores, with reasons. */
   diagnostics: DiagnosticEntry[]
+  /** 技能目录占用的公告预算（见 AnnouncementBudget）。 */
+  announcement: AnnouncementBudget
   /** Skill names that appeared in multiple roots (first wins, others hidden). Mirrors codex name_counts. */
   duplicateNames?: string[]
 }

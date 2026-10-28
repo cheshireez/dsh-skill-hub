@@ -15,6 +15,12 @@ export interface SourceRecord {
   skills: string[]
   /** 仓库内路径 → 文件大小 的基线清单（差异检测用；缺失 = 无基线）。 */
   manifest?: Record<string, number>
+  /**
+   * 技能名 → 本地内容哈希（导入/同步落盘后立刻采集）。用于区分「上游变了」
+   * 与「本地被改过」：没有它，「全部更新」只能盲覆盖。缺失 = 该技能还没采集过
+   * （旧记录），比对时按「未知」处理，不误报为已修改。
+   */
+  localHashes?: Record<string, string>
 }
 
 /** 回收站条目：上游删除后跟进删除（移入 .trash）的技能。 */
@@ -77,6 +83,11 @@ export interface SourceCheckResult {
   throttled?: boolean
   /** 该来源此前没有快照（迁移/旧记录），本次已回填 commit，尚未有差异基线。 */
   unverified?: boolean
+  /**
+   * 本地磁盘内容与上次导入/同步时不一致的技能（用户自己改过）。只在检查
+   * 时本地能读到文件才判定；哈希未采集过（旧记录）的技能不出现在这里。
+   */
+  localModified?: string[]
 }
 
 /** POST /api/skill-hub/sources/check */
@@ -100,6 +111,8 @@ export interface SourceSyncResponse {
   commitSha: string
   /** 成功同步的技能。 */
   synced: string[]
+  /** 本次同步覆盖掉的、本地有改动的技能（改前哈希 ≠ 记录哈希）。 */
+  overwritten?: string[]
   /** 失败的技能。 */
   failed: Array<{ name: string; error: string }>
 }

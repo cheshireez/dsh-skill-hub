@@ -10,6 +10,9 @@ import {
   type CreateResponse,
   type DiagnosticFixRequest,
   type DiagnosticFixResponse,
+  type ForeignImportRequest,
+  type ForeignImportResponse,
+  type ForeignListResponse,
   type GroupsResponse,
   type MarketCheckResponse,
   type MarketSourceAddResponse,
@@ -293,6 +296,17 @@ export class SkillHubApi {
   /** 来源列表 + 派生 origin 映射 + 集合组 + 回收站。 */
   sources(): Promise<SourcesResponse> {
     return this.get<SourcesResponse>(SKILL_HUB_API.sources)
+  }
+
+  /** 列出其他 agent 用户级技能目录里的可收编技能（只读扫描）。 */
+  listForeignSkills(): Promise<ForeignListResponse> {
+    return this.get<ForeignListResponse>(SKILL_HUB_API.foreign)
+  }
+
+  /** 收编所选外部技能到 ~/.dsh/skills。 */
+  importForeignSkills(items: Array<{ agent: string; name: string }>): Promise<ForeignImportResponse> {
+    const payload: ForeignImportRequest = { items }
+    return this.post<ForeignImportResponse>(SKILL_HUB_API.foreignImport, payload)
   }
 
   /** 检查指定（或全部）来源的上游更新。 */

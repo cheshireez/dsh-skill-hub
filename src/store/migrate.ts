@@ -147,9 +147,12 @@ export function hydrateMigratedState(migrated: MigratedStore): HydratedState {
   const sourcesByRepo = new Map<string, SourceRecord>()
   if (Array.isArray(migrated.sources)) {
     for (const entry of migrated.sources as unknown[]) {
-      const source = entry as { repo?: unknown; ref?: unknown; root?: unknown; commitSha?: unknown; skills?: unknown; manifest?: unknown } | null
+      const source = entry as { repo?: unknown; ref?: unknown; root?: unknown; commitSha?: unknown; skills?: unknown; manifest?: unknown; localHashes?: unknown } | null
       if (source !== null && typeof source === 'object' && typeof source.repo === 'string' && source.repo !== '' && Array.isArray(source.skills)) {
         const manifest = source.manifest as Record<string, unknown> | undefined
+        // 本地内容哈希：只保留「技能名 → 非空字符串」的条目。这是白名单重建
+        // （每次装载都跑），漏掉这里的字段会在下一次装载时静默消失。
+        const localHashes = source.localHashes as Record<string, unknown> | undefined
         const rawRoot = isValidRepoRoot(source.root) ? source.root : 'skills'
         sourcesByRepo.set(source.repo, {
           repo: source.repo,
@@ -159,6 +162,9 @@ export function hydrateMigratedState(migrated: MigratedStore): HydratedState {
           skills: source.skills.filter((n): n is string => typeof n === 'string'),
           ...(manifest !== null && typeof manifest === 'object' && !Array.isArray(manifest)
             ? { manifest: Object.fromEntries(Object.entries(manifest).filter(([, size]) => typeof size === 'number')) as Record<string, number> }
+            : {}),
+          ...(localHashes !== null && typeof localHashes === 'object' && !Array.isArray(localHashes)
+            ? { localHashes: Object.fromEntries(Object.entries(localHashes).filter(([, hash]) => typeof hash === 'string' && hash !== '')) as Record<string, string> }
             : {}),
         })
       }

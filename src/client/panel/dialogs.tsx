@@ -55,7 +55,7 @@ export interface MarketSyncDialogState {
 }
 
 /** Overlay + centered alert-dialog shell; outside click or Escape cancels. */
-function DialogShell(props: { onClose: () => void; children: ReactNode }): JSX.Element {
+export function DialogShell(props: { onClose: () => void; children: ReactNode }): JSX.Element {
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') props.onClose()
@@ -78,20 +78,31 @@ export function ConfirmDialog(props: {
   text: string
   /** Optional skill names listed between the text and the buttons. */
   items?: readonly string[]
+  /**
+   * 这些条目在磁盘上已被本地改过。列出来时逐个标记 —— 「会覆盖本地修改」
+   * 这句话只有在能指出是哪几个时才有用。
+   */
+  marked?: readonly string[]
   confirmLabel: string
   /** Danger-styled confirm button (destructive actions). */
   danger?: boolean
   onCancel: () => void
   onConfirm: () => void
 }): JSX.Element {
-  const { title, text, items, confirmLabel, danger, onCancel, onConfirm } = props
+  const { title, text, items, marked, confirmLabel, danger, onCancel, onConfirm } = props
+  const markedSet = new Set(marked ?? [])
   return (
     <DialogShell onClose={onCancel}>
       <h3 className={css.dialogTitle}>{title}</h3>
       <p className={css.dialogText}>{text}</p>
       {items !== undefined ? (
         <ul className={css.dialogList}>
-          {items.map((name) => <li key={name}><span className={css.rowNameText}>{name}</span></li>)}
+          {items.map((name) => (
+            <li key={name}>
+              <span className={css.rowNameText}>{name}</span>
+              {markedSet.has(name) ? <span className={css.statusBadge + ' ' + css.statusLocal} style={{ marginLeft: 6 }}>{tt('source.localModifiedBadge')}</span> : null}
+            </li>
+          ))}
         </ul>
       ) : null}
       <div className={css.dialogActions}>

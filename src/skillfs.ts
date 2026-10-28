@@ -26,6 +26,8 @@ import type { TrashEntry, WritableRoot } from './protocol.ts'
 export * from './skillfs/frontmatter.ts'
 export * from './skillfs/paths.ts'
 export * from './skillfs/scan.ts'
+export * from './skillfs/hash.ts'
+export * from './skillfs/foreign.ts'
 
 /**
  * Scaffold a directory-bundle skill: <root>/<name>/SKILL.md with a frontmatter
