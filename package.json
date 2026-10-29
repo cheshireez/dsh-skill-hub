@@ -1,6 +1,6 @@
 {
   "name": "dsh-skill-hub",
-  "version": "0.3.29",
+  "version": "0.3.30",
   "description": "dsh web GUI skill hub: browse/search all local skills, per-skill/group toggles, install-time audit (hidden chars, pipe-to-shell), GitHub market with commit pins, local-edit detection, cross-agent import, restorable trash.",
   "type": "module",
   "engines": {
