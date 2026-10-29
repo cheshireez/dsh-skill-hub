@@ -1,7 +1,7 @@
 {
   "name": "dsh-skill-hub",
   "version": "0.3.28",
-  "description": "In-GUI skill hub for DeepSeek Harness (dsh): browse the full local skill catalog from the official ctx.skills registry (every root + third-party providers), toggle skills on/off, inspect bodies, surface frontmatter diagnostics plus a content audit (hidden characters, remote-execution pipes, credential paths, size caps), and scaffold new skills — plus a codex-style skill market (built-in catalog, upstream update checks, one-click update-all) with tracked source sync, local-edit detection via content hashes, and read-only import from other agents' skill folders. The full manager beyond the read-only dsh-skill-manager browser.",
+  "description": "In-GUI skill hub for DeepSeek Harness (dsh): full ctx.skills catalog, per-skill and per-group toggles, content audit that blocks hidden characters and remote-execution pipes before install, announcement-budget warnings, frontmatter diagnostics with one-click fix, GitHub market with commit-pinned update tracking and a restorable trash.",
   "type": "module",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -109,10 +109,55 @@
     "react-dom": "^18.2.0"
   },
   "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-connection": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-locale": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-client-runtime": {
       "optional": true
     },
     "@deepseek-ai/dsh-client-store": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-input-trigger": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-settings": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-slots": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-host-webserver": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-query": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-settings": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-skill": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-system-prompt": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
       "optional": true
     }
   },
