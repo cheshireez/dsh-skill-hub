@@ -27,6 +27,14 @@ export interface StoreFile {
   collectionOrder?: string[]
   /** Drag-reorder: 来源顶层分组整体顺序（project / col:xxx / uncategorized-source） */
   sourceGroupOrder?: string[]
+  /**
+   * 模型调用覆盖：发现文件绝对路径 → 该技能的模型自动调用被 hub 关掉。
+   *
+   * 这是项目技能唯一可用的停用方式 —— 项目根不在可写根里，文件改名会污染
+   * 用户的 git 仓库；覆盖只改 invocation（模型不自动调，`/name` 仍可用），
+   * 文件一个字节都不动。用户级技能不走这里（它们有改名这条真停用路径）。
+   */
+  invocationOverrides?: string[]
 }
 
 /** Resolve the DSH home directory (the filesystem provider's user-dsh root base). */

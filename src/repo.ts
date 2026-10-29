@@ -18,6 +18,9 @@ export { NO_COMPRESSION, RepoFetchError, apiHeaders, fetchError, fetchJson, fetc
 
 export type { RepoRef, RepoTreeItem, RepoFile } from './repo/types.ts'
 
+export { SkillsShError, searchSkillsSh, downloadSkillsShSkill } from './repo/skills-sh.ts'
+export type { SkillsShSkill, SkillsShPackage, SkillsShPackageFile } from './repo/skills-sh.ts'
+
 export {
   REPO_ROOT,
   isRepoRoot,

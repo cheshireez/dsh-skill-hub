@@ -11,6 +11,8 @@ import {
   type MarketSourceResponse,
   type MarketSourcesResponse,
   type MarketSourceVersionsResponse,
+  type MarketSkillsShResponse,
+  type MarketSkillsShInstallResponse,
   type MarketStatsResponse,
   type MarketSyncResponse,
 } from '../protocol.ts'
@@ -22,10 +24,15 @@ import {
   listRepoReleases,
   normalizeRepoInput,
   repoSlug,
+  downloadSkillsShSkill,
+  searchSkillsSh,
+  SkillsShError,
 } from '../repo.ts'
 import { errorText } from '../error-text.ts'
 import {
   queryParam,
+  homeOf,
+  knownSkillNames,
   readString,
   writeError,
   writeJson,
@@ -33,6 +40,10 @@ import {
   type RouteSpec,
   type SkillHubRouteDeps,
 } from './helpers.ts'
+import { installSkillBundle } from './install-bundle.ts'
+import { retireNamePlaceholders } from './route-state.ts'
+import { rootPath } from '../skillfs.ts'
+import type { AuditFinding } from '../skillfs/audit.ts'
 import {
   MARKET_STATS_TTL_MS,
   MIN_CHECK_INTERVAL_MS,
@@ -259,6 +270,67 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           commitSha: latest.commitSha,
           skills: tracked !== undefined ? [...tracked.skills] : [],
         } satisfies MarketSyncResponse)
+      },
+    },
+    // skills.sh 搜索：把外部索引变成候选列表。这是「发现」而不是「源」——
+    // 结果点「添加」后走的是正常的市场源登记 + 仓库扫描链路，因此更新跟踪、
+    // 版本钉选、回收站这些行为与手工添加的源完全一致。
+    {
+      path: SKILL_HUB_API.marketSkillsSh,
+      methods: ['GET'],
+      handler: async ({ res, url }) => {
+        try {
+          const skills = await searchSkillsSh(queryParam(url, 'q') ?? '')
+          writeJson(res, 200, { ok: true, skills } satisfies MarketSkillsShResponse)
+        } catch (error) {
+          // 400 = 查询词问题，502 = 上游问题；两者都是用户可读的失败原因。
+          if (error instanceof SkillsShError) { writeError(res, error.status, error); return }
+          throw error
+        }
+      },
+    },
+    // skills.sh 直装：只装这一个技能，不登记来源。
+    //
+    // 为什么不记来源：上游只给 skillId（仓库里的目录名），不给它在仓库中的
+    // 完整路径，因此 `SourceRecord.root` 无从确定 —— 编一个出来会让后续的
+    // 更新检查去扫一个不存在的目录。宁可如实地说「不跟踪更新」，让想要
+    // 跟踪的人走「加为源」。
+    {
+      path: SKILL_HUB_API.marketSkillsShInstall,
+      methods: ['POST'],
+      jsonBody: true,
+      handler: async ({ res, body }) => {
+        const source = readString(body, 'source')
+        const skillId = readString(body, 'skillId')
+        if (source === '' || skillId === '') { writeError(res, 400, 'source and skillId are required'); return }
+
+        let pkg
+        try {
+          pkg = await downloadSkillsShSkill(source, skillId)
+        } catch (error) {
+          if (error instanceof SkillsShError) { writeError(res, error.status, error); return }
+          throw error
+        }
+
+        const targetRoot = rootPath('user-dsh', homeOf(deps))
+        const existing = await knownSkillNames(deps, { includeDisabled: false })
+        const outcome = await installSkillBundle({
+          targetRoot,
+          files: pkg.files.map((file) => ({ path: file.path, size: file.data.length, data: file.data })),
+          label: pkg.origin,
+          existing,
+          retire: async (name) => (await retireNamePlaceholders(deps, targetRoot, name)) !== undefined,
+        })
+        if (outcome.status === 'installed') deps.invalidate?.()
+
+        writeJson(res, 200, {
+          ok: true,
+          status: outcome.status,
+          name: outcome.name,
+          ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+          ...(outcome.replaced === true ? { replaced: true } : {}),
+          ...(outcome.warnings !== undefined ? { warnings: outcome.warnings.map((finding: AuditFinding) => ({ rule: finding.rule, severity: 'warn' as const, file: finding.file, ...(finding.line !== undefined ? { line: finding.line } : {}), message: finding.message })) } : {}),
+        } satisfies MarketSkillsShInstallResponse)
       },
     },
   ]

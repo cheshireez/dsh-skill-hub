@@ -12,6 +12,44 @@ import { StoreError } from '../store.ts'
 /** Cap on JSON request bodies (toggle/create payloads are tiny). */
 export const MAX_JSON_BODY_BYTES = 64 * 1024
 
+/**
+ * Cap on a raw binary upload — one skill ZIP, sent as-is.
+ *
+ * Deliberately not base64-in-JSON: base64 inflates by a third, forces the whole
+ * archive through a string, and would raise the JSON cap for every other route.
+ * 32 MiB is roomy for a skill bundle (the per-skill cap is 10 MiB) while still
+ * small enough that a stuck client cannot pin memory for long.
+ */
+export const MAX_BINARY_BODY_BYTES = 32 * 1024 * 1024
+
+/** The request body exceeded the route's cap; the caller answers 413. */
+export class PayloadTooLargeError extends Error {
+  constructor() {
+    super('request body too large')
+    this.name = 'PayloadTooLargeError'
+  }
+}
+
+/**
+ * Read a raw binary body. Throws {@link PayloadTooLargeError} as soon as the
+ * running total crosses the cap — the stream is not buffered to the end first,
+ * so an oversized upload cannot grow without bound before being rejected.
+ * @param req - incoming request.
+ * @param limit - byte cap.
+ * @returns the whole body (empty buffer for a bodyless request).
+ */
+export async function readBinaryBody(req: IncomingMessage, limit = MAX_BINARY_BODY_BYTES): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buffer = chunk as Buffer
+    size += buffer.length
+    if (size > limit) throw new PayloadTooLargeError()
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks)
+}
+
 /** Loopback literal check plus browser same-origin markers. */
 export function isLoopbackRequest(request: IncomingMessage): boolean {
   const address = request.socket.remoteAddress

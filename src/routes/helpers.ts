@@ -8,16 +8,20 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { WebRoute, WebRouteKind } from '@deepseek-ai/dsh-host-webserver'
+import { SKILL_HUB_WRITE_HEADER, SKILL_HUB_WRITE_VALUE } from '../protocol.ts'
 import { disabledGate, type SkillHubRouteDeps } from './deps.ts'
-import { loopbackOnlyFence, readJsonBody, writeError, writeRouteError } from './http.ts'
+import { loopbackOnlyFence, MAX_BINARY_BODY_BYTES, PayloadTooLargeError, readBinaryBody, readJsonBody, writeError, writeRouteError } from './http.ts'
 
 export {
+  MAX_BINARY_BODY_BYTES,
   MAX_JSON_BODY_BYTES,
+  PayloadTooLargeError,
   STORE_ERROR_STATUS,
   isLoopbackRequest,
   loopbackOnlyFence,
   pathExists,
   queryParam,
+  readBinaryBody,
   readJsonBody,
   readString,
   readStrings,
@@ -60,6 +64,8 @@ export interface RouteContext {
   url: URL
   /** Parsed JSON body; empty object for requests without one. */
   body: Record<string, unknown>
+  /** Raw binary body, only present on `binaryBody` routes. */
+  raw?: Buffer
 }
 
 export type RouteHandler = (context: RouteContext) => Promise<void>
@@ -78,8 +84,20 @@ export interface RouteSpec {
   methods: readonly ('GET' | 'POST')[]
   /** POST requests must carry a JSON body (400 when missing/unparseable). */
   jsonBody?: boolean
+  /**
+   * POST requests are read as raw bytes instead of JSON (ZIP uploads). Mutually
+   * exclusive with `jsonBody`; the handler reads `context.raw`.
+   */
+  binaryBody?: boolean
   /** Skip the master-switch gate (the config route stays up while disabled). */
   skipGate?: boolean
+  /**
+   * Skip the write-marker check. Only for routes that touch nothing on disk and
+   * whose whole purpose is an accurate diagnostic — the unknown-path catch-all
+   * must answer 404-with-the-path, because being read as an auth failure (403)
+   * is exactly the confusion it was added to remove.
+   */
+  skipCsrf?: boolean
   handler: RouteHandler
 }
 
@@ -109,16 +127,36 @@ export function createRoute(deps: SkillHubRouteDeps, spec: RouteSpec): WebRoute 
         writeError(res, 405, 'method not allowed: ' + (req.method ?? ''))
         return
       }
+      // 写接口要求本插件页面才会带的标记头：跨站来源可以伪造 Host/Origin 之外的
+      // 很多东西，但伪造不出一个能通过 CORS 的自定义头。放在方法检查之后，
+      // 这样 OPTIONS/PUT 仍然先得到语义正确的 405 而不是「缺头」。
+      if (spec.skipCsrf !== true && req.method === 'POST' && req.headers[SKILL_HUB_WRITE_HEADER] !== SKILL_HUB_WRITE_VALUE) {
+        writeError(res, 403, 'forbidden: missing ' + SKILL_HUB_WRITE_HEADER + ' header (write requests must come from the hub panel)')
+        return
+      }
       if (spec.skipGate !== true && disabledGate(deps, res)) return
       const url = new URL(req.url ?? '/', 'http://localhost')
       let body: Record<string, unknown> = {}
+      let raw: Buffer | undefined
       if (spec.jsonBody === true && req.method === 'POST') {
         const parsed = await readJsonBody(req)
         if (parsed === undefined) { writeError(res, 400, 'invalid JSON body'); return }
         body = parsed
       }
+      if (spec.binaryBody === true && req.method === 'POST') {
+        try {
+          raw = await readBinaryBody(req)
+        } catch (error) {
+          if (error instanceof PayloadTooLargeError) {
+            writeError(res, 413, 'request body too large: this route accepts at most ' + Math.floor(MAX_BINARY_BODY_BYTES / (1024 * 1024)) + ' MiB')
+            return
+          }
+          throw error
+        }
+        if (raw.length === 0) { writeError(res, 400, 'empty request body: send the .zip bytes with content-type: application/zip'); return }
+      }
       try {
-        await spec.handler({ req, res, url, body })
+        await spec.handler({ req, res, url, body, raw })
       } catch (error) {
         writeRouteError(res, error)
       }

@@ -52,10 +52,13 @@ export class SkillHubProvider implements SkillProvider {
   private rootStamp = ''
   /** 上一次 watch 失败的错误文案（同一错误只记一次，避免 5 秒定时器刷屏）。 */
   private lastWatchError = ''
+  /** 模型调用覆盖（项目技能停用）。每次 list 现查 —— store 是内存态，读它很便宜。 */
+  private readonly overrides: () => Promise<ReadonlySet<string>>
 
-  constructor(control: SkillProviderControl, home = dshHome()) {
+  constructor(control: SkillProviderControl, home = dshHome(), overrides: () => Promise<ReadonlySet<string>> = async () => new Set()) {
     this.control = control
     this.home = home
+    this.overrides = overrides
     // The registry caches completed catalogs until something invalidates.
     // The hub invalidates explicitly after its own mutations (see routes),
     // and this cheap mtime poll catches external top-level changes (manual
@@ -112,6 +115,7 @@ export class SkillHubProvider implements SkillProvider {
 
   async list(options: { cwd?: string; signal?: AbortSignal }): Promise<readonly SkillCandidate[]> {
     const candidates: SkillCandidate[] = []
+    const overridden = await this.overrides()
     for (const root of await this.roots(options.cwd)) {
       for (const entry of await scanRoot(root.base)) {
         let text: string
@@ -127,7 +131,11 @@ export class SkillHubProvider implements SkillProvider {
           name: value.name,
           description: value.description,
           ...(value.whenToUse !== undefined ? { whenToUse: value.whenToUse } : {}),
-          invocation: value.invocation,
+          // 停用的项目技能仍然出现在列表里（可查可恢复），但模型不再自动调用；
+          // `/name` 手动调用保留。这与 WorkBuddy 的 disableModelInvocation 同语义。
+          invocation: overridden.has(entry.path)
+            ? { modelInvocable: false, userInvocable: value.invocation.userInvocable }
+            : value.invocation,
           source: root.source,
           provider: this.name,
           rank: root.rank,
@@ -150,11 +158,16 @@ export class SkillHubProvider implements SkillProvider {
     const parsed = parseFrontmatter(text)
     if ('error' in parsed) return undefined
     const value = parsed.value
+    // 与 list 同一判据：停用的项目技能在正文读取时也保持模型不可调用，
+    // 否则 catalog 与 get 会各说各话。
+    const overridden = await this.overrides()
     return {
       name: value.name,
       description: value.description,
       ...(value.whenToUse !== undefined ? { whenToUse: value.whenToUse } : {}),
-      invocation: value.invocation,
+      invocation: overridden.has(locator.path)
+        ? { modelInvocable: false, userInvocable: value.invocation.userInvocable }
+        : value.invocation,
       source: candidate.source,
       provider: this.name,
       resourceBase: { kind: 'directory', path: locator.directory },

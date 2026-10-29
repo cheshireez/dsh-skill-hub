@@ -8,7 +8,7 @@ import { hostTrustFence, makeRoutes, type SkillHubRouteDeps } from './routes.ts'
 import { hashSkillAt } from './skillfs.ts'
 import { lastMarketCheck } from './routes/route-state.ts'
 import { SkillHubStore, statePath } from './store.ts'
-import { SKILL_HUB_API, SKILL_HUB_API_ROOT, ANNOUNCEMENT_CHAR_BUDGET, type CatalogResponse, type ConfigResponse, type ErrorResponse, type HubConfig } from './protocol.ts'
+import { SKILL_HUB_API, SKILL_HUB_API_ROOT, SKILL_HUB_WRITE_HEADER, SKILL_HUB_WRITE_VALUE, ANNOUNCEMENT_CHAR_BUDGET, type CatalogResponse, type ConfigResponse, type ErrorResponse, type ForeignImportResponse, type ForeignListResponse, type HubConfig, type ZipImportResponse } from './protocol.ts'
 
 /** Minimal response double recording status/headers/body. */
 class FakeResponse {
@@ -28,12 +28,17 @@ class FakeResponse {
 }
 
 /** Minimal request double (loopback by default; body available for POST). */
-function fakeReq(method: string, url = '/', body?: unknown, remoteAddress = '127.0.0.1', host = '127.0.0.1:3080'): IncomingMessage {
+function fakeReq(method: string, url = '/', body?: unknown, remoteAddress = '127.0.0.1', host = '127.0.0.1:3080', headers: Record<string, string> = {}): IncomingMessage {
   const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body))]
   return {
     method,
     url,
-    headers: { host },
+    headers: {
+      host,
+      // 写接口要求插件标记头。要断言「缺失即 403」时，用 headers 把它覆盖掉。
+      ...(method === 'POST' ? { [SKILL_HUB_WRITE_HEADER]: SKILL_HUB_WRITE_VALUE } : {}),
+      ...headers,
+    },
     socket: { remoteAddress },
     async *[Symbol.asyncIterator]() {
       for (const chunk of chunks) yield chunk
@@ -64,16 +69,81 @@ function definition(overrides: Partial<SkillDefinition> = {}): SkillDefinition {
 
 /** Stub global fetch by URL pattern; callers register respond(urlSubstring, Response). */
 function stubFetch(routes: Array<[pattern: string, response: Response | (() => Response)]>): void {
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
     for (const [pattern, response] of routes) {
-      if (url.includes(pattern)) return typeof response === 'function' ? response() : response
+      // GitHub 客户端传字符串，skills.sh 客户端传 URL 对象；统一转成字符串再匹配。
+      if (String(url).includes(pattern)) return typeof response === 'function' ? response() : response
     }
-    return new Response('unexpected url: ' + url, { status: 599 })
+    return new Response('unexpected url: ' + String(url), { status: 599 })
   }))
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+}
+
+/**
+ * 手工拼一个 ZIP（store 方法即可，读取器的 deflate 路径由 zip.test.ts 覆盖）。
+ * 需要「格式是真的」但「内容可控」，所以构造独立于被测代码。
+ */
+function makeZip(files: Array<{ path: string; data: string }>): Buffer {
+  const chunks: Buffer[] = []
+  const central: Buffer[] = []
+  let offset = 0
+  for (const file of files) {
+    const name = Buffer.from(file.path, 'utf8')
+    const data = Buffer.from(file.data, 'utf8')
+    const local = Buffer.alloc(30)
+    local.writeUInt32LE(0x04034b50, 0)
+    local.writeUInt16LE(20, 4)
+    local.writeUInt16LE(0, 6)
+    local.writeUInt16LE(0, 8)
+    local.writeUInt32LE(data.length, 18)
+    local.writeUInt32LE(data.length, 22)
+    local.writeUInt16LE(name.length, 26)
+    chunks.push(local, name, data)
+
+    const header = Buffer.alloc(46)
+    header.writeUInt32LE(0x02014b50, 0)
+    header.writeUInt16LE((3 << 8) | 20, 4)
+    header.writeUInt16LE(20, 6)
+    header.writeUInt16LE(0, 8)
+    header.writeUInt16LE(0, 10)
+    header.writeUInt32LE(data.length, 20)
+    header.writeUInt32LE(data.length, 24)
+    header.writeUInt16LE(name.length, 28)
+    header.writeUInt32LE((0o100644 << 16) >>> 0, 38)
+    header.writeUInt32LE(offset, 42)
+    central.push(header, name)
+
+    offset += local.length + name.length + data.length
+  }
+  const directory = Buffer.concat(central)
+  const eocd = Buffer.alloc(22)
+  eocd.writeUInt32LE(0x06054b50, 0)
+  eocd.writeUInt16LE(files.length, 8)
+  eocd.writeUInt16LE(files.length, 10)
+  eocd.writeUInt32LE(directory.length, 12)
+  eocd.writeUInt32LE(offset, 16)
+  return Buffer.concat([...chunks, directory, eocd])
+}
+
+/** 二进制请求替身：不走 JSON，直接把 zip 字节当请求体。 */
+function fakeZipReq(url: string, body: Buffer): IncomingMessage {
+  return {
+    method: 'POST',
+    url,
+    headers: { host: '127.0.0.1:3080', 'content-type': 'application/zip', [SKILL_HUB_WRITE_HEADER]: SKILL_HUB_WRITE_VALUE },
+    socket: { remoteAddress: '127.0.0.1' },
+    async *[Symbol.asyncIterator]() {
+      yield body
+    },
+  } as unknown as IncomingMessage
+}
+
+/** One skill's SKILL.md frontmatter block. */
+function manifest(name: string, description = 'demo skill'): string {
+  return `---\nname: ${name}\ndescription: ${description}\n---\n# ${name}\nbody\n`
 }
 
 describe('skill-hub routes', () => {
@@ -112,6 +182,225 @@ describe('skill-hub routes', () => {
     await routeFor(SKILL_HUB_API.catalog).handler(fakeReq('GET', SKILL_HUB_API.catalog, undefined, '10.0.0.5'), res as never)
     expect(res.status).toBe(403)
     expect(res.json()).toEqual({ error: 'forbidden: untrusted authority' })
+  })
+
+  it('refuses a POST without the plugin marker header, and still answers 405 before it', async () => {
+    // 跨站页面能伪造的东西很多，但伪造不出一个自定义头；缺头一律 403。
+    const missing = new FakeResponse()
+    await routeFor(SKILL_HUB_API.toggle)
+      .handler(fakeReq('POST', SKILL_HUB_API.toggle, { name: 'demo-skill', enabled: false }, '127.0.0.1', '127.0.0.1:3080', { [SKILL_HUB_WRITE_HEADER]: '' }), missing as never)
+    expect(missing.status).toBe(403)
+    expect(String((missing.json() as { error: string }).error)).toContain(SKILL_HUB_WRITE_HEADER)
+
+    // 方法检查在前：DELETE 得到的是 405 而不是「缺头」，诊断才指向真正的问题。
+    const wrongMethod = new FakeResponse()
+    await routeFor(SKILL_HUB_API.toggle)
+      .handler(fakeReq('DELETE', SKILL_HUB_API.toggle), wrongMethod as never)
+    expect(wrongMethod.status).toBe(405)
+
+    // GET 不受影响。
+    const read = new FakeResponse()
+    await routeFor(SKILL_HUB_API.catalog).handler(fakeReq('GET', SKILL_HUB_API.catalog), read as never)
+    expect(read.status).toBe(200)
+
+    // 兜底路由豁免：拼错路径的 POST 必须回 404 且带路径名，不能被缺头拦成 403
+    // —— 把拼写问题读成鉴权失败，正是这条兜底路由当初要消除的误判。
+    const unknownPath = SKILL_HUB_API_ROOT + '/nope'
+    const fallback = makeRoutes(deps).find((route) => route.kind === 'prefix' && route.path === SKILL_HUB_API_ROOT)
+    const unknown = new FakeResponse()
+    await fallback?.handler(fakeReq('POST', unknownPath, undefined, '127.0.0.1', '127.0.0.1:3080', { [SKILL_HUB_WRITE_HEADER]: '' }), unknown as never)
+    expect(unknown.status).toBe(404)
+    expect(String((unknown.json() as { error: string }).error)).toContain(unknownPath)
+  })
+
+  it('imports a single-skill zip into the user root', async () => {
+    const zip = makeZip([
+      { path: 'SKILL.md', data: manifest('zip-one') },
+      { path: 'scripts/run.sh', data: 'echo hi\n' },
+    ])
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.importZip).handler(fakeZipReq(SKILL_HUB_API.importZip, zip), res as never)
+    expect(res.status).toBe(200)
+    const body = res.json() as ZipImportResponse
+    expect(body.imported).toEqual(['zip-one'])
+    expect(body.failed).toEqual([])
+    expect(await readFile(join(home, 'skills', 'zip-one', 'SKILL.md'), 'utf8')).toContain('name: zip-one')
+    expect(await readFile(join(home, 'skills', 'zip-one', 'scripts', 'run.sh'), 'utf8')).toBe('echo hi\n')
+  })
+
+  it('imports every skill of a collection package independently', async () => {
+    const zip = makeZip([
+      { path: 'alpha/SKILL.md', data: manifest('zip-a') },
+      { path: 'alpha/ref.md', data: 'ref' },
+      { path: 'beta/SKILL.md', data: manifest('zip-b') },
+    ])
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.importZip).handler(fakeZipReq(SKILL_HUB_API.importZip, zip), res as never)
+    const body = res.json() as ZipImportResponse
+    expect(body.imported.sort()).toEqual(['zip-a', 'zip-b'])
+    expect(await readFile(join(home, 'skills', 'zip-a', 'ref.md'), 'utf8')).toBe('ref')
+  })
+
+  it('refuses a zip skill with a blocking audit finding and leaves nothing on disk', async () => {
+    const zip = makeZip([{ path: 'SKILL.md', data: manifest('zip-bad').replace('body', 'hidden \u001B[31mred') }])
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.importZip).handler(fakeZipReq(SKILL_HUB_API.importZip, zip), res as never)
+    const body = res.json() as ZipImportResponse
+    expect(body.imported).toEqual([])
+    expect(body.failed).toHaveLength(1)
+    expect(body.failed[0]?.error).toContain('content audit')
+    await expect(access(join(home, 'skills', 'zip-bad'))).rejects.toBeTruthy()
+  })
+
+  it('skips a name that is already enabled on disk instead of overwriting it', async () => {
+    await mkdir(join(home, 'skills', 'zip-dup'), { recursive: true })
+    await writeFile(join(home, 'skills', 'zip-dup', 'SKILL.md'), manifest('zip-dup'))
+    const zip = makeZip([{ path: 'SKILL.md', data: manifest('zip-dup') }])
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.importZip).handler(fakeZipReq(SKILL_HUB_API.importZip, zip), res as never)
+    const body = res.json() as ZipImportResponse
+    expect(body.imported).toEqual([])
+    expect(body.skipped).toEqual([{ name: 'zip-dup', reason: 'a skill with this name already exists' }])
+  })
+
+  it('answers 400 for a non-zip body and for an archive without SKILL.md', async () => {
+    const notZip = new FakeResponse()
+    await routeFor(SKILL_HUB_API.importZip).handler(fakeZipReq(SKILL_HUB_API.importZip, Buffer.from('not a zip at all, just text')), notZip as never)
+    expect(notZip.status).toBe(400)
+
+    const noSkill = new FakeResponse()
+    await routeFor(SKILL_HUB_API.importZip)
+      .handler(fakeZipReq(SKILL_HUB_API.importZip, makeZip([{ path: 'readme.md', data: 'nothing here' }])), noSkill as never)
+    expect(noSkill.status).toBe(400)
+    expect(String((noSkill.json() as { error: string }).error)).toContain('no skill')
+  })
+
+  it('proxies a skills.sh search and turns a bad query into 400', async () => {
+    stubFetch([['skills.sh/api/search', jsonResponse({
+      skills: [{ source: 'obra/superpowers', skillId: 'brainstorming', name: 'brainstorming', installs: 12 }],
+    })]])
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.marketSkillsSh)
+      .handler(fakeReq('GET', SKILL_HUB_API.marketSkillsSh + '?q=git'), res as never)
+    expect(res.status).toBe(200)
+    // id 缺失时按 source/skillId 合成，前端用它做去重键。
+    expect((res.json() as { skills: unknown[] }).skills).toEqual([
+      { id: 'obra/superpowers/brainstorming', source: 'obra/superpowers', skillId: 'brainstorming', name: 'brainstorming', installs: 12 },
+    ])
+
+    const bad = new FakeResponse()
+    await routeFor(SKILL_HUB_API.marketSkillsSh)
+      .handler(fakeReq('GET', SKILL_HUB_API.marketSkillsSh + '?q=a'), bad as never)
+    expect(bad.status).toBe(400)
+  })
+
+  it('installs one skills.sh skill end to end and refuses one that fails the audit', async () => {
+    stubFetch([['skills.sh/api/download', jsonResponse({
+      files: [{ path: 'SKILL.md', contents: '---\nname: sh-installed\ndescription: demo\n---\nbody' }, { path: 'notes.md', contents: 'n' }],
+    })]])
+    const res = new FakeResponse()
+    await routeFor(SKILL_HUB_API.marketSkillsShInstall)
+      .handler(fakeReq('POST', SKILL_HUB_API.marketSkillsShInstall, { source: 'obra/superpowers', skillId: 'brainstorming' }), res as never)
+    expect(res.status).toBe(200)
+    expect(res.json()).toMatchObject({ ok: true, status: 'installed', name: 'sh-installed' })
+    expect(await readFile(join(home, 'skills', 'sh-installed', 'notes.md'), 'utf8')).toBe('n')
+
+    // 阻断级内容：落进 failed 且磁盘上不留目录。两条安装路径共用同一套审计。
+    stubFetch([['skills.sh/api/download', jsonResponse({
+      files: [{ path: 'SKILL.md', contents: '---\nname: sh-evil\ndescription: demo\n---\nbody \u001B[31mred' }],
+    })]])
+    const blocked = new FakeResponse()
+    await routeFor(SKILL_HUB_API.marketSkillsShInstall)
+      .handler(fakeReq('POST', SKILL_HUB_API.marketSkillsShInstall, { source: 'o/r', skillId: 's' }), blocked as never)
+    const body = blocked.json() as { status: string; error: string }
+    expect(body.status).toBe('failed')
+    expect(body.error).toContain('content audit')
+    await expect(access(join(home, 'skills', 'sh-evil'))).rejects.toBeTruthy()
+  })
+
+  it('lists project-level foreign skills from a registered workspace and imports one into the project .dsh/skills', async () => {
+    // 造一个项目：`.git` 标记 + 别家 agent 放的技能。
+    const project = join(dir, 'proj')
+    await mkdir(join(project, '.git'), { recursive: true })
+    await mkdir(join(project, '.claude', 'skills', 'proj-skill'), { recursive: true })
+    await writeFile(join(project, '.claude', 'skills', 'proj-skill', 'SKILL.md'), '---\nname: proj-skill\ndescription: Lives in the repo\n---\nbody\n')
+    // 宿主登记的工作区清单：projectRoot 从这里推，前端不传。
+    await mkdir(join(home, 'storages'), { recursive: true })
+    await writeFile(join(home, 'storages', 'workspace.json'), JSON.stringify({
+      tables: { workspaces: { w1: { path: project, title: 'proj' } } },
+    }))
+
+    const list = new FakeResponse()
+    await routeFor(SKILL_HUB_API.foreign).handler(fakeReq('GET', SKILL_HUB_API.foreign), list as never)
+    expect(list.status).toBe(200)
+    const body = list.json() as ForeignListResponse
+    expect(body.projectRoots.map((entry) => entry.root)).toEqual([project])
+    const entry = body.skills.find((skill) => skill.name === 'proj-skill')
+    expect(entry).toMatchObject({ scope: 'project', projectRoot: project, existing: false })
+
+    const imported = new FakeResponse()
+    await routeFor(SKILL_HUB_API.foreignImport)
+      .handler(fakeReq('POST', SKILL_HUB_API.foreignImport, {
+        items: [{ agent: 'claude-code', name: 'proj-skill', scope: 'project', projectRoot: project }],
+      }), imported as never)
+    expect(imported.status).toBe(200)
+    expect((imported.json() as ForeignImportResponse).imported).toEqual(['proj-skill'])
+    expect(await readFile(join(project, '.dsh', 'skills', 'proj-skill', 'SKILL.md'), 'utf8')).toContain('name: proj-skill')
+
+    // 项目级条目现在标为已存在，且按项目根判（用户级根里没有它）。
+    const again = new FakeResponse()
+    await routeFor(SKILL_HUB_API.foreign).handler(fakeReq('GET', SKILL_HUB_API.foreign), again as never)
+    const second = (again.json() as ForeignListResponse).skills.find((skill) => skill.name === 'proj-skill')
+    expect(second?.existing).toBe(true)
+  })
+
+  it('rejects a project-level import whose projectRoot is not one of the registered workspaces', async () => {
+    const imported = new FakeResponse()
+    await routeFor(SKILL_HUB_API.foreignImport)
+      .handler(fakeReq('POST', SKILL_HUB_API.foreignImport, {
+        items: [{ agent: 'claude-code', name: 'proj-skill', scope: 'project', projectRoot: '/somewhere/else' }],
+      }), imported as never)
+    expect(imported.status).toBe(200)
+    const body = imported.json() as ForeignImportResponse
+    expect(body.imported).toEqual([])
+    expect(body.failed[0]?.error).toContain('unknown project root')
+  })
+
+  it('toggles a project skill via invocation override and never touches its file', async () => {
+    const project = join(dir, 'proj')
+    await mkdir(join(project, '.git'), { recursive: true })
+    await mkdir(join(project, '.dsh', 'skills', 'proj-toggle'), { recursive: true })
+    const skillFile = join(project, '.dsh', 'skills', 'proj-toggle', 'SKILL.md')
+    await writeFile(skillFile, '---\nname: proj-toggle\ndescription: Lives in the repo\n---\nbody\n')
+    await mkdir(join(home, 'storages'), { recursive: true })
+    await writeFile(join(home, 'storages', 'workspace.json'), JSON.stringify({
+      tables: { workspaces: { w1: { path: project, title: 'proj' } } },
+    }))
+    // 项目技能来自宿主 registry：stub 返回带 path 的条目（override 的 key）。
+    deps.skills = {
+      snapshot: async () => ({
+        skills: [{ name: 'proj-toggle', description: 'p', invocation: { modelInvocable: true, userInvocable: true }, source: 'project-dsh', provider: 'skill-hub', path: skillFile } as never],
+        complete: true,
+      }),
+      get: async () => ({ name: 'proj-toggle', description: 'p', invocation: { modelInvocable: true, userInvocable: true }, source: 'project-dsh', provider: 'skill-hub', path: skillFile, content: 'body' } as never),
+    }
+
+    const off = new FakeResponse()
+    await routeFor(SKILL_HUB_API.toggle).handler(fakeReq('POST', SKILL_HUB_API.toggle, { name: 'proj-toggle' }), off as never)
+    expect(off.status).toBe(200)
+    // 文件一个字节没动：改名的停用方式会污染用户的 git 仓库。
+    expect(await readFile(skillFile, 'utf8')).toContain('name: proj-toggle')
+    expect(await deps.store.listInvocationOverrides()).toHaveLength(1)
+
+    // catalog 报 modelOverride，UI 据此显示开关状态。
+    const cat = new FakeResponse()
+    await routeFor(SKILL_HUB_API.catalog).handler(fakeReq('GET', SKILL_HUB_API.catalog), cat as never)
+    expect((cat.json() as { skills: Array<{ modelOverride?: boolean }> }).skills[0]?.modelOverride).toBe(true)
+
+    const on = new FakeResponse()
+    await routeFor(SKILL_HUB_API.toggle).handler(fakeReq('POST', SKILL_HUB_API.toggle, { name: 'proj-toggle', enabled: true }), on as never)
+    expect(on.status).toBe(200)
+    expect(await deps.store.listInvocationOverrides()).toEqual([])
   })
 
   it('delegates to the host fence and passes its verdict through verbatim (issue #17)', async () => {

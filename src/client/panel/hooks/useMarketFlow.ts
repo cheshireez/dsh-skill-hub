@@ -7,6 +7,7 @@
 
 import { useCallback, useState } from 'react'
 import type {
+  MarketSkillsShEntry,
   MarketStatsResponse,
   SourceCheckResult,
 } from '../../../protocol.ts'
@@ -234,14 +235,68 @@ export function useMarketFlow(
     }
   }, [api, sourceCheck, checkSources, checkMarket, reloadCatalog, reloadGroups, reloadSources, shared])
 
+  /**
+   * skills.sh 搜索状态。
+   *
+   * 与市场列表分开存放：搜索结果是一次性的「发现」结果，用户点「添加」后
+   * 就变成普通市场源，不需要留在状态里；把两者混在一起会让空结果、出错、
+   * 重新搜索三种情况互相覆盖。
+   */
+  const [skillsShQuery, setSkillsShQuery] = useState('')
+  const [skillsShState, setSkillsShState] = useState<{ status: 'idle' | 'loading' | 'ready' | 'error'; skills: MarketSkillsShEntry[]; message?: string }>({ status: 'idle', skills: [] })
+
+  /** 在 skills.sh 索引里搜技能。上游要求至少 2 个字符，短查询直接不发。 */
+  const runSkillsShSearch = useCallback(async (): Promise<void> => {
+    const query = skillsShQuery.trim()
+    if (query.length < 2) return
+    setSkillsShState({ status: 'loading', skills: [] })
+    try {
+      const result = await api.searchSkillsSh(query)
+      setSkillsShState({ status: 'ready', skills: result.skills })
+    } catch (error) {
+      setSkillsShState({ status: 'error', skills: [], message: errorMessage(error) })
+    }
+  }, [api, skillsShQuery])
+
+  /** 正在直装的技能键（`source/skillId`）；同时只允许一个，避免并发写同名目录。 */
+  const [skillsShInstalling, setSkillsShInstalling] = useState<string | null>(null)
+
+  /**
+   * 直装 skills.sh 里的单个技能。
+   *
+   * 与「加为源」是两种诉求：这条路一步到位但不登记来源（上游不给仓库内
+   * 路径，无法确定 root），所以装完不跟踪更新。失败原因（审计阻断、同名
+   * 已存在）原样透出 —— 用户需要知道是被审计拒了还是重名了。
+   */
+  const installSkillsSh = useCallback(async (source: string, skillId: string): Promise<void> => {
+    const key = source + '/' + skillId
+    setSkillsShInstalling(key)
+    shared.clearFail()
+    try {
+      const result = await api.installSkillsShSkill(source, skillId)
+      if (result.status === 'installed') {
+        await reloadCatalog()
+        shared.succeed(tt('market.skillsShInstalled', { name: result.name }))
+      } else {
+        shared.fail(tt('market.skillsShInstallFailed', { name: result.name, error: result.error ?? result.status }))
+      }
+    } catch (error) {
+      shared.fail(errorMessage(error))
+    } finally {
+      setSkillsShInstalling(null)
+    }
+  }, [api, reloadCatalog, shared])
+
   return {
     marketState, marketCheck, branchChoice, branchBusy, marketSyncDialog, syncingMarket,
     syncBusy, newSourceName, repoDiscoverState, scanningRepo, repoSelected, repoImporting,
     repoResult, importJobId, marketStats, versionDialog, versionBusy, updateAllDialog,
+    skillsShQuery, skillsShState, skillsShInstalling,
     setBranchChoice, setMarketSyncDialog, setNewSourceName, setRepoSelected,
-    setUpdateAllDialog, setVersionDialog,
+    setUpdateAllDialog, setVersionDialog, setSkillsShQuery,
     loadMarket, addSource, addMarketSource, removeMarketSource, scanRepo, confirmBranchChoice,
     openVersionDialog, confirmVersionDialog, toggleRepoSelected, importRepo, cancelImport,
     clearScan, checkMarket, loadMarketStats, syncMarketSource, confirmMarketSync, updateAll,
+    runSkillsShSearch, installSkillsSh,
   }
 }

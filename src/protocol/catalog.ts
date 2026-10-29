@@ -18,6 +18,14 @@ export interface CatalogSkill {
   provider: string
   /** Whether the hub may toggle this skill (user-level filesystem skills only). */
   writable: boolean
+  /**
+   * Whether the hub may toggle this skill without touching its files
+   * (project skills only: an invocation override flips `modelInvocable`).
+   * `writable` implies toggling too — this flag only ADDS project skills.
+   */
+  toggleable?: boolean
+  /** The hub has switched this skill's model invocation off (project skills; `/name` still works). */
+  modelOverride?: boolean
   /** 技能来源标识（user-dsh/user-agents/project-dsh/project-agents/...）。 */
   source: string
   /** SKILL.md creation time (epoch ms); used for "added" sorting. Absent when unknown. */

@@ -20,9 +20,16 @@ export interface ForeignImportDialogProps {
   onImported: (imported: string[], replaced: number) => void
 }
 
-/** 一个技能在一组里的稳定键（同名技能可来自不同 agent）。 */
-function keyOf(skill: { agent: string; name: string }): string {
-  return skill.agent + '/' + skill.name
+/** 一个技能在一组里的稳定键（同名技能可来自不同 agent、不同项目根）。 */
+function keyOf(skill: { agent: string; name: string; scope: string; projectRoot?: string }): string {
+  return skill.scope + '/' + skill.agent + '/' + skill.name + '/' + (skill.projectRoot ?? '')
+}
+
+/** 项目根的展示名（最后一段目录名；`/` 或 Windows 根则整条显示）。 */
+function projectNameOf(root: string | undefined): string {
+  if (root === undefined) return ''
+  const segments = root.split(/[\\/]/).filter((segment) => segment !== '')
+  return segments[segments.length - 1] ?? root
 }
 
 export function ForeignImportDialog(props: ForeignImportDialogProps): React.JSX.Element {
@@ -61,7 +68,14 @@ export function ForeignImportDialog(props: ForeignImportDialogProps): React.JSX.
     setError(null)
     setMessage(null)
     try {
-      const items = skills.filter((skill) => selected.has(keyOf(skill))).map((skill) => ({ agent: skill.agent, name: skill.name }))
+      const items = skills
+        .filter((skill) => selected.has(keyOf(skill)))
+        .map((skill) => ({
+          agent: skill.agent,
+          name: skill.name,
+          scope: skill.scope,
+          ...(skill.projectRoot !== undefined ? { projectRoot: skill.projectRoot } : {}),
+        }))
       const result = await api.importForeignSkills(items)
       const replaced = result.replaced?.length ?? 0
       if (result.failed.length > 0) {
@@ -104,6 +118,9 @@ export function ForeignImportDialog(props: ForeignImportDialogProps): React.JSX.
                   />
                   <span className={css.rowNameText}>{skill.name}</span>
                   <span className={css.statusBadge}>{skill.agent}</span>
+                  <span className={css.statusBadge} title={skill.scope === 'project' ? skill.projectRoot : tt('foreign.scopeUserHint')}>
+                    {skill.scope === 'project' ? tt('foreign.scopeProject', { name: projectNameOf(skill.projectRoot) }) : tt('foreign.scopeUser')}
+                  </span>
                   {skill.existing ? <span className={css.statusBadge + ' ' + css.statusLocal}>{tt('foreign.exists')}</span> : null}
                 </label>
                 <div className={css.rowDesc} title={skill.description}>{skill.description}</div>

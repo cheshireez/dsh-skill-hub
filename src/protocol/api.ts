@@ -7,6 +7,20 @@
 export const SKILL_HUB_API_ROOT = '/api/skill-hub'
 
 /**
+ * 写接口的 CSRF 标记头。
+ *
+ * 信任栅栏（Host / Origin / 会话）回答的是「谁在发」，这一层回答的是
+ * 「这是不是本插件页面发的」：浏览器不允许表单提交、`<img>`、`sendBeacon`
+ * 和简单跨源 fetch 携带自定义头，所以别的站点构造出来的 POST 到不了处理器。
+ * 同源请求不触发 CORS 预检，因此不增加一次往返；跨源时预检会先撞上围栏
+ * 直接失败，也不会漏过来。
+ *
+ * 只对 POST 生效 —— GET 不改状态，加上它只会让只读接口更难调。
+ */
+export const SKILL_HUB_WRITE_HEADER = 'x-dsh-skill-hub'
+export const SKILL_HUB_WRITE_VALUE = '1'
+
+/**
  * Browser-facing base paths of the skill-hub API family.
  *
  * Naming rule: a path's segments mirror its scope. Market sources own the
@@ -49,6 +63,9 @@ export const SKILL_HUB_API = {
   diagnosticFix: '/api/skill-hub/diagnostic/fix',
   marketSourceVersions: '/api/skill-hub/market/source/versions',
   marketStats: '/api/skill-hub/market/stats',
+  marketSkillsSh: '/api/skill-hub/market/skills-sh',
+  marketSkillsShInstall: '/api/skill-hub/market/skills-sh/install',
   foreign: '/api/skill-hub/foreign',
   foreignImport: '/api/skill-hub/foreign/import',
+  importZip: '/api/skill-hub/import/zip',
 } as const

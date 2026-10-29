@@ -13,11 +13,11 @@
  * early returns are safe.
  */
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { WritableRoot } from '../../protocol.ts'
 import { IconSkillOutline16 } from '../icons.tsx'
 import type { SkillHubApi } from '../api.ts'
-import { tt } from '../helpers.ts'
+import { errorMessage, tt } from '../helpers.ts'
 import { PRIVATE_SOURCE, type SortKey } from '../grouping.ts'
 import { dotStyle, relativeTimeText } from './format.ts'
 import { SkillDetailView } from './SkillDetailView.tsx'
@@ -40,6 +40,9 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
   const [workspaceDraft, setWorkspaceDraft] = useState('')
   /** 「从其他 Agent 导入」弹窗开合。 */
   const [showForeign, setShowForeign] = useState(false)
+  /** ZIP 导入：隐藏的文件选择框 + 上传中状态。 */
+  const zipInputRef = useRef<HTMLInputElement | null>(null)
+  const [zipBusy, setZipBusy] = useState(false)
   /** 「筛选」面板开合（来源 + 调用方式收进这里；搜索/排序/视图切换始终可见）。 */
   const [filtersOpen, setFiltersOpen] = useState(false)
   const {
@@ -58,6 +61,40 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
     runConfirmed, resolveConflict, confirmBranchChoice, confirmMarketSync, create, saveTag, deleteTag, enableDisabled, reloadCatalog,
   } = hub
   const { shortenedCount, fixingPaths, clearListFilters } = hub
+
+  /**
+   * ZIP 导入：选完文件立刻上传，不做二次确认 —— 服务端逐条回报
+   * imported / skipped / failed，阻断级内容根本落不了盘，结果直接进横幅。
+   * 部分成功也要显示成功数，否则用户会以为一个都没进去。
+   */
+  const importZip = async (file: File | undefined): Promise<void> => {
+    if (file === undefined) return
+    setZipBusy(true)
+    setLoadError(null)
+    setSuccessBanner(null)
+    try {
+      const result = await props.api.importZip(file)
+      const replaced = result.replaced?.length ?? 0
+      if (result.imported.length > 0) {
+        void reloadCatalog()
+        setSuccessBanner(tt(replaced > 0 ? 'zip.importedReplacedBanner' : 'zip.importedBanner', { count: result.imported.length, replaced }))
+      }
+      const notes: string[] = []
+      if (result.skipped.length > 0) notes.push(tt('zip.skippedBanner', { count: result.skipped.length }))
+      if (result.failed.length > 0) {
+        const detail = result.failed.slice(0, 3).map((failure) => failure.name + ': ' + failure.error).join('; ')
+        notes.push(tt('zip.failedBanner', { count: result.failed.length, detail }))
+      }
+      if (result.warnings.length > 0) notes.push(tt('zip.warnBanner', { count: result.warnings.length }))
+      if (notes.length > 0) setLoadError(notes.join(' '))
+    } catch (caught) {
+      setLoadError(errorMessage(caught))
+    } finally {
+      setZipBusy(false)
+      // 清空 value：同一个文件连选两次也要能再次触发 change。
+      if (zipInputRef.current !== null) zipInputRef.current.value = ''
+    }
+  }
 
   // -------------------------------------------------------------- detail
 
@@ -175,6 +212,22 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
         <button type='button' className={css.legendToggle + (showLegend ? ' ' + css.legendToggleActive : '')} onClick={() => { setShowLegend((value) => !value) }} title={tt('legend.hint')}>?</button>
         <span className={css.actions}>
           <button type='button' className={css.button} onClick={() => { setShowForeign(true) }}>{tt('foreign.open')}</button>
+          <button
+            type='button'
+            className={css.button}
+            disabled={zipBusy}
+            title={tt('zip.hint')}
+            onClick={() => { zipInputRef.current?.click() }}
+          >
+            {zipBusy ? tt('zip.importing') : tt('zip.open')}
+          </button>
+          <input
+            ref={zipInputRef}
+            type='file'
+            accept='.zip,application/zip'
+            style={{ display: 'none' }}
+            onChange={(event) => { void importZip(event.target.files?.[0]) }}
+          />
           <button type='button' className={css.button + ' ' + css.primary} onClick={() => { setShowForm((value) => !value) }}>{tt('panel.new')}</button>
         </span>
       </div>

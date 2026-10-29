@@ -1,3 +1,5 @@
+import type { AuditWarningView } from './audit.ts'
+
 /** One market source: a tracked upstream repo plus its pinned version. */
 export interface MarketSourceRecord {
   /** Repo slug (owner/repo). */
@@ -109,4 +111,49 @@ export interface MarketSyncResponse {
   commitSha: string
   /** Local skills tracked from this repo (candidates for a batch update). */
   skills: string[]
+}
+
+/**
+ * 一条 skills.sh 搜索结果。
+ *
+ * skills.sh 是索引不是仓库：`source` 是 `owner/repo`，可以直接当市场源加入；
+ * `skillId` 是技能在该仓库里的目录名，加入后由仓库扫描定位。
+ */
+export interface MarketSkillsShEntry {
+  /** 上游 id，形如 `owner/repo/skillId`（去重键）。 */
+  id: string
+  /** `owner/repo` —— 已按严格形态校验过，可直接拼进 github.com 路径。 */
+  source: string
+  /** 技能在仓库里的目录名。 */
+  skillId: string
+  name: string
+  /** 上游统计的安装次数；缺失表示上游没给。 */
+  installs?: number
+}
+
+/** GET /api/skill-hub/market/skills-sh?q= */
+export interface MarketSkillsShResponse {
+  ok: true
+  /** 已按相关度排序、去重、限制条数。 */
+  skills: MarketSkillsShEntry[]
+}
+
+/** POST /api/skill-hub/market/skills-sh/install — 直装单个技能（不登记来源）。 */
+export interface MarketSkillsShInstallRequest {
+  /** `owner/repo`。 */
+  source: string
+  skillId: string
+}
+
+export interface MarketSkillsShInstallResponse {
+  ok: true
+  /** installed = 已落盘；skipped = 同名已存在；failed = 审计阻断或写盘失败。 */
+  status: 'installed' | 'skipped' | 'failed'
+  name: string
+  /** `skipped` / `failed` 的原因。 */
+  error?: string
+  /** 安装前把同名禁用占位移入了回收站。 */
+  replaced?: boolean
+  /** 落盘成功的警告级发现。 */
+  warnings?: AuditWarningView[]
 }

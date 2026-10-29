@@ -8,7 +8,7 @@
  * 新代码可按需直引 `from './protocol/<domain>.ts'`。
  */
 
-export { SKILL_HUB_API, SKILL_HUB_API_ROOT } from './protocol/api.ts'
+export { SKILL_HUB_API, SKILL_HUB_API_ROOT, SKILL_HUB_WRITE_HEADER, SKILL_HUB_WRITE_VALUE } from './protocol/api.ts'
 export type {
   WritableRoot,
   HubInvocation,
@@ -46,7 +46,12 @@ export type {
   MarketStatsResponse,
   MarketCheckResponse,
   MarketSyncResponse,
+  MarketSkillsShEntry,
+  MarketSkillsShResponse,
+  MarketSkillsShInstallRequest,
+  MarketSkillsShInstallResponse,
 } from './protocol/market.ts'
+export type { AuditWarningView } from './protocol/audit.ts'
 export type {
   RepoSkillEntry,
   RepoRoot,
@@ -91,4 +96,5 @@ export type {
   SourceTrashClearResponse,
 } from './protocol/sources.ts'
 export { isProjectSource } from './protocol/sources.ts'
-export type { ForeignRootView, ForeignSkillView, ForeignListResponse, ForeignImportRequest, ForeignImportResponse } from './protocol/foreign.ts'
+export type { ForeignRootView, ForeignSkillView, ForeignListResponse, ForeignImportRequest, ForeignImportResponse, ForeignImportItem, ForeignScope } from './protocol/foreign.ts'
+export type { ZipAuditWarning, ZipImportResponse } from './protocol/zip.ts'

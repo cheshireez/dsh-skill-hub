@@ -4,6 +4,8 @@
  */
 import {
   SKILL_HUB_API,
+  SKILL_HUB_WRITE_HEADER,
+  SKILL_HUB_WRITE_VALUE,
   type CatalogResponse,
   type ConfigResponse,
   type CreateRequest,
@@ -12,6 +14,7 @@ import {
   type DiagnosticFixResponse,
   type ForeignImportRequest,
   type ForeignImportResponse,
+  type ForeignImportItem,
   type ForeignListResponse,
   type GroupsResponse,
   type MarketCheckResponse,
@@ -21,6 +24,9 @@ import {
   type MarketSourceResponse,
   type MarketSourcesResponse,
   type MarketSourceVersionsResponse,
+  type MarketSkillsShResponse,
+  type MarketSkillsShInstallRequest,
+  type MarketSkillsShInstallResponse,
   type MarketStatsResponse,
   type MarketSyncResponse,
   type RepoDiscoverResponse,
@@ -59,6 +65,7 @@ import {
   type ToggleRequest,
   type ToggleResponse,
   type UpdateCheckResponse,
+  type ZipImportResponse,
 } from '../protocol.ts'
 
 /** Error carrying the route's JSON error message. */
@@ -132,6 +139,16 @@ async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ms
   }
 }
 
+/**
+ * Headers every write request carries: the plugin marker (the host rejects a
+ * POST without it — a cross-site page cannot set a custom header through a
+ * simple request) plus whatever the call adds. Centralised so no method can
+ * forget it; a forgotten one only surfaces as a 403 in production.
+ */
+function writeHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return { [SKILL_HUB_WRITE_HEADER]: SKILL_HUB_WRITE_VALUE, ...extra }
+}
+
 /** The browser half's only data entry point. */
 export class SkillHubApi {
   /** One GET round trip (query already encoded by the caller). */
@@ -142,9 +159,11 @@ export class SkillHubApi {
 
   /** One POST round trip (body omitted for routes that take none). */
   private async post<T>(path: string, body?: unknown, ms?: number): Promise<T> {
-    const response = await fetchWithTimeout(path, body !== undefined
-      ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
-      : { method: 'POST' }, ms)
+    const response = await fetchWithTimeout(path, {
+      method: 'POST',
+      headers: writeHeaders(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    }, ms)
     return readJson<T>(response)
   }
 
@@ -227,9 +246,32 @@ export class SkillHubApi {
     return this.post<MarketSourceResponse>(SKILL_HUB_API.marketSourceRef, { repo, ref } satisfies MarketSourceRefRequest)
   }
 
-  /** Check the hub's own latest GitHub release. */
+  /** Release notes / latest version of the hub's own GitHub release. */
   updateCheck(): Promise<UpdateCheckResponse> {
     return this.get<UpdateCheckResponse>(SKILL_HUB_API.update)
+  }
+
+  /**
+   * 在 skills.sh 索引里搜技能。
+   *
+   * 走服务端代理：上游没有 CORS 头，浏览器直连会被拦；而且搜索不该把用户
+   * 的出口 IP 交给第三方。返回的 `source` 已被服务端校验成严格 owner/repo，
+   * 可以直接当市场源入参。
+   */
+  searchSkillsSh(query: string): Promise<MarketSkillsShResponse> {
+    return this.get<MarketSkillsShResponse>(SKILL_HUB_API.marketSkillsSh, '?q=' + encodeURIComponent(query))
+  }
+
+  /**
+   * 直接安装 skills.sh 里的单个技能。
+   *
+   * 不登记来源：上游只给 skillId，不给它在仓库里的路径，编一个 `root` 会让
+   * 后续更新检查去找一个不存在的目录。所以这条路只解决「我就要这一个」，
+   * 想要跟随上游请走「加为源」。
+   */
+  installSkillsShSkill(source: string, skillId: string): Promise<MarketSkillsShInstallResponse> {
+    const payload: MarketSkillsShInstallRequest = { source, skillId }
+    return this.post<MarketSkillsShInstallResponse>(SKILL_HUB_API.marketSkillsShInstall, payload)
   }
 
   /** Discover importable skills in a GitHub repo. */
@@ -303,10 +345,25 @@ export class SkillHubApi {
     return this.get<ForeignListResponse>(SKILL_HUB_API.foreign)
   }
 
-  /** 收编所选外部技能到 ~/.dsh/skills。 */
-  importForeignSkills(items: Array<{ agent: string; name: string }>): Promise<ForeignImportResponse> {
+  /** 收编所选外部技能（用户级 → ~/.dsh/skills；项目级 → <projectRoot>/.dsh/skills）。 */
+  importForeignSkills(items: ForeignImportItem[]): Promise<ForeignImportResponse> {
     const payload: ForeignImportRequest = { items }
     return this.post<ForeignImportResponse>(SKILL_HUB_API.foreignImport, payload)
+  }
+
+  /**
+   * 从 ZIP 导入技能：整包字节原样发出（不做 base64），服务端逐个技能审计后落盘。
+   *
+   * 超时比普通请求长得多 —— 解压、审计、写盘都在服务端一次完成，10 秒对
+   * 一个几十 MiB 的包不够，而客户端的 10 秒默认值只适合读写状态的请求。
+   */
+  async importZip(file: Blob): Promise<ZipImportResponse> {
+    const response = await fetchWithTimeout(SKILL_HUB_API.importZip, {
+      method: 'POST',
+      headers: writeHeaders({ 'content-type': 'application/zip' }),
+      body: await file.arrayBuffer(),
+    }, 60_000)
+    return readJson<ZipImportResponse>(response)
   }
 
   /** 检查指定（或全部）来源的上游更新。 */

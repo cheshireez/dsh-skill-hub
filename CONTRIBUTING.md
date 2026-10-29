@@ -39,7 +39,7 @@ src/client/locales/     dictionaries by view (common/skills/market/sources/detai
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (366 tests across 20 suites)
+npm test            # vitest (413 tests across 23 suites)
 npm run build       # tsc declarations + tsdown bundles (lib/index.js + lib/client.js)
 ```
 

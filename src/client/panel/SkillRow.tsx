@@ -70,18 +70,20 @@ export function SkillRow(props: SkillRowProps): JSX.Element {
         </div>
         <div className={css.rowDesc} title={skill.description}>{skill.shortDescription ?? skill.description}</div>
       </div>
-      {skill.writable
+      {skill.writable || skill.toggleable === true
         ? <>
             <button
               type='button'
               role='switch'
-              aria-checked={true}
+              aria-checked={!(skill.modelOverride === true)}
               aria-label={tt('row.disable')}
-              className={css.switch + ' ' + css.switchOn}
+              title={skill.toggleable === true && !skill.writable ? tt('row.disableProjectHint') : undefined}
+              className={css.switch + (skill.modelOverride === true ? '' : ' ' + css.switchOn)}
               disabled={busyNames.has(skill.name)}
-              onClick={(event) => { event.stopPropagation(); void toggle(skill, false) }}
+              onClick={(event) => { event.stopPropagation(); void toggle(skill, skill.modelOverride === true) }}
             ><span className={css.switchThumb} /></button>
-            {editMode ? <button
+            {skill.modelOverride === true ? <span className={css.badge + ' ' + css.statusLocal} title={tt('row.modelOverrideHint')}>{tt('row.modelOverride')}</span> : null}
+            {editMode && skill.writable ? <button
               type='button'
               className={css.opBtn + ' ' + css.opDanger + ' ' + css.iconBtn}
               disabled={busyNames.has(skill.name) || tagBusy}

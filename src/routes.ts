@@ -26,6 +26,7 @@ import { repoImportRoutes } from './routes/repo-import.ts'
 import { groupRoutes } from './routes/groups.ts'
 import { sourceRoutes } from './routes/sources.ts'
 import { foreignRoutes } from './routes/foreign.ts'
+import { zipImportRoutes } from './routes/zip-import.ts'
 
 export type { SkillHubRouteDeps, SkillLookupLike } from './routes/helpers.ts'
 export type { RouteFence } from './routes/http.ts'
@@ -85,6 +86,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
     ...groupRoutes(deps),
     ...sourceRoutes(deps),
     ...foreignRoutes(deps),
+    ...zipImportRoutes(deps),
   ]
   return [
     ...specs.map((spec) => createRoute(deps, spec)),
@@ -99,6 +101,9 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
       path: SKILL_HUB_API_ROOT,
       methods: ['GET', 'POST'],
       skipGate: true,
+      // 不写盘，且它的价值就是「告诉你路径写错了」：被缺头拦成 403 会把
+      // 拼写问题误导成鉴权问题，正是这条兜底要消除的误判。
+      skipCsrf: true,
       handler: async ({ res, url }) => {
         writeError(res, 404, 'unknown skill-hub route: ' + url.pathname + ' (see SKILL_HUB_API in src/protocol/api.ts)')
       },

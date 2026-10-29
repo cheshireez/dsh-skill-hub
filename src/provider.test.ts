@@ -7,13 +7,13 @@ import { SkillHubProvider } from './provider.ts'
 import { createSkill } from './skillfs.ts'
 
 /** A control stub plus its invalidate spy; the timer is unref'd and harmless. */
-function makeProvider(home: string): { provider: SkillHubProvider; invalidate: ReturnType<typeof vi.fn> } {
+function makeProvider(home: string, overrides: () => Promise<ReadonlySet<string>> = async () => new Set()): { provider: SkillHubProvider; invalidate: ReturnType<typeof vi.fn> } {
   const invalidate = vi.fn()
   const control: SkillProviderControl = {
     signal: new AbortController().signal,
     invalidate,
   }
-  return { provider: new SkillHubProvider(control, home), invalidate }
+  return { provider: new SkillHubProvider(control, home, overrides), invalidate }
 }
 
 describe('SkillHubProvider', () => {
@@ -93,6 +93,26 @@ describe('SkillHubProvider', () => {
     const { provider } = makeProvider(home)
     const candidate = (await provider.list({})).find((entry) => entry.name === 'grouped-skill')
     expect(candidate?.metadata).toBeUndefined()
+  })
+
+  it('flips modelInvocable off for overridden paths and keeps the body reachable', async () => {
+    await createSkill('user-dsh', 'alpha-skill', 'Alpha', home)
+    // 项目技能停用的真实形态：按发现文件路径记录，命中的条目模型不可调，
+    // 用户 `/name` 保留 —— WorkBuddy 的 disableModelInvocation 同语义。
+    const overridden = new Set([join(home, 'skills', 'alpha-skill', 'SKILL.md')])
+    const { provider } = makeProvider(home, async () => overridden)
+    const candidate = (await provider.list({})).find((entry) => entry.name === 'alpha-skill')!
+    expect(candidate.invocation).toEqual({ modelInvocable: false, userInvocable: true })
+    const definition = await provider.get(candidate)
+    expect(definition?.invocation).toEqual({ modelInvocable: false, userInvocable: true })
+    expect(definition?.content).toContain('# alpha-skill')
+  })
+
+  it('leaves paths outside the override set untouched', async () => {
+    await createSkill('user-dsh', 'alpha-skill', 'Alpha', home)
+    const { provider } = makeProvider(home, async () => new Set([join(home, 'skills', 'other', 'SKILL.md')]))
+    const candidate = (await provider.list({})).find((entry) => entry.name === 'alpha-skill')!
+    expect(candidate.invocation).toEqual({ modelInvocable: true, userInvocable: true })
   })
 
   it('invalidate() forwards to the registry control', async () => {

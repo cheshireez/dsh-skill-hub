@@ -11,6 +11,7 @@
 
 import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, relative } from 'node:path'
+import type { ForeignScope } from '../protocol/foreign.ts'
 import { parseFrontmatter } from './frontmatter.ts'
 import { scanRoot } from './scan.ts'
 import { auditSkillBundle, blockingReason, MAX_SKILL_FILES, type AuditBundleFile } from './audit.ts'
@@ -20,6 +21,10 @@ export interface ForeignRoot {
   agent: string
   /** 绝对路径；不存在时扫描直接返回空。 */
   dir: string
+  /** 这是用户级目录还是项目根下的目录。决定收编到哪个可写根。 */
+  scope: ForeignScope
+  /** `scope === 'project'` 时的项目根绝对路径。 */
+  projectRoot?: string
 }
 
 /** 一条可收编的外部技能。 */
@@ -36,32 +41,84 @@ export interface ForeignSkill {
   kind: 'directory' | 'flat'
   /** 目标根已有同名技能（不可导入）。 */
   existing: boolean
+  scope: ForeignScope
+  /** `scope === 'project'` 时的项目根。 */
+  projectRoot?: string
 }
 
 /**
- * 常见 agent 的用户级技能目录。`~/.agents/skills` 不在此列 —— 那是 hub 自己的
+ * 常见 agent 的**用户级**技能目录。`~/.agents/skills` 不在此列 —— 那是 hub 自己的
  * 可写根（user-agents），重复列会让同一个技能出现两次。
  * 路径取自 vercel-labs/skills 的 agent 注册表，只保留桌面端常见的几个。
  */
 export function foreignRoots(userHome: string): ForeignRoot[] {
   return [
-    { agent: 'claude-code', dir: join(userHome, '.claude', 'skills') },
-    { agent: 'codex', dir: join(userHome, '.codex', 'skills') },
-    { agent: 'cursor', dir: join(userHome, '.cursor', 'skills') },
-    { agent: 'gemini-cli', dir: join(userHome, '.gemini', 'skills') },
-    { agent: 'copilot', dir: join(userHome, '.copilot', 'skills') },
-    { agent: 'opencode', dir: join(userHome, '.config', 'opencode', 'skills') },
-    { agent: 'goose', dir: join(userHome, '.config', 'goose', 'skills') },
+    { agent: 'claude-code', dir: join(userHome, '.claude', 'skills'), scope: 'user' },
+    { agent: 'codex', dir: join(userHome, '.codex', 'skills'), scope: 'user' },
+    { agent: 'cursor', dir: join(userHome, '.cursor', 'skills'), scope: 'user' },
+    { agent: 'gemini-cli', dir: join(userHome, '.gemini', 'skills'), scope: 'user' },
+    { agent: 'copilot', dir: join(userHome, '.copilot', 'skills'), scope: 'user' },
+    { agent: 'opencode', dir: join(userHome, '.config', 'opencode', 'skills'), scope: 'user' },
+    { agent: 'goose', dir: join(userHome, '.config', 'goose', 'skills'), scope: 'user' },
   ]
+}
+
+/**
+ * 项目根下的外部技能目录。
+ *
+ * 与用户级是**两份不同的表**：项目里放技能的位置遵循各家的项目约定
+ * （`.claude/skills`、`.cursor/skills`、…），而不是 `~/.config/opencode/skills`
+ * 这种用户配置路径。`.dsh` 与 `.agents` 不在此列 —— 那是 dsh 自己的项目根，
+ * 不是「别家的技能」。
+ */
+const PROJECT_AGENT_DIRS: ReadonlyArray<{ agent: string; dir: string }> = [
+  { agent: 'claude-code', dir: '.claude/skills' },
+  { agent: 'codex', dir: '.codex/skills' },
+  { agent: 'cursor', dir: '.cursor/skills' },
+  { agent: 'gemini-cli', dir: '.gemini/skills' },
+  { agent: 'copilot', dir: '.github/skills' },
+  { agent: 'opencode', dir: '.opencode/skills' },
+  { agent: 'windsurf', dir: '.windsurf/skills' },
+  { agent: 'trae', dir: '.trae/skills' },
+  { agent: 'roo', dir: '.roo/skills' },
+  { agent: 'codebuddy', dir: '.codebuddy/skills' },
+]
+
+/**
+ * 按项目根生成外部根。项目根必须由调用方从宿主登记的工作区推出来，
+ * 不能由前端传入 —— 否则一个任意绝对路径就能让服务端去扫别人的家目录。
+ * @param projectRoots - 已确认存在的项目根绝对路径。
+ */
+export function foreignProjectRoots(projectRoots: readonly string[]): ForeignRoot[] {
+  const out: ForeignRoot[] = []
+  for (const root of projectRoots) {
+    for (const entry of PROJECT_AGENT_DIRS) {
+      out.push({ agent: entry.agent, dir: join(root, entry.dir), scope: 'project', projectRoot: root })
+    }
+  }
+  return out
 }
 
 /**
  * 扫描所有外部根。解析不出 frontmatter 的条目直接跳过 —— 它们在任何 agent 里
  * 都不会生效，列出来只会让人以为「导入就好了」。
+ *
+ * `existing` 只判用户级目标根；要按项目分别判请用 {@link scanForeignRoots}。
  */
 export async function scanForeignSkills(userHome: string, existing: ReadonlySet<string> = new Set()): Promise<ForeignSkill[]> {
+  return scanForeignRoots(foreignRoots(userHome), (skill) => existing.has(skill.name))
+}
+
+/**
+ * 扫描指定的外部根，并按调用方给的判据标记「目标根已有同名」。
+ *
+ * 判据交出去，是因为**目标根不止一个**：用户级技能收编到 `~/.dsh/skills`，
+ * 项目级技能收编到 `<projectRoot>/.dsh/skills`。同一个名字在一个根里占了、
+ * 在另一个根里没占，是完全不同的两件事。
+ */
+export async function scanForeignRoots(roots: readonly ForeignRoot[], isExisting: (skill: ForeignSkill) => boolean | Promise<boolean>): Promise<ForeignSkill[]> {
   const found: ForeignSkill[] = []
-  for (const root of foreignRoots(userHome)) {
+  for (const root of roots) {
     for (const entry of await scanRoot(root.dir)) {
       let text: string
       try {
@@ -72,15 +129,20 @@ export async function scanForeignSkills(userHome: string, existing: ReadonlySet<
       const parsed = parseFrontmatter(text)
       if ('error' in parsed) continue
       const name = entry.kind === 'directory' ? basename(entry.directory) : basename(entry.path, '.md')
-      found.push({
+      const skill: ForeignSkill = {
         name,
         description: parsed.value.description,
         agent: root.agent,
         path: entry.path,
         directory: entry.directory,
         kind: entry.kind,
-        existing: existing.has(name),
-      })
+        existing: false,
+        scope: root.scope,
+        ...(root.projectRoot !== undefined ? { projectRoot: root.projectRoot } : {}),
+      }
+      // 判据可能是磁盘查询（按目标根查同名），所以允许异步。
+      skill.existing = await isExisting(skill)
+      found.push(skill)
     }
   }
   return found.sort((a, b) => (a.name === b.name ? a.agent.localeCompare(b.agent) : a.name.localeCompare(b.name)))

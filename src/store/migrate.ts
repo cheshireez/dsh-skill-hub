@@ -15,6 +15,7 @@ export interface MigratedStore {
   marketStats?: unknown
   collectionOrder?: unknown
   sourceGroupOrder?: unknown
+  invocationOverrides?: unknown
 }
 
 /**
@@ -80,6 +81,7 @@ export function migrateStore(parsed: unknown): MigratedStore | null {
     ...(record.marketStats !== undefined ? { marketStats: record.marketStats } : {}),
     ...(Array.isArray(record.collectionOrder) ? { collectionOrder: record.collectionOrder } : {}),
     ...(Array.isArray(record.sourceGroupOrder) ? { sourceGroupOrder: record.sourceGroupOrder } : {}),
+    ...(Array.isArray(record.invocationOverrides) ? { invocationOverrides: record.invocationOverrides } : {}),
   }
 }
 
@@ -95,6 +97,7 @@ export interface HydratedState {
   marketStats: MarketStatsSnapshot | undefined
   collectionOrder: string[]
   sourceGroupOrder: string[]
+  invocationOverrides: string[]
 }
 
 /** 小优化：统一的非空字符串数组清洗（去空、去重可选由调用方处理）。 */
@@ -301,6 +304,7 @@ export function hydrateMigratedState(migrated: MigratedStore): HydratedState {
 
   const collectionOrder = cleanStringList(migrated.collectionOrder)
   const sourceGroupOrder = cleanStringList(migrated.sourceGroupOrder)
+  const invocationOverrides = cleanStringList(migrated.invocationOverrides)
 
-  return { entries, config, tagsById, sourcesByRepo, marketSources, trashByPath, skillStats, marketStats, collectionOrder, sourceGroupOrder }
+  return { entries, config, tagsById, sourcesByRepo, marketSources, trashByPath, skillStats, marketStats, collectionOrder, sourceGroupOrder, invocationOverrides }
 }

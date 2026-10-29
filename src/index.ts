@@ -132,10 +132,86 @@ const CONFIG_FIELDS = [
 /** Order of the announcement section within the tool-guidance band. */
 const SECTION_ORDER = 152
 
+/**
+ * Register the hub's provider once more into every live agent's own skill
+ * layer, and keep following agents as they come and go.
+ *
+ * Why a second registration is REQUIRED for invocation overrides: an agent's
+ * skill catalog comes from the preset layer's own filesystem provider, which
+ * is nearer than the global layer. dsh-skill merges layers in order and the
+ * LAST write of a duplicate name wins, so a global-layer override can never
+ * outrank it — the override entry must exist in a layer nearer than the
+ * preset's. Registering the same shared instance per agent does exactly that
+ * (the shared instance keeps a single watch timer; only the per-layer
+ * controls differ, and each control invalidates its own layer's cache).
+ *
+ * Everything is defensive: the host may expose none of `ctx.on` / `ctx.get`,
+ * an agent may carry no skills service, and the event names may change —
+ * in every case this degrades to "no agent-layer override" (the global
+ * catalog still applies it) instead of breaking the plugin load.
+ */
+function registerAgentSkillPolicy(
+  ctx: Context,
+  ensureProvider: (control: SkillProviderControl) => SkillHubProvider,
+): () => void {
+  interface AgentLike {
+    id?: unknown
+    ctx?: unknown
+  }
+  type AgentEvent = { agent?: AgentLike }
+  type SkillsLike = { registerProvider?: (factory: (control: SkillProviderControl) => SkillHubProvider) => (() => void) | undefined }
+  const host = ctx as unknown as {
+    on?: (event: string, listener: (payload: AgentEvent) => void) => (() => void) | undefined
+    get?: (key: string) => unknown
+  }
+  if (typeof host.on !== 'function') {
+    ctx.logger.warn('[dsh-skill-hub] ctx.on unavailable: agent-layer invocation overrides are disabled (global catalog still applies them)')
+    return () => {}
+  }
+  const disposers = new Map<string, () => void>()
+
+  const install = (agent: AgentLike | undefined): void => {
+    if (agent === undefined || typeof agent.id !== 'string' || disposers.has(agent.id)) return
+    const agentCtx = agent.ctx as { get?: (key: string) => unknown; skills?: unknown } | undefined
+    const skills = (agentCtx !== undefined && typeof agentCtx.get === 'function'
+      ? agentCtx.get('skills')
+      : agentCtx?.skills) as SkillsLike | undefined
+    if (skills === undefined || typeof skills.registerProvider !== 'function') {
+      ctx.logger.warn('[dsh-skill-hub] agent layer has no skills service; skipping agent-layer registration for ' + String(agent.id))
+      return
+    }
+    const dispose = skills.registerProvider((control) => ensureProvider(control))
+    if (dispose !== undefined) {
+      disposers.set(agent.id, dispose)
+      ctx.logger.info('[dsh-skill-hub] invocation-override provider registered into agent layer ' + agent.id)
+    }
+  }
+  const uninstall = (agent: AgentLike | undefined): void => {
+    if (agent === undefined || typeof agent.id !== 'string') return
+    const dispose = disposers.get(agent.id)
+    disposers.delete(agent.id)
+    if (dispose !== undefined) dispose()
+  }
+
+  const stopCreated = host.on('agent/created', (payload) => install(payload.agent))
+  const stopDisposed = host.on('agent/disposed', (payload) => uninstall(payload.agent))
+  const agents = typeof host.get === 'function' ? host.get('agents') : undefined
+  if (agents !== undefined && typeof (agents as { list?: unknown }).list === 'function') {
+    for (const agent of (agents as { list: () => AgentLike[] }).list()) install(agent)
+  }
+
+  return () => {
+    if (stopCreated !== undefined) stopCreated()
+    if (stopDisposed !== undefined) stopDisposed()
+    for (const dispose of disposers.values()) dispose()
+    disposers.clear()
+  }
+}
+
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
 export const SKILL_HUB_GUIDANCE = [
-  '本机已安装 dsh-skill-hub 插件（DSH Web GUI 技能中枢）：设置 →「技能」分区为管理主页；本插件的配置页（启用/公告开关、圆点颜色、GitHub token、统计窗口）在插件管理页——侧边栏「插件」→ 本插件，是本插件自己注册的配置卡片（默认折叠，点标题展开）。能力：完整本地技能目录（项目/自定义/用户/内置全部来源，走官方 ctx.skills 注册表，含第三方 provider）；按来源与自定义分组浏览，分组/来源头部的滑动开关可一键启用/禁用整组（跨组冲突时询问）；市场：内置市场目录（精选仓库一键添加）加自定义仓库源，扫描后勾选安装，每个市场源行显示已装/可更新/上游已删数量，支持「检查全部」与「全部更新」；来源跟踪：从 GitHub 仓库（市场源或直接地址）导入的技能记录上游 repo/commit 快照，可检查更新、选择同步、上游删除时跟进删除（移入回收站可恢复，恢复后保留来源与场景归属）；个人技能（无来源记录）不跟踪；调用次数与最近使用时间统计；查看技能正文；发现诊断；内容审计（隐藏字符、危险命令、凭据路径与体积上限；市场导入命中阻断级规则即整包拒绝）；技能目录公告预算（一层渐进加载注入的字符数与 token 估算）；本地内容哈希比对（标出被自己改过、同步会覆盖的技能）；从其他 agent 的技能目录只读导入（Claude Code / Codex / Cursor / Gemini CLI 等）；新建技能向导（写入 ~/.dsh/skills 或 ~/.agents/skills）。限制：仅用户级技能（user-dsh/user-agents 根目录）可写，项目/内置/运行时技能只读展示；路由受 dsh 自身的 /api 信任栅栏保护（回环、监听器绑定地址、--trusted-host 声明的 authority，外加浏览器会话认证），因此反代部署下与 GUI 同一套放行规则。用户提到「技能管理 / 技能列表 / 技能开关 / 技能同步 / 技能市场 / 更新技能 / 新建技能」时即指本插件，请据此协作。',
-  'The dsh-skill-hub plugin is installed (the DSH Web GUI skill hub): Settings → "Skills" is the management page; the plugin\'s configuration page (enable / announcement toggles, dot colors, GitHub token, stats window) is registered by the plugin itself on its own page in the Plugins manager (sidebar → 插件 → the plugin; collapsed until you expand the title). Capabilities: full local skill catalog (project / custom / user / bundled roots via the official ctx.skills registry, including third-party providers); browsing by source and custom groups, each group header carrying a sliding switch to enable/disable the whole group in one click (cross-group conflicts prompt the user); market: a built-in catalog of curated repos (one-click add) plus custom repo sources, scan-and-install import, per-source installed / updatable / deleted-upstream badges with "check all" and "update all" actions; upstream source tracking: skills imported from GitHub repos (market sources or direct URLs) record the repo/commit snapshot, support update checks, selective sync, and follow-up deletion when the upstream removes a skill (moves it into a restorable trash; restoring keeps the source and scene membership); personal skills (no source record) are never tracked; invocation counts and last-used times; skill body inspection; discovery diagnostics plus a content audit (hidden characters, dangerous commands, credential paths, size caps — a market import with a blocking finding is refused as a whole); the skill-catalog announcement budget (characters and estimated tokens for the first progressive-disclosure layer); local content-hash comparison (flags skills you edited that a sync would overwrite); read-only import from other agents\' skill folders (Claude Code / Codex / Cursor / Gemini CLI and friends); new-skill wizard (writes to ~/.dsh/skills or ~/.agents/skills). Limits: only user-level skills (user-dsh/user-agents roots) are writable; project/bundled/runtime skills are read-only; the routes sit behind dsh\'s own /api trust fence (loopback, the listener\'s bind address, any --trusted-host authority, plus browser-session authentication), so a reverse-proxied deployment is judged exactly like the GUI around it. When the user mentions "skill management / skill list / skill toggle / skill sync / skill market / update skills / new skill", this plugin is what they mean — collaborate accordingly.'
+  '本机已安装 dsh-skill-hub 插件（DSH Web GUI 技能中枢）：设置 →「技能」分区为管理主页；本插件的配置页（启用/公告开关、圆点颜色、GitHub token、统计窗口）在插件管理页——侧边栏「插件」→ 本插件，是本插件自己注册的配置卡片（默认折叠，点标题展开）。能力：完整本地技能目录（项目/自定义/用户/内置全部来源，走官方 ctx.skills 注册表，含第三方 provider）；按来源与自定义分组浏览，分组/来源头部的滑动开关可一键启用/禁用整组（跨组冲突时询问）；市场：内置市场目录（精选仓库一键添加）加自定义仓库源，扫描后勾选安装，每个市场源行显示已装/可更新/上游已删数量，支持「检查全部」与「全部更新」；skills.sh 索引搜索（按技能名搜，结果显示仓库与安装次数，可选「安装」直装单个技能——不跟踪上游更新，或「加为源」登记仓库后扫描）；来源跟踪：从 GitHub 仓库（市场源或直接地址）导入的技能记录上游 repo/commit 快照，可检查更新、选择同步、上游删除时跟进删除（移入回收站可恢复，恢复后保留来源与场景归属）；个人技能（无来源记录）不跟踪；调用次数与最近使用时间统计；查看技能正文；发现诊断；内容审计（隐藏字符、危险命令、凭据路径与体积上限；市场导入命中阻断级规则即整包拒绝）；技能目录公告预算（一层渐进加载注入的字符数与 token 估算）；本地内容哈希比对（标出被自己改过、同步会覆盖的技能）；从其他 agent 的技能目录只读导入（Claude Code / Codex / Cursor / Gemini CLI 等；用户级收进 ~/.dsh/skills，项目级——即 <项目根>/.claude/skills 之类——收进该项目的 .dsh/skills）；从 ZIP 包导入（包内每个含 SKILL.md 的目录算一个技能，逐个过内容审计，路径穿越/符号链接/加密包/解压炸弹在解压前拦截）；新建技能向导（写入 ~/.dsh/skills 或 ~/.agents/skills）。限制：仅用户级技能（user-dsh/user-agents 根目录）可写可删，项目技能可开关（停用=关闭模型自动调用，「/技能名」仍可用，项目文件不动）、内置/运行时技能只读展示；路由受 dsh 自身的 /api 信任栅栏保护（回环、监听器绑定地址、--trusted-host 声明的 authority，外加浏览器会话认证），因此反代部署下与 GUI 同一套放行规则。用户提到「技能管理 / 技能列表 / 技能开关 / 技能同步 / 技能市场 / 更新技能 / 新建技能」时即指本插件，请据此协作。',
+  'The dsh-skill-hub plugin is installed (the DSH Web GUI skill hub): Settings → "Skills" is the management page; the plugin\'s configuration page (enable / announcement toggles, dot colors, GitHub token, stats window) is registered by the plugin itself on its own page in the Plugins manager (sidebar → 插件 → the plugin; collapsed until you expand the title). Capabilities: full local skill catalog (project / custom / user / bundled roots via the official ctx.skills registry, including third-party providers); browsing by source and custom groups, each group header carrying a sliding switch to enable/disable the whole group in one click (cross-group conflicts prompt the user); market: a built-in catalog of curated repos (one-click add) plus custom repo sources, scan-and-install import, per-source installed / updatable / deleted-upstream badges with "check all" and "update all" actions; skills.sh index search (search by skill name; results show the hosting repo and install count, with either Install — pulls that one skill in without upstream tracking — or Add source — registers the repo and scans it); upstream source tracking: skills imported from GitHub repos (market sources or direct URLs) record the repo/commit snapshot, support update checks, selective sync, and follow-up deletion when the upstream removes a skill (moves it into a restorable trash; restoring keeps the source and scene membership); personal skills (no source record) are never tracked; invocation counts and last-used times; skill body inspection; discovery diagnostics plus a content audit (hidden characters, dangerous commands, credential paths, size caps — a market import with a blocking finding is refused as a whole); the skill-catalog announcement budget (characters and estimated tokens for the first progressive-disclosure layer); local content-hash comparison (flags skills you edited that a sync would overwrite); read-only import from other agents\' skill folders (Claude Code / Codex / Cursor / Gemini CLI and friends; user-level into ~/.dsh/skills, project-level — i.e. <projectRoot>/.claude/skills and friends — into that project\'s .dsh/skills); import from a ZIP archive (every directory holding a SKILL.md becomes one skill, each audited, with path traversal / symlinks / encrypted archives / decompression bombs rejected before unpacking); new-skill wizard (writes to ~/.dsh/skills or ~/.agents/skills). Limits: only user-level skills (user-dsh/user-agents roots) are writable; project skills can be toggled (off = model invocation switched off while "/name" keeps working, project files untouched); bundled/runtime skills are read-only; the routes sit behind dsh\'s own /api trust fence (loopback, the listener\'s bind address, any --trusted-host authority, plus browser-session authentication), so a reverse-proxied deployment is judged exactly like the GUI around it. When the user mentions "skill management / skill list / skill toggle / skill sync / skill market / update skills / new skill", this plugin is what they mean — collaborate accordingly.'
 ].join('\n\n')
 
 /**
@@ -177,7 +253,15 @@ export function apply(ctx: Context, config?: Config): void {
   // GLOBAL layer — the web app deliberately keeps that layer empty (presets
   // own per-scope discovery), and the GUI needs a session-independent view.
   let disposeProvider: (() => void) | undefined
+  // The SAME provider instance is registered once more into every live agent's
+  // own skill layer (nearer than the preset layer) so an invocation override
+  // can outrank the preset's native filesystem provider — see
+  // registerAgentSkillPolicy below.
+  let disposeAgentProviders: (() => void) | undefined
   let providerControl: SkillProviderControl | undefined
+  let providerInstance: SkillHubProvider | undefined
+  /** One control per skill layer (global + each live agent): an override change must invalidate all of them. */
+  const providerControls = new Set<SkillProviderControl>()
   // Optional invocation-count source; only set once a session-query service
   // is present (see the soft inject below). Absent deployments just omit the
   // stats route's data rather than failing to load.
@@ -263,6 +347,11 @@ export function apply(ctx: Context, config?: Config): void {
       disposeProvider()
       disposeProvider = undefined
     }
+    if (disposeAgentProviders !== undefined) {
+      disposeAgentProviders()
+      disposeAgentProviders = undefined
+    }
+    providerInstance = undefined
     const value = current()
     // GitHub auth for market/source API calls: env GITHUB_TOKEN/GH_TOKEN is the
     // fallback (read at module load); an explicit settings value wins and is
@@ -278,14 +367,25 @@ export function apply(ctx: Context, config?: Config): void {
     if (value.enabled) {
       // registerProvider returns the exact cordis effect disposer: the fiber
       // unregisters the provider and invalidates catalog caches on teardown.
-      providerControl = undefined
-      disposeProvider = ctx.effect(
-        () => ctx.skills.registerProvider((control) => {
+      providerControls.clear()
+      providerInstance = undefined
+      const overrides = async (): Promise<ReadonlySet<string>> => new Set(await store.listInvocationOverrides())
+      // 惰性创建：global 与各 agent 层的 factory 共享同一实例（watch 定时器
+      // 只起一个），但每个注册的 control 都收进集合 —— override 变化必须
+      // 让所有层的缓存一起失效，只刷 global 会让 agent 视角仍旧看到旧状态。
+      const ensureProvider = (control: SkillProviderControl): SkillHubProvider => {
+        providerControls.add(control)
+        if (providerInstance === undefined) {
           providerControl = control
-          return new SkillHubProvider(control)
-        }),
+          providerInstance = new SkillHubProvider(control, dshHome(), overrides)
+        }
+        return providerInstance
+      }
+      disposeProvider = ctx.effect(
+        () => ctx.skills.registerProvider((control) => ensureProvider(control)),
         'dsh-skill-hub: provider',
       )
+      disposeAgentProviders = registerAgentSkillPolicy(ctx, ensureProvider)
     }
     ctx.logger.info(`[dsh-skill-hub] surfaces synced: enabled=${value.enabled} announceToAgent=${value.announceToAgent}`)
     if (disposeRoutes !== undefined) {
@@ -307,7 +407,9 @@ export function apply(ctx: Context, config?: Config): void {
             () => ctx.get('connection'),
             () => ctx.logger.warn('[dsh-skill-hub] Connection service absent: routes fall back to literal-loopback; reverse-proxy deployments will 403 until it mounts'),
           ),
-          invalidate: () => { providerControl?.invalidate() },
+          invalidate: () => {
+            for (const control of providerControls) control.invalidate()
+          },
           stats,
           config: current,
           saved,

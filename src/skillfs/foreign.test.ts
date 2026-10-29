@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { foreignRoots, importForeignSkill, scanForeignSkills } from './foreign.ts'
+import { foreignProjectRoots, foreignRoots, importForeignSkill, scanForeignRoots, scanForeignSkills } from './foreign.ts'
 
 describe('foreignRoots', () => {
   it('never lists the hub writable root ~/.agents/skills', () => {
@@ -117,5 +117,53 @@ describe('importForeignSkill', () => {
     const [skill] = await scanForeignSkills(home)
     await importForeignSkill(skill!, targetRoot)
     await expect(readFile(join(targetRoot, 'linked', 'leak.txt'), 'utf8')).rejects.toThrow()
+  })
+})
+
+describe('foreignProjectRoots / scanForeignRoots', () => {
+  let project: string
+
+  beforeEach(async () => {
+    project = await mkdtemp(join(tmpdir(), 'dsh-foreign-project-'))
+  })
+
+  afterEach(async () => {
+    await rm(project, { recursive: true, force: true })
+  })
+
+  it('generates project-level agent dirs and never lists the hub\'s own roots', () => {
+    const roots = foreignProjectRoots(['/p1', '/p2'])
+    const claude = roots.filter((root) => root.agent === 'claude-code')
+    expect(claude.map((root) => root.dir)).toEqual([join('/p1', '.claude', 'skills'), join('/p2', '.claude', 'skills')])
+    expect(claude[0]).toMatchObject({ scope: 'project', projectRoot: '/p1' })
+    // `.dsh` / `.agents` 是 dsh 自己的项目根，不是「别家的技能」。
+    expect(roots.some((root) => root.dir.endsWith(join('.dsh', 'skills')))).toBe(false)
+    expect(roots.some((root) => root.dir.endsWith(join('.agents', 'skills')))).toBe(false)
+  })
+
+  it('reports scope + projectRoot and asks isExisting once per skill', async () => {
+    const dir = join(project, '.claude', 'skills', 'review')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'SKILL.md'), '---\nname: review\ndescription: Project-level skill\n---\nbody\n', 'utf8')
+
+    const asked: string[] = []
+    const skills = await scanForeignRoots(foreignProjectRoots([project]), (skill) => {
+      asked.push(skill.name + '@' + skill.scope)
+      return skill.name === 'review'
+    })
+    expect(skills).toHaveLength(1)
+    expect(skills[0]).toMatchObject({ name: 'review', scope: 'project', projectRoot: project, existing: true })
+    expect(asked).toEqual(['review@project'])
+  })
+
+  it('imports a project-level skill into the project .dsh/skills', async () => {
+    const dir = join(project, '.cursor', 'skills', 'proj-skill')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'SKILL.md'), '---\nname: proj-skill\ndescription: Lives in the repo\n---\nbody\n', 'utf8')
+
+    const [skill] = await scanForeignRoots(foreignProjectRoots([project]), () => false)
+    const projectRoot = join(project, '.dsh', 'skills')
+    await importForeignSkill(skill!, projectRoot)
+    expect(await readFile(join(projectRoot, 'proj-skill', 'SKILL.md'), 'utf8')).toContain('name: proj-skill')
   })
 })

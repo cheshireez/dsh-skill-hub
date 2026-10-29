@@ -16,6 +16,17 @@ export function rootPath(root: WritableRoot, home = dshHome()): string {
   }
 }
 
+/**
+ * 项目级技能的可写目标根：`<projectRoot>/.dsh/skills`。
+ *
+ * 与 `rootPath` 分开，是因为项目根不是 `WritableRoot` —— 它由工作区推出来，
+ * 数量不固定，也不能由前端指定。收编是唯一往这里写的动作；hub 的开关/删除
+ * 仍然只对用户级可写根生效（项目技能是宿主认的只读来源）。
+ */
+export function projectSkillsRoot(projectRoot: string): string {
+  return join(resolve(projectRoot), '.dsh', 'skills')
+}
+
 /** Root of an absolute skill file path, or undefined when not user-owned. */
 export function rootOfPath(path: string, home = dshHome()): WritableRoot | undefined {
   const normalized = resolve(path)

@@ -18,6 +18,8 @@ export class SkillHubStore {
   private marketStats: MarketStatsSnapshot | undefined = undefined
   private collectionOrder: string[] = []
   private sourceGroupOrder: string[] = []
+  /** 模型调用覆盖（项目技能停用）：发现文件绝对路径集合。 */
+  private invocationOverrides = new Set<string>()
   private loaded = false
   /** Serializes persist runs: concurrent mutators must not let an earlier
    *  snapshot overwrite a later one (rename is atomic, ordering is not). */
@@ -46,6 +48,7 @@ export class SkillHubStore {
         this.marketStats = state.marketStats
         this.collectionOrder = state.collectionOrder
         this.sourceGroupOrder = state.sourceGroupOrder
+        this.invocationOverrides = new Set(state.invocationOverrides)
       }
     } catch (error) {
       // Missing or unreadable state starts empty; never crash the plugin.
@@ -87,6 +90,25 @@ export class SkillHubStore {
   async removeDisabled(name: string): Promise<void> {
     await this.ensureLoaded()
     if (!this.entries.delete(name)) return
+    await this.persist()
+  }
+
+  /** 模型调用被 hub 关掉的项目技能（发现文件绝对路径）。 */
+  async listInvocationOverrides(): Promise<string[]> {
+    await this.ensureLoaded()
+    return [...this.invocationOverrides]
+  }
+
+  async addInvocationOverride(discoveryPath: string): Promise<void> {
+    await this.ensureLoaded()
+    if (this.invocationOverrides.has(discoveryPath)) return
+    this.invocationOverrides.add(discoveryPath)
+    await this.persist()
+  }
+
+  async removeInvocationOverride(discoveryPath: string): Promise<void> {
+    await this.ensureLoaded()
+    if (!this.invocationOverrides.delete(discoveryPath)) return
     await this.persist()
   }
 
@@ -584,6 +606,7 @@ export class SkillHubStore {
         ...(this.marketStats !== undefined ? { marketStats: this.marketStats } : {}),
         ...(this.collectionOrder.length > 0 ? { collectionOrder: [...this.collectionOrder] } : {}),
         ...(this.sourceGroupOrder.length > 0 ? { sourceGroupOrder: [...this.sourceGroupOrder] } : {}),
+        ...(this.invocationOverrides.size > 0 ? { invocationOverrides: [...this.invocationOverrides] } : {}),
       }
       const tmp = this.file + '.tmp'
       await mkdir(dirname(this.file), { recursive: true })

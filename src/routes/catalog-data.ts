@@ -117,6 +117,7 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
     }
   }
   const disabled = await deps.store.listDisabled()
+  const overridden = new Set(await deps.store.listInvocationOverrides())
   const byName = byKey
   // A hub-disabled record whose name is also enabled elsewhere hides one
   // identity behind the toggle; flag it as well.
@@ -188,6 +189,10 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
       },
       provider: skill.provider,
       writable: isWritableSource(skill.source),
+      // 项目技能可开关（invocation 覆盖，不动文件）；可写根的技能由 writable 蕴含开关能力。
+      ...(isProjectSource(skill.source) ? { toggleable: true } : {}),
+      // hub 关掉的模型调用（项目技能停用）：UI 据此显示开关状态与提示。
+      ...(skill.path !== undefined && overridden.has(skill.path) ? { modelOverride: true } : {}),
       source: skill.source,
       ...(workspace !== undefined ? { workspace, workspaceTitle: workspaceTitle ?? workspace } : {}),
     }
