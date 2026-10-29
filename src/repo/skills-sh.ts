@@ -14,6 +14,8 @@
  *    控制不了的外部服务，它返回多大的东西不该决定我们占用多少内存。
  */
 
+import { normalizeBundlePath } from '../skillfs/paths.ts'
+
 const SEARCH_URL = 'https://skills.sh/api/search'
 const DOWNLOAD_URL = 'https://skills.sh/api/download'
 /** 上游要求至少 2 个字符（少于此直接回 error JSON）。 */
@@ -28,8 +30,6 @@ const MAX_PACKAGE_FILE_BYTES = 2 * 1024 * 1024
 const MAX_PACKAGE_FILES = 500
 /** 单段标识符：首字符必须是字母或数字，所以 `..` / `@` / 空段天然出局。 */
 const IDENTIFIER_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-/** 包内相对路径：不得绝对、不得含 `..` 段。 */
-const SAFE_PATH_RE = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]+$/
 
 /** 一条可安装的候选。`source` 可直接喂给市场源的 `owner/repo` 入参。 */
 export interface SkillsShSkill {
@@ -245,9 +245,13 @@ export async function downloadSkillsShSkill(source: string, skillId: string, fet
   for (const item of list) {
     if (typeof item !== 'object' || item === null) throw new SkillsShError('skills.sh returned an invalid file entry', 502)
     const record = item as Record<string, unknown>
-    // 反斜杠先统一：Windows 风格的 `..\..\x` 会绕过所有按 `/` 做的检查。
-    const path = typeof record.path === 'string' ? record.path.replace(/\\/g, '/') : ''
-    if (path === '' || !SAFE_PATH_RE.test(path)) throw new SkillsShError('skill package contains an unsafe path: ' + String(record.path), 502)
+    // 路径判据与 ZIP 导入同一个函数：中文 / 空格 / emoji 文件名是合法的，
+    // 只挡绝对路径、盘符、`..` 段与 NUL（见 `skillfs/paths.ts`）。
+    const normalized = typeof record.path === 'string' ? normalizeBundlePath(record.path) : undefined
+    if (normalized === undefined || 'error' in normalized) {
+      throw new SkillsShError('skill package contains an unsafe path: ' + String(record.path), 502)
+    }
+    const path = normalized.path
     if (typeof record.contents !== 'string') throw new SkillsShError('skill package file ' + path + ' has no text contents', 502)
     const data = Buffer.from(record.contents, 'utf8')
     if (data.length > MAX_PACKAGE_FILE_BYTES) throw new SkillsShError(path + ' is over the per-file limit', 502)

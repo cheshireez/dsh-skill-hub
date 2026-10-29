@@ -94,6 +94,18 @@ describe('readZip — 正常读取', () => {
     const entries = readZip(makeZip([{ path: 'dir\\sub/./SKILL.md', data: 'body' }]))
     expect(entries[0]?.path).toBe('dir/sub/SKILL.md')
   })
+
+  it('drops a root-level .git directory as well as nested ones', () => {
+    // `includes('/.git/')` 只命中带前导分隔符的层级，包根下的 `.git/config`
+    // 曾经会漏过去、被当成技能内容落盘。
+    const zip = makeZip([
+      { path: '.git/config', data: 'x' },
+      { path: '.git/hooks/pre-commit', data: 'x' },
+      { path: 'nested/.git/config', data: 'x' },
+      { path: 'skill/SKILL.md', data: 'body' },
+    ])
+    expect(readZip(zip).map((entry) => entry.path)).toEqual(['skill/SKILL.md'])
+  })
 })
 
 describe('readZip — 安全拒绝', () => {

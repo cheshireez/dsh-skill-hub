@@ -16,6 +16,7 @@
  */
 
 import { inflateRawSync } from 'node:zlib'
+import { normalizeBundlePath } from './paths.ts'
 
 /** ZIP 结构或安全校验失败。消息面向用户，不含二进制细节。 */
 export class ZipError extends Error {
@@ -67,23 +68,13 @@ const METHOD_DEFLATE = 8
 /**
  * 把包内路径规范化成安全的相对路径。
  *
- * 反斜杠先统一成正斜杠：Windows 打包工具会写出 `a\b`，Mac/Linux 上它会被
- * 当成**文件名里的一个字符**，于是 `..\..\x` 绕过所有按 `/` 做的检查。
+ * 规则本体在 `paths.ts` 的 `normalizeBundlePath`（skills.sh 直装共用同一判据，
+ * 两个入口不能对同一个路径给出不同结论），这里只把拒绝原因包成 ZipError。
  */
 function safeEntryPath(raw: string): string {
-  const unified = raw.replace(/\\/g, '/')
-  if (unified.startsWith('/')) throw new ZipError('zip contains an absolute path: ' + raw)
-  if (/^[A-Za-z]:/.test(unified)) throw new ZipError('zip contains a drive-letter path: ' + raw)
-  const parts: string[] = []
-  for (const part of unified.split('/')) {
-    if (part === '' || part === '.') continue
-    if (part === '..') throw new ZipError('zip contains a path traversal segment: ' + raw)
-    // NUL 会截断下游的 fs 调用，`%2e%2e` 之类不需要单独处理 —— 这里不解码。
-    if (part.includes('\0')) throw new ZipError('zip contains a NUL in a path: ' + raw)
-    parts.push(part)
-  }
-  if (parts.length === 0) throw new ZipError('zip contains an empty path entry')
-  return parts.join('/')
+  const normalized = normalizeBundlePath(raw)
+  if ('error' in normalized) throw new ZipError('zip contains ' + normalized.error)
+  return normalized.path
 }
 
 /** macOS 归档附带的资源分叉与元数据，不是技能内容。 */
@@ -92,7 +83,9 @@ function isArchiveNoise(path: string): boolean {
   return path.startsWith('__MACOSX/')
     || base === '.DS_Store'
     || base === 'Thumbs.db'
-    || base === '.git' || path.includes('/.git/')
+    // 根级 `.git/` 与任意层级的 `.git/` 一样要滤掉：`path.includes('/.git/')`
+    // 只命中带前导分隔符的层级，包根下的 `.git/config` 会漏过去。
+    || path === '.git' || path.startsWith('.git/') || path.includes('/.git/')
 }
 
 /** 在文件尾部找中央目录结束记录。注释最长 65535 字节，必须从后往前扫。 */

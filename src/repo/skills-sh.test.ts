@@ -109,6 +109,21 @@ describe('downloadSkillsShSkill', () => {
       .rejects.toThrow(/file count/)
   })
 
+  it('accepts non-ASCII and spaced file names, still rejecting unsafe shapes', async () => {
+    // 黑名单判据：中文、空格的路径是合法内容，只有绝对路径/盘符/`..`/NUL 才拒绝。
+    // 之前用 ASCII 白名单，导致带中文文件名的技能整包 502。
+    const pkg = await downloadSkillsShSkill('o/r', 's', stub(ok({
+      files: [
+        { path: 'SKILL.md', contents: 'x' },
+        { path: '参考/说明.md', contents: '中文内容' },
+        { path: 'my notes.md', contents: 'x' },
+      ],
+    })))
+    expect(pkg.files.map((file) => file.path)).toEqual(['SKILL.md', '参考/说明.md', 'my notes.md'])
+    await expect(downloadSkillsShSkill('o/r', 's', stub(ok({ files: [{ path: 'C:/x.md', contents: 'x' }] }))))
+      .rejects.toThrow(/unsafe path/)
+  })
+
   it('keeps a missing skill as 404 so the UI can move on, and folds the rest into 502', async () => {
     await expect(downloadSkillsShSkill('o/r', 's', stub(new Response('gone', { status: 404 })))).rejects.toMatchObject({ status: 404 })
     await expect(downloadSkillsShSkill('o/r', 's', stub(new Response('boom', { status: 500 })))).rejects.toMatchObject({ status: 502 })
