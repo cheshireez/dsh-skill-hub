@@ -1,6 +1,6 @@
 {
   "name": "dsh-skill-hub",
-  "version": "0.3.28",
+  "version": "0.3.29",
   "description": "In-GUI skill hub for DeepSeek Harness (dsh): full ctx.skills catalog, per-skill and per-group toggles, content audit that blocks hidden characters and remote-execution pipes before install, announcement-budget warnings, frontmatter diagnostics with one-click fix, GitHub market with commit-pinned update tracking and a restorable trash.",
   "type": "module",
   "engines": {
