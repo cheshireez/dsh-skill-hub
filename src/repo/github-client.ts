@@ -104,17 +104,39 @@ export function isAbortError(error: unknown): boolean {
 }
 
 /**
+ * 传输层抖动重试：TLS 握手被重置、连接中途断开这类**瞬时**故障在代理/TUN
+ * 环境下很常见（实测同一 URL 连打 5 次会有 1 次 `ECONNRESET`），一次抖动就
+ * 让用户点「更新」看到红条，代价远大于多等 150ms。
+ *
+ * 只对**抛出的网络异常**重试，不重试任何 HTTP 状态码：4xx/5xx 是上游的确定
+ * 答复（限流、404、仓库不存在），重试只会浪费配额；AbortError 是调用方主动
+ * 取消，更不能重试。
+ */
+const TRANSIENT_ATTEMPTS = 3
+const TRANSIENT_BACKOFF_MS = [150, 400] as const
+
+async function fetchWithRetry(fetchImpl: typeof fetch, url: string, headers: Record<string, string>, context: string): Promise<Response> {
+  let last: unknown
+  for (let attempt = 0; attempt < TRANSIENT_ATTEMPTS; attempt += 1) {
+    try {
+      return await fetchImpl(url, { headers })
+    } catch (error) {
+      if (isAbortError(error)) throw error
+      last = error
+      const backoff = TRANSIENT_BACKOFF_MS[attempt]
+      if (backoff === undefined) break
+      await new Promise((resolve) => setTimeout(resolve, backoff))
+    }
+  }
+  throw new RepoFetchError(context + ': ' + (errorText(last)))
+}
+
+/**
  * 不带缓存的统一 GET+JSON：网络异常、非 2xx、坏 JSON 全部映射为
  * RepoFetchError，调用方无需重复写 try/catch。
  */
 export async function fetchJson(url: string, fetchImpl: typeof fetch, context: string, headers: Record<string, string> = apiHeaders()): Promise<{ json: unknown; response: Response }> {
-  let response: Response
-  try {
-    response = await fetchImpl(url, { headers })
-  } catch (error) {
-    if (isAbortError(error)) throw error
-    throw new RepoFetchError(context + ': ' + (errorText(error)))
-  }
+  const response = await fetchWithRetry(fetchImpl, url, headers, context)
   if (!response.ok) throw fetchError(context, response)
   try {
     return { json: await response.json(), response }
@@ -132,12 +154,7 @@ export async function fetchJsonCached(url: string, fetchImpl: typeof fetch, cont
   const cached = etagCache.get(url)
   const headers: Record<string, string> = { ...apiHeaders() }
   if (cached !== undefined) headers['if-none-match'] = cached.etag
-  let response: Response
-  try {
-    response = await fetchImpl(url, { headers })
-  } catch (error) {
-    throw new RepoFetchError(context + ': ' + (errorText(error)))
-  }
+  const response = await fetchWithRetry(fetchImpl, url, headers, context)
   if (response.status === 304 && cached !== undefined) {
     // Return cached JSON with a synthetic 200-like response for error mapping.
     return { json: cached.json, response }

@@ -28,6 +28,7 @@ import {
   type MarketSkillsShInstallRequest,
   type MarketSkillsShInstallResponse,
   type MarketStatsResponse,
+  type MarketSyncRequest,
   type MarketSyncResponse,
   type RepoDiscoverResponse,
   type RepoImportCancelResponse,
@@ -128,7 +129,15 @@ export function resolveApiUrl(path: string): string {
  * Fetch with a hard timeout: a hung connection (proxy, stalled keep-alive,
  * host wedged) must never leave the panel stuck on "loading" forever — it
  * fails fast and surfaces the error banner instead.
+ *
+ * Read calls keep the 10s budget; writes that pull tens of files over the
+ * network get `WRITE_TIMEOUT_MS` instead. Measured on a machine behind a TUN
+ * proxy: a full 11-skill source sync takes 12.3s cold, so the old 10s default
+ * aborted a sync that had already landed every file server-side — the panel
+ * reported an error while the skills on disk were fresh.
  */
+const WRITE_TIMEOUT_MS = 60_000
+
 async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ms = 10_000): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), ms)
@@ -231,9 +240,14 @@ export class SkillHubApi {
     return this.get<MarketCheckResponse>(SKILL_HUB_API.marketCheck)
   }
 
-  /** Align a market source to its pinned ref; resolves with tracked skills. */
-  marketSync(repo: string): Promise<MarketSyncResponse> {
-    return this.post<MarketSyncResponse>(SKILL_HUB_API.marketSync, { repo })
+  /**
+   * Align a market source to its pinned ref; resolves with tracked skills.
+   * `ref` re-pins first — the row's 「更新」passes the newer release tag so the
+   * sync actually reaches it instead of re-downloading the old pin.
+   */
+  marketSync(repo: string, ref?: string): Promise<MarketSyncResponse> {
+    const payload: MarketSyncRequest = ref !== undefined && ref !== '' ? { repo, ref } : { repo }
+    return this.post<MarketSyncResponse>(SKILL_HUB_API.marketSync, payload, WRITE_TIMEOUT_MS)
   }
 
   /** Releases + branches of a market source for the version picker. */
@@ -375,7 +389,7 @@ export class SkillHubApi {
   /** 同步一个来源的所选（或全部）技能到上游最新版本。 */
   syncSource(repo: string, skills?: string[]): Promise<SourceSyncResponse> {
     const payload: SourceSyncRequest = skills !== undefined ? { repo, skills } : { repo }
-    return this.post<SourceSyncResponse>(SKILL_HUB_API.sourceSync, payload)
+    return this.post<SourceSyncResponse>(SKILL_HUB_API.sourceSync, payload, WRITE_TIMEOUT_MS)
   }
 
   /** 跟进上游删除：把所选技能移入回收站。 */

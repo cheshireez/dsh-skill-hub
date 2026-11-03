@@ -176,11 +176,12 @@ export function useMarketFlow(
     }
   }, [api])
 
-  /** 市场源同步：版本对齐后询问是否批量更新本地技能。 */
-  const syncMarketSource = useCallback(async (repo: string): Promise<void> => {
+  /** 市场源同步：版本对齐后询问是否批量更新本地技能。`ref` = 检查到的
+   * 新版本标签，先钉住再同步，否则被钉住的旧 ref 会让「更新」原地打转。 */
+  const syncMarketSource = useCallback(async (repo: string, ref?: string): Promise<void> => {
     setSyncingMarket(repo)
     await runFlow(shared, async () => {
-      const result = await api.marketSync(repo)
+      const result = await api.marketSync(repo, ref)
       setMarketSyncDialog({ repo: result.repo, ref: result.ref, skills: result.skills, selected: new Set(result.skills) })
       await loadMarket()
     }, () => setSyncingMarket(null))

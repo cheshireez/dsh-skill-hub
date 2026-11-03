@@ -42,7 +42,7 @@ export function MarketSourceRow(props: { hub: SkillHubState; record: MarketSourc
     const count = hasSkillUpdate ? skillCheck!.updated.length : 1
     updateLabel = count > 1 || hasSkillUpdate ? tt('market.updateCount', { count }) : tt('market.update')
     updateDanger = true
-    updateAction = () => { void syncMarketSource(record.repo) }
+    updateAction = () => { void syncMarketSource(record.repo, releaseCheck?.latestTag) }
   } else {
     updateLabel = tt('market.upToDate')
     updateDisabled = true

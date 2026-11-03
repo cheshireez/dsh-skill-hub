@@ -43,7 +43,8 @@ export const zhMarket = {
   'market.updateCount': '更新 {count} 个',
   'market.syncing': '同步中…',
   'market.updated': '有更新',
-  'market.newRelease': '新版本 v{version}',
+  // tag 本身通常已带 v（v1.3.2），模板不再补前缀，否则渲染成 vv1.3.2。
+  'market.newRelease': '新版本 {version}',
   'market.branchTitle': '选择分支',
   'market.branchHint': '该仓库没有正式发布，选择要跟踪的分支（默认为 main）：',
   'market.branchConfirm': '确定',
@@ -160,7 +161,8 @@ export const enMarket: Record<keyof typeof zhMarket, string> = {
   'market.updateCount': 'Update {count}',
   'market.syncing': 'Syncing…',
   'market.updated': 'Updates available',
-  'market.newRelease': 'New release v{version}',
+  // Tags already carry their own `v` (v1.3.2); the template must not add one.
+  'market.newRelease': 'New release {version}',
   'market.branchTitle': 'Choose a branch',
   'market.branchHint': 'This repo has no releases. Pick a branch to track (main by default):',
   'market.branchConfirm': 'Confirm',

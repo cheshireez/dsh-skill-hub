@@ -523,3 +523,40 @@ describe('rateLimitResetAt', () => {
     expect(rateLimitResetAt(response(403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': 'nope' }))).toBeUndefined()
   })
 })
+
+describe('github 瞬时失败重试', () => {
+  // 本机实测：同一 URL 连打 5 次会有 1 次 TLS 握手被重置（ECONNRESET）。
+  // 一次抖动就让用户点「更新」看到红条，代价远大于多等 150ms。
+  const tagResponse = (): Response => new Response(JSON.stringify({ tag_name: 'v1.3.2' }), { status: 200 })
+
+  it('首次连接被重置、第二次成功时正常返回', async () => {
+    let calls = 0
+    const stub = (async () => {
+      calls += 1
+      if (calls === 1) throw new TypeError('fetch failed: ECONNRESET')
+      return tagResponse()
+    }) as unknown as typeof fetch
+    await expect(getLatestReleaseTag('mattpocock/skills', stub)).resolves.toBe('v1.3.2')
+    expect(calls).toBe(2)
+  })
+
+  it('404 是上游的确定答复，不重试（也没有发布）', async () => {
+    let calls = 0
+    const stub = (async () => {
+      calls += 1
+      return new Response('{}', { status: 404 })
+    }) as unknown as typeof fetch
+    await expect(getLatestReleaseTag('mattpocock/skills', stub)).resolves.toBeUndefined()
+    expect(calls).toBe(1)
+  })
+
+  it('连续失败时重试三次并把原文带出来', async () => {
+    let calls = 0
+    const stub = (async () => {
+      calls += 1
+      throw new TypeError('fetch failed: ECONNRESET')
+    }) as unknown as typeof fetch
+    await expect(getLatestReleaseTag('mattpocock/skills', stub)).rejects.toThrow(/ECONNRESET/)
+    expect(calls).toBe(3)
+  })
+})

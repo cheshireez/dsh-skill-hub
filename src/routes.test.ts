@@ -1059,6 +1059,43 @@ describe('skill-hub routes', () => {
     }
   })
 
+  // 「更新」必须真的能升到新版本：钉住的旧 ref 优先会让同步原地打转，
+  // 行上的「新版本」徽章永远清不掉。带 ref 时先重新钉版再解析提交。
+  it('re-pins the market source when the sync carries a newer ref', async () => {
+    await store.addMarketSource('mattpocock/skills', 'v1.2.3')
+    const commit = jsonResponse({ sha: 'sha-132', commit: { tree: { sha: 'tree-132' } } })
+    stubFetch([['/commits/v1.3.2', commit]])
+    try {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.marketSync)
+        .handler(fakeReq('POST', SKILL_HUB_API.marketSync, { repo: 'mattpocock/skills', ref: 'v1.3.2' }), res as never)
+      expect(res.status).toBe(200)
+      const body = res.json() as import('./protocol.ts').MarketSyncResponse
+      expect(body.ref).toBe('v1.3.2')
+      expect(body.commitSha).toBe('sha-132')
+      // 存储侧也要动：只改响应不改记录，下次检查仍认为停在旧版本。
+      expect((await store.listMarketSources())[0]?.ref).toBe('v1.3.2')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('keeps the pinned ref when the sync carries none', async () => {
+    await store.addMarketSource('mattpocock/skills', 'v1.2.3')
+    stubFetch([['/commits/v1.2.3', jsonResponse({ sha: 'sha-123', commit: { tree: { sha: 'tree-123' } } })]])
+    try {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.marketSync)
+        .handler(fakeReq('POST', SKILL_HUB_API.marketSync, { repo: 'mattpocock/skills' }), res as never)
+      expect(res.status).toBe(200)
+      const body = res.json() as import('./protocol.ts').MarketSyncResponse
+      expect(body.ref).toBe('v1.2.3')
+      expect((await store.listMarketSources())[0]?.ref).toBe('v1.2.3')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   // resolveHubConfig 收敛为单参数后，越界值仍必须回落到 schema 默认，
   // 而不是被写进有效配置。
   it('clamps the numeric stats knobs and fills the remaining defaults', async () => {

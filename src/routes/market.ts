@@ -249,9 +249,13 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         const repo = repoSlug(parsed)
         const source = await deps.store.getMarketSource(repo)
         if (source === undefined) { writeError(res, 404, 'market source not found: ' + repo); return }
+        // 显式 ref（面板「更新」带上的新版本标签）先钉住再解析提交：
+        // 否则「已钉住」优先的规则会让同步永远停在旧标签。
+        const requestedRef = readString(body, 'ref').trim()
+        if (requestedRef !== '') await deps.store.setMarketSourceRef(repo, requestedRef)
         // Resolve the ref: pinned ref wins; otherwise auto-adopt the latest
         // release; a repo without releases must be pinned via the branch picker first.
-        let ref = source.ref
+        let ref = requestedRef !== '' ? requestedRef : source.ref
         if (ref === undefined || ref === '') {
           const latestTag = await getLatestReleaseTag(repo)
           if (latestTag === undefined) { writeError(res, 409, 'repo has no release — pick a branch first'); return }

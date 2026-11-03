@@ -102,6 +102,19 @@ export interface MarketCheckResponse {
   }>
 }
 
+/**
+ * POST /api/skill-hub/market/source/sync — align a market source to its pinned
+ * ref. `ref` re-pins the source first, which is what the row's 「更新」button
+ * sends when the check reported a newer release: without it the pinned ref
+ * wins, the sync re-downloads the same old tag, and the "new release" badge
+ * can never clear.
+ */
+export interface MarketSyncRequest {
+  repo: string
+  /** Optional target ref (usually the newer release tag) to pin before syncing. */
+  ref?: string
+}
+
 /** POST /api/skill-hub/market/source/sync — align a market source to its pinned ref. */
 export interface MarketSyncResponse {
   ok: true

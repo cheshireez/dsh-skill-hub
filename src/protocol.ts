@@ -45,6 +45,7 @@ export type {
   MarketStatsSnapshot,
   MarketStatsResponse,
   MarketCheckResponse,
+  MarketSyncRequest,
   MarketSyncResponse,
   MarketSkillsShEntry,
   MarketSkillsShResponse,
