@@ -3,7 +3,7 @@
  * web GUI.
  *
  * Registers the dsh-skill-hub locale dictionaries and mounts:
- *  - a top-level Settings section (Settings → 技能) hosting the skill hub
+ *  - a top-level Settings section (Settings → 技能中枢) hosting the skill hub
  *    panel: catalog, search, enable/disable, diagnostics, new-skill form;
  *  - the chat "/" menu skill dots, colored from the same config the panel reads.
  *
@@ -51,6 +51,7 @@ import { applySettingsNavIcon } from './settings-nav-icon.ts'
 import { setupSkillSlashDots } from './slash-dots.tsx'
 import { SkillHubSettingsCard, SkillHubSettingsCardController } from './SkillHubSettingsCard.tsx'
 import { SkillHubPanel } from './panel/SkillHubPanel.tsx'
+import { IconSkillOutline16 } from './icons.tsx'
 
 /** Locale namespace this plugin owns. */
 const NS = 'dsh-skill-hub'
@@ -121,6 +122,31 @@ export function apply(ctx: ClientContext): void {
       inject: () => ({}),
     }, () => <SkillHubPanel api={api} />)),
     'dsh-skill-hub: settings section',
+  )
+
+  // Wide sidebar main panel: same hub surface, 960px shell. The settings page
+  // remains the canonical place for configuration; this panel is the sidebar
+  // companion for browsing skills without leaving the conversation.
+  ctx.effect(
+    () => ctx.slots.inject('main', () => ctx.slots.register({
+      name: 'main',
+      key: 'skill-hub',
+      locale: NS,
+      inject: () => ({}),
+    }, () => <SkillHubPanel api={api} mode='sidebar' />)),
+    'dsh-skill-hub: sidebar main panel',
+  )
+
+  // Sidebar entry icon, directly under 插件 in the left rail.
+  ctx.effect(
+    () => ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+      name: 'sidebar.panellist',
+      id: 'skill-hub',
+      order: 30,
+      label: () => t('entry.label'),
+      locale: NS,
+    }, IconSkillOutline16)),
+    'dsh-skill-hub: sidebar entry',
   )
 
   // Host shell has no section-icon registration; keep the nav gear swapped for the skill icon.

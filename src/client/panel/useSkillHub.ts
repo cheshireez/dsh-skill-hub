@@ -20,6 +20,12 @@ import { markAutoChecked, POLL_MS, shouldAutoCheck, SLOW_POLL_MS, type FlowNotic
 /** The hook's result: the panel's complete state + action surface. */
 export type SkillHubState = ReturnType<typeof useSkillHub>
 
+/** 一级视图：通用 / 工作区 / 市场 / 回收站。 */
+export type SkillTab = 'general' | 'workspace' | 'market' | 'trash'
+
+/** 通用页二级查看方式：全部 / 按来源 / 按角色。 */
+export type GeneralView = 'all' | 'source' | 'location' | 'scene'
+
 export function useSkillHub(api: SkillHubApi) {
   // ------------------------------------------------------- shared notices
   // 多域共用的报错/成功条幅与忙碌开关：setter 本身引用稳定，memo 常驻后
@@ -39,8 +45,8 @@ export function useSkillHub(api: SkillHubApi) {
 
   // ------------------------------------------------------------ view state
   // 纯视图状态：不触发数据加载，只影响渲染。
-  const [tab, setTab] = useState<'sources' | 'scenes' | 'market'>('sources')
-  const [skillView, setSkillView] = useState<'flat' | 'groups'>('groups')
+  const [tab, setTab] = useState<SkillTab>('general')
+  const [generalView, setGeneralView] = useState<GeneralView>('source')
   const [sourceFilter, setSourceFilter] = useState('all')
   /** 分组视图里收起的分组（key 为 tag:<id>、col:<name> 或 project 树键）。技能总数 >80 时首次加载自动折叠 personal。 */
   const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(new Set())
@@ -109,10 +115,10 @@ export function useSkillHub(api: SkillHubApi) {
   const origins = groupFlow.groupsState?.origins ?? {}
   /** 来源筛选选项：来源记录中的仓库（排序）+ 末尾的「个人」；没有技能的仓库不列。 */
   const sourceOptions = useMemo(() => {
-    const skills = catalogFlow.catalog?.skills ?? []
+    const skills = (catalogFlow.catalog?.skills ?? []).filter((skill) => !isProjectSource(skill.source))
     const repos = [...new Set(skills.map((skill) => origins[skill.name]).filter((repo): repo is string => repo !== undefined))].sort()
     // 项目级技能（有 workspace 归属）不算「个人」。
-    const hasPrivate = skills.some((skill) => origins[skill.name] === undefined && !isProjectSource(skill.source))
+    const hasPrivate = skills.some((skill) => origins[skill.name] === undefined)
     return [...repos, ...(hasPrivate ? [PRIVATE_SOURCE] : [])]
   }, [catalogFlow.catalog, origins])
 
@@ -153,10 +159,10 @@ export function useSkillHub(api: SkillHubApi) {
     search: catalogFlow.search, workspace: catalogFlow.workspace,
     detail: catalogFlow.detail, detailLoading: catalogFlow.detailLoading,
     busyNames: catalogFlow.busyNames, batchBusy,
-    showForm: catalogFlow.showForm, formName: catalogFlow.formName, formDesc: catalogFlow.formDesc,
-    formRoot: catalogFlow.formRoot, formBusy: catalogFlow.formBusy, formMessage: catalogFlow.formMessage,
-    uses: meta.uses, hubConfig: meta.hubConfig, tab, skillView, sourceFilter,
-    invocationFilter: catalogFlow.invocationFilter, sortKey: catalogFlow.sortKey,
+    showForm: catalogFlow.showForm, formName: catalogFlow.formName, formDesc: catalogFlow.formDesc, formBody: catalogFlow.formBody,
+    formRoot: catalogFlow.formRoot, formWorkspace: catalogFlow.formWorkspace, workspaces: catalogFlow.workspaces, formBusy: catalogFlow.formBusy, formMessage: catalogFlow.formMessage,
+    uses: meta.uses, hubConfig: meta.hubConfig, tab, generalView, sourceFilter,
+    invocationFilter: catalogFlow.invocationFilter, statusFilter: catalogFlow.statusFilter, sortKey: catalogFlow.sortKey,
     marketState: marketFlow.marketState, marketCheck: marketFlow.marketCheck,
     marketStats: marketFlow.marketStats, branchChoice: marketFlow.branchChoice, branchBusy: marketFlow.branchBusy,
     marketSyncDialog: marketFlow.marketSyncDialog, syncingMarket: marketFlow.syncingMarket,
@@ -175,15 +181,16 @@ export function useSkillHub(api: SkillHubApi) {
     versionDialog: marketFlow.versionDialog, versionBusy: marketFlow.versionBusy,
     // derived
     actionNames: catalogFlow.actionNames, viewNames: catalogFlow.viewNames,
-    normalized: catalogFlow.normalized, origins, sourceOptions,
-    filtered: catalogFlow.filtered, sorted: catalogFlow.sorted, shortenedCount: catalogFlow.shortenedCount,
+    origins, sourceOptions,
+    filtered: catalogFlow.filtered, sorted: catalogFlow.sorted, searchedSorted: catalogFlow.searchedSorted,
+    shortenedCount: catalogFlow.shortenedCount,
     // actions + setters
     setLoadError, setSuccessBanner, setSearch: catalogFlow.setSearch, setWorkspace: catalogFlow.setWorkspace,
     setDetail: catalogFlow.setDetail, setShowForm: catalogFlow.setShowForm, setFormName: catalogFlow.setFormName,
-    setFormDesc: catalogFlow.setFormDesc, setFormRoot: catalogFlow.setFormRoot,
+    setFormDesc: catalogFlow.setFormDesc, setFormBody: catalogFlow.setFormBody, setFormRoot: catalogFlow.setFormRoot, setFormWorkspace: catalogFlow.setFormWorkspace,
     setFormMessage: catalogFlow.setFormMessage,
-    setRepoSelected: marketFlow.setRepoSelected, setTab, setSkillView,
-    setSourceFilter, setInvocationFilter: catalogFlow.setInvocationFilter, setSortKey: catalogFlow.setSortKey,
+    setRepoSelected: marketFlow.setRepoSelected, setTab, setGeneralView,
+    setSourceFilter, setInvocationFilter: catalogFlow.setInvocationFilter, setStatusFilter: catalogFlow.setStatusFilter, setSortKey: catalogFlow.setSortKey,
     setBranchChoice: marketFlow.setBranchChoice, setMarketSyncDialog: marketFlow.setMarketSyncDialog,
     setNewSourceName: marketFlow.setNewSourceName, setConflictDialog: groupFlow.setConflictDialog,
     setSkillsShQuery: marketFlow.setSkillsShQuery,
@@ -196,7 +203,7 @@ export function useSkillHub(api: SkillHubApi) {
     setVersionDialog: marketFlow.setVersionDialog,
     toggleGroupCollapse, toggleSubdivide, setAllGroupsCollapsed, checkUpdate: meta.checkUpdate, loadMarket: marketFlow.loadMarket,
     openDetail: catalogFlow.openDetail, toggle: catalogFlow.toggle, enableDisabled: catalogFlow.enableDisabled,
-    toggleGroup: groupFlow.toggleGroup,
+    toggleGroup: groupFlow.toggleGroup, batchToggleNames: catalogFlow.batchToggleNames,
     resolveConflict: groupFlow.resolveConflict,
     runConfirmed: sourceFlow.runConfirmed, checkSources: sourceFlow.checkSources,
     requestSync: sourceFlow.requestSync, requestDelete: sourceFlow.requestDelete,
@@ -210,7 +217,9 @@ export function useSkillHub(api: SkillHubApi) {
     reorderSourceGroups: groupFlow.reorderSourceGroups,
     addSource: marketFlow.addSource, addMarketSource: marketFlow.addMarketSource,
     runSkillsShSearch: marketFlow.runSkillsShSearch, installSkillsSh: marketFlow.installSkillsSh,
-    removeMarketSource: marketFlow.removeMarketSource, scanRepo: marketFlow.scanRepo,
+    removeMarketSource: marketFlow.removeMarketSource, requestRemoveMarketSource: marketFlow.requestRemoveMarketSource,
+    cancelRemoveMarketSource: marketFlow.cancelRemoveMarketSource, confirmRemoveMarketSource: marketFlow.confirmRemoveMarketSource,
+    removeMarketDialog: marketFlow.removeMarketDialog, scanRepo: marketFlow.scanRepo,
     confirmBranchChoice: marketFlow.confirmBranchChoice, toggleRepoSelected: marketFlow.toggleRepoSelected,
     importRepo: marketFlow.importRepo, cancelImport: marketFlow.cancelImport,
     clearScan: marketFlow.clearScan,

@@ -122,6 +122,7 @@ export function foreignRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           existing: skill.existing,
           scope: skill.scope,
           ...(skill.projectRoot !== undefined ? { projectRoot: skill.projectRoot } : {}),
+          ...(skill.alsoIn !== undefined ? { alsoIn: skill.alsoIn } : {}),
         }))
         writeJson(res, 200, {
           ok: true,
@@ -155,6 +156,7 @@ export function foreignRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         const replaced: string[] = []
         const skipped: Array<{ name: string; reason: string }> = []
         const failed: Array<{ name: string; error: string }> = []
+        const warnings: Array<{ name: string; skippedSymlinks: number }> = []
         const seen = new Set<string>()
 
         for (const raw of items) {
@@ -175,9 +177,10 @@ export function foreignRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           }
 
           // 只认服务端自己扫出来的条目：名字要对得上，scope / projectRoot 也得对得上 ——
-          // 否则一个名字就能把用户级技能装进别的项目。
+          // 否则一个名字就能把用户级技能装进别的项目。同源软链合并后，被并入的
+          // agent 名也要认（旧客户端 / 手工构造的请求可能仍带那个 agent）。
           const skill = available.find((candidate) =>
-            candidate.agent === agent
+            (candidate.agent === agent || candidate.alsoIn?.includes(agent) === true)
             && candidate.name === name
             && candidate.scope === scope
             && (scope === 'user' || candidate.projectRoot === projectRoot))
@@ -196,14 +199,22 @@ export function foreignRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             if (trashed !== undefined) replaced.push(name)
           }
           try {
-            await importForeignSkill(skill, targetRoot)
+            const outcome = await importForeignSkill(skill, targetRoot)
             imported.push(name)
+            if (outcome.skippedSymlinks > 0) warnings.push({ name, skippedSymlinks: outcome.skippedSymlinks })
           } catch (error) {
             failed.push({ name, error: errorText(error) })
           }
         }
         if (imported.length > 0) deps.invalidate?.()
-        writeJson(res, 200, { ok: true, imported, ...(replaced.length > 0 ? { replaced } : {}), skipped, failed } satisfies ForeignImportResponse)
+        writeJson(res, 200, {
+          ok: true,
+          imported,
+          ...(replaced.length > 0 ? { replaced } : {}),
+          skipped,
+          failed,
+          ...(warnings.length > 0 ? { warnings } : {}),
+        } satisfies ForeignImportResponse)
       },
     },
   ]

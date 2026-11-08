@@ -10,7 +10,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { WebRoute, WebRouteKind } from '@deepseek-ai/dsh-host-webserver'
 import { SKILL_HUB_WRITE_HEADER, SKILL_HUB_WRITE_VALUE } from '../protocol.ts'
 import { disabledGate, type SkillHubRouteDeps } from './deps.ts'
-import { loopbackOnlyFence, MAX_BINARY_BODY_BYTES, PayloadTooLargeError, readBinaryBody, readJsonBody, writeError, writeRouteError } from './http.ts'
+import { loopbackOnlyFence, MAX_BINARY_BODY_BYTES, MAX_JSON_BODY_BYTES, PayloadTooLargeError, readBinaryBody, readJsonBody, writeError, writeRouteError } from './http.ts'
 
 export {
   MAX_BINARY_BODY_BYTES,
@@ -98,7 +98,22 @@ export interface RouteSpec {
    * is exactly the confusion it was added to remove.
    */
   skipCsrf?: boolean
+  /** 进全局写队列串行执行（读改写同一份 sidecar 状态的路由需要）。 */
+  serialize?: boolean
   handler: RouteHandler
+}
+
+/**
+ * 写操作串行队列：标记为 `serialize` 的路由共用一条 Promise 链，避免多标签页
+ * 或网络重试的两次写在 sidecar 上「读 → 改 → 写」交错。前一个失败不阻断后一个。
+ * 出网较久的 POST（check / scan / import）不标 serialize，否则一个慢请求会把
+ * 开关这类即时操作一起堵住。参照 dsh-skills-manager 的 enqueueMutation。
+ */
+let mutationQueue: Promise<unknown> = Promise.resolve()
+function enqueueMutation<T>(task: () => Promise<T>): Promise<T> {
+  const queued = mutationQueue.then(task, task)
+  mutationQueue = queued.catch(() => undefined)
+  return queued
 }
 
 /**
@@ -139,9 +154,17 @@ export function createRoute(deps: SkillHubRouteDeps, spec: RouteSpec): WebRoute 
       let body: Record<string, unknown> = {}
       let raw: Buffer | undefined
       if (spec.jsonBody === true && req.method === 'POST') {
-        const parsed = await readJsonBody(req)
-        if (parsed === undefined) { writeError(res, 400, 'invalid JSON body'); return }
-        body = parsed
+        try {
+          const parsed = await readJsonBody(req)
+          if (parsed === undefined) { writeError(res, 400, 'invalid JSON body'); return }
+          body = parsed
+        } catch (error) {
+          if (error instanceof PayloadTooLargeError) {
+            writeError(res, 413, 'request body too large: this route accepts at most ' + Math.floor(MAX_JSON_BODY_BYTES / 1024) + ' KiB of JSON')
+            return
+          }
+          throw error
+        }
       }
       if (spec.binaryBody === true && req.method === 'POST') {
         try {
@@ -155,8 +178,10 @@ export function createRoute(deps: SkillHubRouteDeps, spec: RouteSpec): WebRoute 
         }
         if (raw.length === 0) { writeError(res, 400, 'empty request body: send the .zip bytes with content-type: application/zip'); return }
       }
+      const run = (): Promise<void> => spec.handler({ req, res, url, body, raw })
       try {
-        await spec.handler({ req, res, url, body, raw })
+        if (spec.serialize === true) await enqueueMutation(run)
+        else await run()
       } catch (error) {
         writeRouteError(res, error)
       }

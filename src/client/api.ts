@@ -137,6 +137,8 @@ export function resolveApiUrl(path: string): string {
  * reported an error while the skills on disk were fresh.
  */
 const WRITE_TIMEOUT_MS = 60_000
+/** 市场检查会并发访问每个源；读接口默认 10s 在多源/慢代理下会误报超时。 */
+const MARKET_CHECK_TIMEOUT_MS = 60_000
 
 async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ms = 10_000): Promise<Response> {
   const controller = new AbortController()
@@ -195,8 +197,9 @@ export class SkillHubApi {
   }
 
   /** Toggle one skill; resolves with the fresh catalog from the route. */
-  async toggle(name: string, enabled: boolean): Promise<CatalogResponse> {
-    const body = await this.post<ToggleResponse>(SKILL_HUB_API.toggle, { name, enabled } satisfies ToggleRequest)
+  async toggle(name: string, enabled: boolean, options?: { cwd?: string }): Promise<CatalogResponse> {
+    const cwd = options?.cwd !== undefined && options.cwd !== '' ? options.cwd : undefined
+    const body = await this.post<ToggleResponse>(SKILL_HUB_API.toggle, { name, enabled, ...(cwd !== undefined ? { cwd } : {}) } satisfies ToggleRequest)
     return body.catalog
   }
 
@@ -237,7 +240,7 @@ export class SkillHubApi {
 
   /** Check every market source for updates (throttled server-side). */
   marketCheck(): Promise<MarketCheckResponse> {
-    return this.get<MarketCheckResponse>(SKILL_HUB_API.marketCheck)
+    return this.get<MarketCheckResponse>(SKILL_HUB_API.marketCheck, '', MARKET_CHECK_TIMEOUT_MS)
   }
 
   /**
@@ -337,7 +340,7 @@ export class SkillHubApi {
     return body.tags
   }
 
-  /** 拖拽重排场景分组 */
+  /** 拖拽重排角色分组 */
   async reorderTags(orderedIds: string[]): Promise<SkillTag[]> {
     const body = await this.post<TagReorderResponse>(SKILL_HUB_API.tagReorder, { orderedIds } satisfies TagReorderRequest)
     return body.tags

@@ -17,18 +17,22 @@ import {
   type MarketSyncResponse,
 } from '../protocol.ts'
 import {
+  diffRemoteSkills,
+  downloadSkillsShSkill,
   getLatestCommit,
   getLatestReleaseTag,
   getRepoStats,
   listRepoBranches,
   listRepoReleases,
+  loadRepoTreeAt,
   normalizeRepoInput,
   repoSlug,
-  downloadSkillsShSkill,
   searchSkillsSh,
   SkillsShError,
 } from '../repo.ts'
+import { compareVersions, parseVersion } from '../update.ts'
 import { errorText } from '../error-text.ts'
+import { mapConcurrent } from '../concurrency.ts'
 import {
   queryParam,
   homeOf,
@@ -49,6 +53,7 @@ import {
   MIN_CHECK_INTERVAL_MS,
   lastMarketCheck,
   lastMarketStats,
+  lastSourceCheck,
   marketStatsCache,
   seedMarketStats,
 } from './route-state.ts'
@@ -61,40 +66,47 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
   const checkMarketSources: RouteHandler = async ({ res }) => {
     const sources = await deps.store.listMarketSources()
     if (lastMarketCheck.size > 500) lastMarketCheck.clear()
-    const results: MarketCheckResponse['results'] = []
-    for (const source of sources) {
+    // Bounded parallel checks: a dozen sources used to take 2 × N sequential
+    // GitHub round trips, which could exceed the client's read timeout before
+    // any result was returned. Keep the result order aligned with the market
+    // list, and cap concurrency to avoid a burst that trips rate limiting.
+    const results = await mapConcurrent(sources, 4, async (source) => {
       const base = { repo: source.repo, ...(source.ref !== undefined ? { ref: source.ref } : {}) }
       const now = Date.now()
       const last = lastMarketCheck.get(source.repo) ?? 0
       if (now - last < MIN_CHECK_INTERVAL_MS) {
-        results.push({ ...base, updateAvailable: false, commitSha: source.commitSha ?? '', throttled: true })
-        continue
+        return { ...base, updateAvailable: false, commitSha: source.commitSha ?? '', throttled: true }
       }
       try {
         const latestTag = await getLatestReleaseTag(source.repo)
-        // Book the attempt as soon as the GitHub call has been spent, before
-        // the unpinned branch below can `continue`: otherwise an unpinned
-        // source never records a timestamp and the 5-minute throttle promised
-        // above never applies to it (every check re-hits /releases/latest).
-        // A call that throws is deliberately not booked, so a failing repo is
-        // retried on the next check — same as the source check in sources.ts.
-        lastMarketCheck.set(source.repo, now)
         if (source.ref === undefined) {
           // Not pinned yet: report the latest release so the UI can
           // suggest pinning, but never claim an update.
-          results.push({ ...base, updateAvailable: false, commitSha: source.commitSha ?? '', ...(latestTag !== undefined ? { latestTag } : {}) })
-          continue
+          lastMarketCheck.set(source.repo, now)
+          return { ...base, updateAvailable: false, commitSha: source.commitSha ?? '', ...(latestTag !== undefined ? { latestTag } : {}) }
         }
         const latest = await getLatestCommit(source.repo, source.ref)
-        const commitMoved = source.commitSha !== undefined && latest.commitSha !== source.commitSha
-        const newRelease = latestTag !== undefined && latestTag !== source.ref
-        results.push({ ...base, updateAvailable: commitMoved || newRelease, commitSha: latest.commitSha, ...(newRelease ? { latestTag } : {}) })
+        // Both GitHub calls succeeded before the attempt may count against the
+        // 5-minute throttle. A failed commit lookup must remain retryable on
+        // the next click instead of being hidden behind a throttled negative.
+        const refVersion = parseVersion(source.ref)
+        const newRelease = refVersion !== null && latestTag !== undefined && parseVersion(latestTag) !== null && compareVersions(latestTag, source.ref) > 0
+        const hasBaseline = source.commitSha !== undefined && source.commitSha !== ''
+        const commitMoved = hasBaseline && latest.commitSha !== source.commitSha
+        if (!hasBaseline) {
+          // First check / freshly imported source: adopt this commit as the
+          // baseline. The missing snapshot itself must not claim an update.
+          await deps.store.setMarketSourceCommit(source.repo, latest.commitSha)
+        }
+        lastMarketCheck.set(source.repo, now)
+        return { ...base, updateAvailable: newRelease || commitMoved, commitSha: latest.commitSha, ...(newRelease ? { latestTag } : {}) }
       } catch (error) {
-        results.push({ ...base, updateAvailable: false, commitSha: source.commitSha ?? '', error: errorText(error) })
+        return { ...base, updateAvailable: false, commitSha: source.commitSha ?? '', error: errorText(error) }
       }
-    }
+    })
     writeJson(res, 200, { ok: true, results } satisfies MarketCheckResponse)
   }
+
   return [
     // --------------------------------------------------------------- market
     // Market sources: the user adds repo slugs; each source can
@@ -147,8 +159,16 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         const ref = readString(body, 'ref').trim()
         if (parsed === null) { writeError(res, 400, 'repo must be owner/repo or a github.com URL'); return }
         if (ref === '') { writeError(res, 400, 'ref is required'); return }
-        const record = await deps.store.setMarketSourceRef(repoSlug(parsed), ref)
-        if (record === undefined) { writeError(res, 404, 'market source not found: ' + repoSlug(parsed)); return }
+        const repo = repoSlug(parsed)
+        const record = await deps.store.setMarketSourceRef(repo, ref)
+        if (record === undefined) { writeError(res, 404, 'market source not found: ' + repo); return }
+        // The tracked source follows the market pin: checks and syncs use
+        // SourceRecord.ref, so leaving it behind would make the row show the
+        // new version while downloads still came from the old one.
+        const tracked = await deps.store.getSource(repo)
+        if (tracked !== undefined) await deps.store.setSourceRef(repo, ref)
+        lastMarketCheck.delete(repo)
+        lastSourceCheck.delete(repo)
         writeJson(res, 200, { ok: true, repos: await deps.store.listMarketSources() } satisfies MarketSourceResponse)
       },
     },
@@ -249,30 +269,48 @@ export function marketRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         const repo = repoSlug(parsed)
         const source = await deps.store.getMarketSource(repo)
         if (source === undefined) { writeError(res, 404, 'market source not found: ' + repo); return }
-        // 显式 ref（面板「更新」带上的新版本标签）先钉住再解析提交：
-        // 否则「已钉住」优先的规则会让同步永远停在旧标签。
+        // Resolve the target ref and its commit before touching persistent
+        // state: a bad ref or a transient GitHub failure must leave the saved
+        // pin and baseline exactly as they were.
         const requestedRef = readString(body, 'ref').trim()
-        if (requestedRef !== '') await deps.store.setMarketSourceRef(repo, requestedRef)
-        // Resolve the ref: pinned ref wins; otherwise auto-adopt the latest
-        // release; a repo without releases must be pinned via the branch picker first.
         let ref = requestedRef !== '' ? requestedRef : source.ref
         if (ref === undefined || ref === '') {
           const latestTag = await getLatestReleaseTag(repo)
           if (latestTag === undefined) { writeError(res, 409, 'repo has no release — pick a branch first'); return }
           ref = latestTag
-          await deps.store.setMarketSourceRef(repo, ref)
         }
         const latest = await getLatestCommit(repo, ref)
-        await deps.store.setMarketSourceCommit(repo, latest.commitSha)
+        await deps.store.setMarketSourcePin(repo, ref, latest.commitSha)
         // Propagate the ref to the tracked source record so checks follow it.
         await deps.store.setSourceRef(repo, ref)
+        // Both sides changed; the old 5-minute throttle would otherwise hide
+        // the post-sync state from the next check.
+        lastMarketCheck.delete(repo)
+        lastSourceCheck.delete(repo)
         const tracked = await deps.store.getSource(repo)
+        // Report the real skill-level diff under the newly resolved tree so a
+        // batch-update dialog can select only skills that actually changed.
+        // A tree fetch failure must not turn a successful pin into an error.
+        let updated: string[] | undefined
+        let deleted: string[] | undefined
+        if (tracked !== undefined) {
+          try {
+            const tree = await loadRepoTreeAt(repo, latest.treeSha)
+            const diff = diffRemoteSkills(tree, tracked)
+            updated = diff.updated
+            deleted = diff.deleted
+          } catch {
+            // The pin itself succeeded; omit the optional diff fields.
+          }
+        }
         writeJson(res, 200, {
           ok: true,
           repo,
           ref,
           commitSha: latest.commitSha,
           skills: tracked !== undefined ? [...tracked.skills] : [],
+          ...(updated !== undefined ? { updated } : {}),
+          ...(deleted !== undefined ? { deleted } : {}),
         } satisfies MarketSyncResponse)
       },
     },

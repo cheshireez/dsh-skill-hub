@@ -8,9 +8,11 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
 import type { GroupsResponse, HubConfig, SkillDetail, SourceCheckResult, SourcesResponse } from '../../protocol.ts'
 import { copyTextToClipboard, isDisplayNameDistinct, tt } from '../helpers.ts'
+import { isProjectSource } from '../grouping.ts'
 import css from './panel.module.css'
 import { dotStyle, formatDateTime, shortSha } from './format.ts'
 import { SourceStatusBadge } from './SourceStatusBadge.tsx'
+import { sourceLabel } from './source-label.ts'
 
 export interface SkillDetailViewProps {
   detail: SkillDetail
@@ -27,6 +29,8 @@ export interface SkillDetailViewProps {
   /** Re-enable a hub-disabled skill. */
   onEnable?: () => void
   onBack: () => void
+  /** Render inside a modal shell instead of a full panel page. */
+  modal?: boolean
   /** Check one source repo for upstream updates. */
   onCheck: (repo: string) => void
   /** Request syncing the skill (overwrites local edits; opens a confirm). */
@@ -36,8 +40,12 @@ export interface SkillDetailViewProps {
 }
 
 export function SkillDetailView(props: SkillDetailViewProps): JSX.Element {
-  const { detail, hubConfig, uses, groupsState, sourcesState, sourceCheck, checkingSource, syncingSource, disabled, onEnable, onBack, onCheck, onSync, onFollowDelete } = props
-  const detailSource = sourcesState?.sources.find((source) => source.skills.includes(detail.name))
+  const { detail, hubConfig, uses, groupsState, sourcesState, sourceCheck, checkingSource, syncingSource, disabled, onEnable, onBack, onCheck, onSync, onFollowDelete, modal } = props
+  // Project skills are never part of a tracked upstream source: a same-name
+  // user skill must not leak its source card into the project detail page.
+  const detailSource = detail.source !== undefined && isProjectSource(detail.source)
+    ? undefined
+    : sourcesState?.sources.find((source) => source.skills.includes(detail.name))
   const detailCheck = detailSource !== undefined ? sourceCheck[detailSource.repo] : undefined
   const [copied, setCopied] = useState<string | null>(null)
   const copyTimer = useRef<number | undefined>(undefined)
@@ -51,19 +59,19 @@ export function SkillDetailView(props: SkillDetailViewProps): JSX.Element {
     })
   }
   return (
-    <div className={css.panel}>
+    <div className={css.panel + (modal === true ? ' ' + css.panelModal : '')}>
       <div className={css.detailHead}>
-        <button type='button' className={css.back} onClick={onBack}>{tt('detail.back')}</button>
-        <span className={css.detailName} style={{ display:'inline-flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
+        <button type='button' className={css.back} onClick={onBack}>{tt(modal === true ? 'detail.close' : 'detail.back')}</button>
+        <span className={css.detailName + ' ' + css.detailNameWrap}>
           {detail.name}
-          {isDisplayNameDistinct(detail.name, detail.displayName) ? <span className={css.displayName} style={{ fontSize:13, marginLeft:0 }}>{detail.displayName}</span> : null}
+          {isDisplayNameDistinct(detail.name, detail.displayName) ? <span className={css.displayName + ' ' + css.displayNameInline}>{detail.displayName}</span> : null}
           {detail.invocation.modelInvocable
             ? <span className={css.dot + ' ' + css.dotModel} style={dotStyle(hubConfig?.dotModelColor)} title={tt('legend.model')} />
             : detail.invocation.userInvocable
               ? <span className={css.dot + ' ' + css.dotUser} style={dotStyle(hubConfig?.dotUserColor)} title={tt('legend.user')} />
               : null}
         </span>
-        <span className={css.actions} style={{ marginLeft: 'auto', gap: 6 }}>
+        <span className={css.actions + ' ' + css.detailActions}>
           {disabled === true && onEnable !== undefined ? <button type='button' className={css.opBtn} role='switch' aria-checked={false} aria-label={tt('row.enable')} onClick={onEnable}>{tt('row.enable')}</button> : null}
           <button type='button' className={css.opBtn} onClick={() => { copyText('$' + detail.name, 'mention') }}>{copied === 'mention' ? tt('detail.copied') : tt('detail.copyMention')}</button>
           {detail.path !== undefined ? <button type='button' className={css.opBtn} onClick={() => { const path = detail.path; if (path !== undefined) copyText(path, 'path') }}>{copied === 'path' ? tt('detail.copied') : tt('detail.copyPath')}</button> : null}
@@ -71,10 +79,12 @@ export function SkillDetailView(props: SkillDetailViewProps): JSX.Element {
       </div>
       <div className={css.detailMeta}>
         <div className={css.detailMetaLine}>{tt('detail.provider')}: {detail.provider}</div>
+        {detail.source !== undefined ? <div className={css.detailMetaLine}>{tt('detail.source')}: <span title={detail.source}>{sourceLabel(detail.source)}</span> <span className={css.detailSourceRaw}>({detail.source})</span></div> : null}
         {detail.addedAt !== undefined ? <div className={css.detailMetaLine}>{tt('detail.addedAt')}: {formatDateTime(detail.addedAt)}</div> : null}
         {detail.updatedAt !== undefined ? <div className={css.detailMetaLine}>{tt('detail.updatedAt')}: {formatDateTime(detail.updatedAt)}</div> : null}
         {detail.path !== undefined ? <div className={css.detailMetaLine}>{tt('detail.path')}: {detail.path}</div> : null}
         {detail.whenToUse !== undefined ? <div className={css.detailMetaLine}>{tt('detail.whenToUse')}: {detail.whenToUse}</div> : null}
+        {detail.argumentHint !== undefined ? <div className={css.detailMetaLine}>{tt('detail.argumentHint')}: {detail.argumentHint}</div> : null}
         {(() => {
           const stat = uses.get(detail.name)
           if (stat === undefined || stat.count === 0) return null

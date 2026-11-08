@@ -101,13 +101,6 @@ describe('hashSkillAt', () => {
     expect(await hashSkillAt(join(bundle, 'SKILL.md'))).toBe(await hashSkillDirectory(bundle))
   })
 
-  it('hashes a disabled bundle through SKILL.md.disabled', async () => {
-    const bundle = join(dir, 'demo')
-    await mkdir(bundle)
-    await writeFile(join(bundle, 'SKILL.md.disabled'), 'bundle body\n', 'utf8')
-    expect(await hashSkillAt(join(bundle, 'SKILL.md.disabled'))).toBe(await hashSkillDirectory(bundle))
-  })
-
   it('hashes a flat skill file directly', async () => {
     const flat = join(dir, 'flat.md')
     await writeFile(flat, 'flat body\n', 'utf8')
@@ -115,12 +108,6 @@ describe('hashSkillAt', () => {
     expect(first).toBeDefined()
     await writeFile(flat, 'flat body changed\n', 'utf8')
     expect(await hashSkillAt(flat)).not.toBe(first)
-  })
-
-  it('treats a flat .md.disabled file as a flat skill', async () => {
-    const flat = join(dir, 'flat.md.disabled')
-    await writeFile(flat, 'flat body\n', 'utf8')
-    expect(await hashSkillAt(flat)).toBeDefined()
   })
 
   it('returns undefined when the discovery file is missing', async () => {

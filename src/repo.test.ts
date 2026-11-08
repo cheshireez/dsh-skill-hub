@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { NO_COMPRESSION, apiHeaders, collectRepoSkillFiles, diffRemoteSkills, discoverRepoEntries, downloadGitHubFile, downloadRepoSkill, getLatestReleaseTag, getRepoStats, listRepoBranches, normalizeRepoInput, originForRoot, rateLimitResetAt, relativeToSkillDir, repoSkillEntry, repoSlug, skillDirOf, skillFileAt, skillManifest } from './repo.ts'
+import { NO_COMPRESSION, apiHeaders, collectRepoSkillFiles, diffRemoteSkills, discoverRepoEntries, downloadGitHubFile, downloadRepoSkill, fetchJson, getLatestReleaseTag, getRepoStats, listRepoBranches, normalizeRepoInput, originForRoot, rateLimitResetAt, relativeToSkillDir, repoSkillEntry, repoSlug, skillDirOf, skillFileAt, skillManifest } from './repo.ts'
 import type { RepoTreeItem } from './repo.ts'
 import type { RepoSkillEntry } from './protocol.ts'
 
@@ -547,6 +547,38 @@ describe('github 瞬时失败重试', () => {
       return new Response('{}', { status: 404 })
     }) as unknown as typeof fetch
     await expect(getLatestReleaseTag('mattpocock/skills', stub)).resolves.toBeUndefined()
+    expect(calls).toBe(1)
+  })
+
+  it('响应体读取失败时重试整个请求', async () => {
+    let calls = 0
+    const stub = (async () => {
+      calls += 1
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => {
+          if (calls === 1) throw new TypeError('terminated')
+          return { tag_name: 'v1.3.2' }
+        },
+      } as unknown as Response
+    }) as unknown as typeof fetch
+    await expect(fetchJson('https://api.github.com/repos/mattpocock/skills/releases/latest', stub, 'github release lookup failed')).resolves.toMatchObject({
+      json: { tag_name: 'v1.3.2' },
+    })
+    expect(calls).toBe(2)
+  })
+
+  it('DNS 永久错误不重试', async () => {
+    let calls = 0
+    const stub = (async () => {
+      calls += 1
+      const error = new TypeError('fetch failed')
+      ;(error as TypeError & { cause?: unknown }).cause = Object.assign(new Error('getaddrinfo ENOTFOUND api.github.com'), { code: 'ENOTFOUND' })
+      throw error
+    }) as unknown as typeof fetch
+    await expect(fetchJson('https://api.github.com/repos/mattpocock/skills/releases/latest', stub, 'github release lookup failed')).rejects.toThrow(/ENOTFOUND/)
     expect(calls).toBe(1)
   })
 

@@ -21,7 +21,7 @@ describe('SkillHubStore', () => {
 
   it('starts empty when no state file exists', async () => {
     expect(await store.listDisabled()).toEqual([])
-    // 空 store 自动拥有默认场景「通用」。
+    // 空 store 自动拥有默认角色「通用」。
     const tags = await store.listTags()
     expect(tags).toHaveLength(1)
     expect(tags[0]).toMatchObject({ name: '通用', default: true })
@@ -58,7 +58,7 @@ describe('SkillHubStore', () => {
     await store.setTagMembers(tag.id, ['a', 'b', 'b', ''])
     const reloaded = new SkillHubStore(file)
     const tags = await reloaded.listTags()
-    // 默认场景「通用」始终存在。
+    // 默认角色「通用」始终存在。
     expect(tags.some((t) => t.default === true)).toBe(true)
     const saved = tags.find((t) => t.id === tag.id)
     expect(saved).toMatchObject({ id: tag.id, name: 'web' })
@@ -74,19 +74,19 @@ describe('SkillHubStore', () => {
     expect(renamed.skillNames).toEqual(['x'])
   })
 
-  it('deletes a tag and rejects empty names, and refuses to delete the default scene', async () => {
+  it('deletes a tag and rejects empty names, and refuses to delete the default role', async () => {
     const tag = await store.saveTag({ name: 'tmp' })
     await store.deleteTag(tag.id)
     const after = await store.listTags()
     expect(after.find((t) => t.id === tag.id)).toBeUndefined()
-    // 默认场景不可删除。
+    // 默认角色不可删除。
     const def = await store.getDefaultTag()
     expect(def).toBeDefined()
-    await expect(store.deleteTag(def!.id)).rejects.toThrow(/default scene/)
+    await expect(store.deleteTag(def!.id)).rejects.toThrow(/default role/)
     await expect(store.saveTag({ name: '  ' })).rejects.toThrow()
   })
 
-  it('adds a skill to a tag (deduplicated) and persists the default scene', async () => {
+  it('adds a skill to a tag (deduplicated) and persists the default role', async () => {
     const def = await store.getDefaultTag()
     expect(def).toBeDefined()
     await store.addSkillToTag(def!.id, 'a')
@@ -247,6 +247,24 @@ describe('SkillHubStore', () => {
     await store.setMarketSourceRef('a/b', 'v2.0.0')
     // 改 ref 会清掉旧的 commit 基线。
     expect(await store.getMarketSource('a/b')).toEqual({ repo: 'a/b', ref: 'v2.0.0' })
+
+    // 重新添加已有源并带新 ref 也等价于改 pin：旧 ref 的 commit 基线必须清掉。
+    await store.addMarketSource('c/d', 'v1.0.0')
+    await store.setMarketSourceCommit('c/d', 'sha-c1')
+    await store.addMarketSource('c/d', 'v2.0.0')
+    expect(await store.getMarketSource('c/d')).toEqual({ repo: 'c/d', ref: 'v2.0.0' })
+
+    // 原子 pin：ref + commit 一次写入。
+    await store.addMarketSource('e/f')
+    await store.setMarketSourcePin('e/f', 'v3.0.0', 'sha-ef')
+    expect(await store.getMarketSource('e/f')).toEqual({ repo: 'e/f', ref: 'v3.0.0', commitSha: 'sha-ef' })
+  })
+
+  it('keeps the commit baseline when confirming the same market source ref', async () => {
+    await store.addMarketSource('same/ref', 'v1.0.0')
+    await store.setMarketSourceCommit('same/ref', 'sha-same')
+    await store.setMarketSourceRef('same/ref', 'v1.0.0')
+    expect(await store.getMarketSource('same/ref')).toEqual({ repo: 'same/ref', ref: 'v1.0.0', commitSha: 'sha-same' })
   })
 
   // ------------------------------------------------------- 回收站
@@ -283,7 +301,7 @@ describe('SkillHubStore', () => {
     expect(await reloaded.getTrash('flat-gone')).toMatchObject({ name: 'flat-gone', sourcePath: '/tmp/skills/flat-gone.md' })
   })
 
-  it('persists the trash origin snapshot and scene ids (restore keeps grouping)', async () => {
+  it('persists the trash origin snapshot and role ids (restore keeps grouping)', async () => {
     await store.addTrash({
       name: 'tracked-gone',
       path: '/tmp/.trash/tracked-gone-1',
@@ -315,7 +333,7 @@ describe('SkillHubStore', () => {
       version: 1,
       disabled: [{ name: 'a', path: '/tmp/a.md.disabled', root: 'user-dsh', disabledAt: 1 }],
       origins: { docx: 'anthropics/skills', pdf: 'anthropics/skills' },
-      scenes: [{ id: 's1', name: '场景', skillNames: ['docx'] }],
+      scenes: [{ id: 's1', name: '角色', skillNames: ['docx'] }],
     }), 'utf8')
     expect(await store.listDisabled()).toHaveLength(1)
     const sources = await store.listSources()

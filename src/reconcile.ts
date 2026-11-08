@@ -10,7 +10,8 @@
  * empty shell. This walk rebuilds the missing records from disk at startup.
  */
 
-import { readFile, stat } from 'node:fs/promises'
+import { readFile, rename, stat } from 'node:fs/promises'
+import { basename, dirname, resolve } from 'node:path'
 import type { DisabledSkill } from './protocol.ts'
 import { disabledOccupancyIn, parseFrontmatter, rootPath, scanDisabledRoot, WRITABLE_ROOTS } from './skillfs.ts'
 import { dshHome } from './store.ts'
@@ -108,4 +109,63 @@ export async function pruneStaleDisabledSkills(store: DisabledPruneStore, home =
     result.repaired.push(repaired)
   }
   return result
+}
+
+/** 一次性迁移所需的 store 视图：策略写入 + 台账读写。 */
+export interface DisabledMigrationStore extends DisabledReconcileStore {
+  addInvocationOverride(path: string): Promise<void>
+}
+
+/**
+ * 第一轮重构的一次性迁移：把 rename 时代留下的 *.disabled 文件改回启用态文件名，
+ * 并把「停用」这件事从磁盘形态搬到策略（invocationOverrides + sidecar 台账）。
+ *
+ * 必须在 reconcileDisabledSkills / pruneStaleDisabledSkills **之前**跑：迁移后磁盘
+ * 上不再有 .disabled 文件，两条旧对账自然不再补记录；台账 path 改指向仍存在的
+ * SKILL.md，反向对账也不会误删。幂等：第二次启动扫描为空，什么也不做。
+ *
+ * 同名两形态（SKILL.md 与 SKILL.md.disabled 同时存在）时**不覆盖**启用件，只把
+ * 策略挂上去，避免搬移时丢掉用户真正启用的那份。
+ */
+export async function migrateRenamedDisabledSkills(store: DisabledMigrationStore, home = dshHome()): Promise<string[]> {
+  const byPath = new Map((await store.listDisabled()).map((entry) => [entry.path, entry]))
+  const migrated: string[] = []
+  for (const root of WRITABLE_ROOTS) {
+    for (const disabledPath of await scanDisabledRoot(rootPath(root, home))) {
+      const enabledPath = disabledPath.slice(0, -'.disabled'.length)
+      const policyPath = resolve(enabledPath)
+      let exists = false
+      try {
+        exists = (await stat(enabledPath)).isFile()
+      } catch {
+        exists = false
+      }
+      if (!exists) {
+        try {
+          await rename(disabledPath, enabledPath)
+        } catch {
+          continue
+        }
+      }
+      await store.addInvocationOverride(policyPath)
+      const record = byPath.get(disabledPath)
+      if (record !== undefined) {
+        await store.addDisabled({ ...record, path: policyPath })
+      } else {
+        // 孤儿 .disabled（sidecar 被恢复过）：补一条台账，否则技能会变回启用态。
+        const name = basename(enabledPath) === 'SKILL.md' ? basename(dirname(enabledPath)) : basename(enabledPath, '.md')
+        const text = await readFile(enabledPath, 'utf8').catch(() => '')
+        const parsed = parseFrontmatter(text)
+        await store.addDisabled({
+          name,
+          description: 'error' in parsed ? '' : parsed.value.description,
+          path: policyPath,
+          root,
+          disabledAt: Date.now(),
+        })
+      }
+      migrated.push(enabledPath)
+    }
+  }
+  return migrated
 }

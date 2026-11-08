@@ -4,12 +4,13 @@
  */
 
 import { readFile, stat } from 'node:fs/promises'
-import { dirname, join, resolve, sep } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import type { SkillDefinition } from '@deepseek-ai/dsh-skill'
 import { isSkillName } from '@deepseek-ai/dsh-skill'
 import {
   SKILL_HUB_API,
   type CreateResponse,
+  type DisabledSkill,
   type SkillDeleteResponse,
   type SkillDetail,
   type SkillDetailResponse,
@@ -18,9 +19,9 @@ import {
   type ToggleResponse,
   type WritableRoot,
 } from '../protocol.ts'
-import { createSkill, disableSkill, disabledOccupancyIn, enableSkill, occupancyOf, parseFrontmatter, projectSkillsRoot, readSkillInterface, rootOfPath, rootPath, trashSkill } from '../skillfs.ts'
+import { createSkill, createSkillInDir, occupancyOf, parseFrontmatter, readSkillInterface, rootOfPath, rootPath, trashSkill } from '../skillfs.ts'
+import { projectSkillsRoot } from '../skillfs/paths.ts'
 import { errorText } from '../error-text.ts'
-import { knownProjectRoots } from './foreign.ts'
 import {
   applyInterface,
   buildCatalog,
@@ -55,24 +56,6 @@ async function applyFileTimes(row: { addedAt?: number; updatedAt?: number }, pat
 }
 
 /** 目录域全部路由 spec（由 routes.ts 经 createRoute 包上统一围栏）。 */
-/**
- * 这个发现文件是否属于某个已登记项目的技能根（`.dsh/skills` 或 `.agents/skills`）。
- *
- * 是 → 返回规范化的绝对路径（invocation 覆盖的 key）；否则 undefined。
- * 项目根名单与外部收编同源（`knownProjectRoots`），保证两处判定不漂移。
- */
-async function projectSkillPath(path: string, home: string): Promise<string | undefined> {
-  if (path === '') return undefined
-  const normalized = resolve(path)
-  for (const { root } of await knownProjectRoots(home)) {
-    for (const base of [projectSkillsRoot(root), join(root, '.agents', 'skills')]) {
-      const resolvedBase = resolve(base)
-      if (normalized === resolvedBase || normalized.startsWith(resolvedBase + sep)) return normalized
-    }
-  }
-  return undefined
-}
-
 /** 按 name（和可选 cwd）找到技能的发现文件路径；找不到返回 undefined。 */
 async function discoveryPathOf(deps: SkillHubRouteDeps, name: string, cwd?: string): Promise<string | undefined> {
   try {
@@ -81,6 +64,35 @@ async function discoveryPathOf(deps: SkillHubRouteDeps, name: string, cwd?: stri
   } catch {
     return undefined
   }
+}
+
+/**
+ * The discovered path when it is outside the hub's writable roots (project or
+ * external provider skill). Those are toggled through an invocation override,
+ * never through a same-name disabled sidecar record.
+ */
+async function nonWritableDiscoveryPath(deps: SkillHubRouteDeps, name: string, cwd: string): Promise<string | undefined> {
+  if (cwd === '') return undefined
+  const discovered = await discoveryPathOf(deps, name, cwd)
+  if (discovered === undefined) return undefined
+  const path = resolve(discovered)
+  return rootOfPath(path, homeOf(deps)) === undefined ? path : undefined
+}
+
+/**
+ * 重新启用一条停用记录：删掉 invocation override 与台账记录，文件一个字节不动。
+ *
+ * 第一轮重构后 SKILL.md 始终在位，不再有「改名 → 改回来」这一步，因此也不需要
+ * pathExists / 占位自愈那套 rename 时代的兜底。旧记录的 path 可能还带
+ * `.disabled` 后缀（启动迁移器尚未运行或失败），两种形式都清一遍。
+ */
+async function enableDisabledRecord(deps: SkillHubRouteDeps, name: string, record: DisabledSkill): Promise<void> {
+  const policyPath = resolve(record.path)
+  await deps.store.removeInvocationOverride(policyPath)
+  if (policyPath.endsWith('.disabled')) {
+    await deps.store.removeInvocationOverride(policyPath.slice(0, -'.disabled'.length))
+  }
+  await deps.store.removeDisabled(name)
 }
 
 export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
@@ -115,8 +127,8 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           if (skill === undefined) skill = await deps.skills.get(name)
         }
         if (skill === undefined) {
-          // Hub-disabled skills live outside registry discovery (renamed to .disabled);
-          // serve their detail straight from the sidecar record + file.
+          // A paused skill stays in registry discovery; this fallback only serves
+          // a stale ledger record whose file was removed by hand.
           const record = await deps.store.getDisabled(name)
           if (record !== undefined) {
             try {
@@ -146,7 +158,15 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         const detail = toDetail(skill)
         if (skill.path !== undefined) {
           await applyFileTimes(detail, skill.path)
-          // UI metadata from agents/openai.yaml beside the skill directory (codex).
+          // Claude Code 的 argument-hint 不在官方 SkillDefinition 里，详情接口
+          // 单独从发现文件读出来，避免导入后这行元数据静默消失。
+          try {
+            const frontmatter = parseFrontmatter(await readFile(skill.path, 'utf8'))
+            if (!('error' in frontmatter) && frontmatter.value.argumentHint !== undefined) detail.argumentHint = frontmatter.value.argumentHint
+          } catch {
+            // best-effort: 详情不该因为一个可选字段读失败而 500
+          }
+          // UI metadata: codex openai.yaml / workbuddy.json / frontmatter, in that order.
           try {
             const rb = skill.resourceBase as { kind?: string; path?: string } | undefined
             const dir = rb?.kind === 'directory' && typeof rb.path === 'string' ? rb.path : (skill.path.endsWith('SKILL.md') ? dirname(skill.path) : undefined)
@@ -192,15 +212,15 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             writeJson(res, 200, { ok: true, name, path: disabled.path } satisfies SkillDeleteResponse)
             return
           }
-          // 禁用态：SKILL.md.disabled 或 *.md.disabled，直接将其所在技能整体移入回收站
-          // （trashSkill 认两种发现文件名，目录包按整目录搬）。
+          // 台账里的路径就是发现文件本身（停用不再改名），整体移入回收站。
+          // trashSkill 按 SKILL.md / <name>.md 判定目录包还是扁平文件。
           trashResult = await trashSkill(disabled.path)
         } else {
             writeError(res, resolved.status, resolved.error); return
           }
         }
-        // 入回收站前快照来源归属与场景成员：恢复时把它们加回来，否则恢复
-        // 后的技能会丢失来源（变成「个人技能」）和场景分组。
+        // 入回收站前快照来源归属与角色成员：恢复时把它们加回来，否则恢复
+        // 后的技能会丢失来源（变成「个人技能」）和角色分组。
         const tracked = await deps.store.getSourceForSkill(name)
         const tagIds = (await deps.store.listTags()).filter((tag) => tag.skillNames.includes(name)).map((tag) => tag.id)
         const { path, source } = trashResult ?? await trashSkill((resolved as { ok: true; path: string }).path)
@@ -214,6 +234,10 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             : {}),
           ...(tagIds.length > 0 ? { tagIds } : {}),
         })
+        // 停用策略按发现文件路径记录：删技能时一并清掉，否则同名技能下次
+        // 装回来会被一条指向已删文件的 override 静默停用。
+        const disabledRecord = await deps.store.getDisabled(name)
+        if (disabledRecord !== undefined) await deps.store.removeInvocationOverride(resolve(disabledRecord.path))
         await deps.store.removeDisabled(name)
         await deps.store.removeSkillFromSources(name)
         await deps.store.removeSkillFromTags(name)
@@ -222,22 +246,51 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       },
     },
     // -------------------------------------------------------------- toggle
-    // 项目技能的停用不走文件改名（见 projectSkillPath），走 invocation 覆盖：
+    // 所有技能的停用都走 invocation 覆盖（sidecar 策略），不再改磁盘文件：
     // 同名技能的 modelInvocable 被 provider 压成 false，文件一个字节不动。
     {
       path: SKILL_HUB_API.toggle,
       methods: ['POST'],
       jsonBody: true,
+      serialize: true,
       handler: async ({ res, body }) => {
         const name = readString(body, 'name')
         if (name === '') { writeError(res, 400, 'name is required'); return }
         const cwd = readString(body, 'cwd')
         const lookup = cwd !== '' ? { cwd } : undefined
-        if (body.enabled === true) {
+        const enabled = body.enabled === true
+        // 幂等：已是目标状态就直接回当前目录。连点/重试的第二个请求原本会撞
+        // 409「already enabled」或 404「not hub-disabled」，前端把 4xx 转成红色
+        // 错误条 —— 磁盘状态其实早就对了。与 toggle-batch 的 no-op 语义对齐。
+        // catalog 里查不到该名字时不短路，交给原逻辑报真实错误，不掩盖「技能不存在」。
+        const current = await buildCatalog(deps, lookup?.cwd)
+        const active = current.skills.find((entry) => entry.name === name)
+        const isOff = active !== undefined ? active.modelOverride === true : current.disabled.some((entry) => entry.name === name)
+        const already = enabled ? (active !== undefined && !isOff) : isOff
+        if (already) {
+          writeJson(res, 200, { ok: true, catalog: current } satisfies ToggleResponse)
+          return
+        }
+        if (enabled) {
+          // With a workspace cwd, a project/external skill is enabled through
+          // its invocation override. Resolve that before consulting the
+          // disabled sidecar so a same-name user record cannot hijack it.
+          const invocationPath = await nonWritableDiscoveryPath(deps, name, cwd)
+          if (invocationPath !== undefined) {
+            if ((await deps.store.listInvocationOverrides()).includes(invocationPath)) {
+              await deps.store.removeInvocationOverride(invocationPath)
+              deps.invalidate?.()
+              writeJson(res, 200, { ok: true, catalog: await buildCatalog(deps, lookup?.cwd) } satisfies ToggleResponse)
+              return
+            }
+            writeError(res, 409, 'skill is already enabled: ' + name)
+            return
+          }
           const record = await deps.store.getDisabled(name)
           if (record === undefined) {
-            // 不是文件改名停用：可能是 invocation 覆盖停用的项目技能。
-            const overridePath = await projectSkillPath((await discoveryPathOf(deps, name, cwd !== '' ? cwd : undefined)) ?? '', homeOf(deps))
+            // 不是文件改名停用：可能是 invocation 覆盖停用的项目/外部技能。
+            const discovered = await discoveryPathOf(deps, name, cwd !== '' ? cwd : undefined)
+            const overridePath = discovered === undefined ? undefined : resolve(discovered)
             if (overridePath === undefined || !(await deps.store.listInvocationOverrides()).includes(overridePath)) {
               writeError(res, 404, 'skill is not hub-disabled: ' + name)
               return
@@ -247,49 +300,27 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             writeJson(res, 200, { ok: true, catalog: await buildCatalog(deps, lookup?.cwd) } satisfies ToggleResponse)
             return
           }
-          // 记录里的路径可能已经失效（文件被手工删/搬走）。先在同 root 下找现存的
-          // 禁用占位：找得到就把记录指向它，找不到说明这条记录是残留 —— 清掉并把
-          // 名字还给用户，而不是让「启用」永远失败把名字锁死。
-          let disabledPath = record.path
-          if (!await pathExists(disabledPath)) {
-            // root 从记录路径反推，不直接信 sidecar 里的 root 字段（可能是损坏数据）。
-            const root = rootOfPath(disabledPath, homeOf(deps))
-            const occupancy = root === undefined ? undefined : await disabledOccupancyIn(rootPath(root, homeOf(deps)), name)
-            if (occupancy === undefined) {              await deps.store.removeDisabled(name)
-              deps.invalidate?.()
-              writeError(res, 409, 'disabled record was stale (its file no longer exists); the record has been removed — retry now')
-              return
-            }
-            disabledPath = occupancy
-          }
-          try {
-            await enableSkill(disabledPath)
-          } catch (error) {
-            // The renamed file may have vanished (external cleanup); report
-            // precisely instead of a generic 500, like toggle-batch does.
-            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-              writeError(res, 409, 'disabled skill file is missing on disk: ' + disabledPath)
-              return
-            }
-            throw error
-          }
-          await deps.store.removeDisabled(name)
+          await enableDisabledRecord(deps, name, record)
         } else {
           const resolved = await resolveWritableSkill(deps, name, cwd !== '' ? cwd : undefined)
           if (!resolved.ok) {
-            // 不在可写根：项目技能的停用走 invocation 覆盖（不改文件，git 干净）。
-            const overridePath = await projectSkillPath((await discoveryPathOf(deps, name, cwd !== '' ? cwd : undefined)) ?? '', homeOf(deps))
-            if (overridePath === undefined) { writeError(res, resolved.status, resolved.error); return }
-            await deps.store.addInvocationOverride(overridePath)
+            // 不在可写根：项目技能和外部 provider 的停用走 invocation 覆盖（不改文件，git 干净）。
+            const discovered = await discoveryPathOf(deps, name, cwd !== '' ? cwd : undefined)
+            if (discovered === undefined) { writeError(res, resolved.status, resolved.error); return }
+            await deps.store.addInvocationOverride(resolve(discovered))
             deps.invalidate?.()
             writeJson(res, 200, { ok: true, catalog: await buildCatalog(deps, lookup?.cwd) } satisfies ToggleResponse)
             return
           }
-          const disabledPath = await disableSkill(resolved.path)
+          // 停用 = 写策略，不改磁盘。SKILL.md 留在原位，provider 通过 override
+          // 把 modelInvocable 压成 false；文件不动 ⇒ 天然幂等、不会连点爆红，
+          // 也不会留下 .disabled 占位和 ENOTEMPTY 那类问题。
+          const policyPath = resolve(resolved.path)
+          await deps.store.addInvocationOverride(policyPath)
           await deps.store.addDisabled({
             name,
             description: resolved.skill.description,
-            path: disabledPath,
+            path: policyPath,
             root: resolved.root,
             disabledAt: Date.now(),
           })
@@ -306,6 +337,7 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       path: SKILL_HUB_API.toggleBatch,
       methods: ['POST'],
       jsonBody: true,
+      serialize: true,
       handler: async ({ res, body }) => {
         const names = readStrings(body, 'names')
         if (names.length === 0) { writeError(res, 400, 'names must be a non-empty array'); return }
@@ -316,15 +348,32 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         for (const name of names) {
           try {
             if (enabled) {
+              const invocationPath = await nonWritableDiscoveryPath(deps, name, cwd)
+              if (invocationPath !== undefined) {
+                if ((await deps.store.listInvocationOverrides()).includes(invocationPath)) {
+                  await deps.store.removeInvocationOverride(invocationPath)
+                }
+                continue
+              }
               const record = await deps.store.getDisabled(name)
-              if (record === undefined) continue // already enabled: no-op
-              await enableSkill(record.path)
-              await deps.store.removeDisabled(name)
+              if (record !== undefined) {
+                await enableDisabledRecord(deps, name, record)
+              } else {
+                // 不是文件改名停用：可能是项目/外部技能的 invocation 覆盖。
+                const discovered = await discoveryPathOf(deps, name, cwd !== '' ? cwd : undefined)
+                if (discovered !== undefined) await deps.store.removeInvocationOverride(resolve(discovered))
+              }
             } else {
               const resolved = await resolveWritableSkill(deps, name, cwd !== '' ? cwd : undefined)
-              if (!resolved.ok) { failures.push({ name, error: resolved.error }); continue }
-              const disabledPath = await disableSkill(resolved.path)
-              await deps.store.addDisabled({ name, description: resolved.skill.description, path: disabledPath, root: resolved.root, disabledAt: Date.now() })
+              if (!resolved.ok) {
+                const discovered = await discoveryPathOf(deps, name, cwd !== '' ? cwd : undefined)
+                if (discovered === undefined) { failures.push({ name, error: resolved.error }); continue }
+                await deps.store.addInvocationOverride(resolve(discovered))
+              } else {
+                const policyPath = resolve(resolved.path)
+                await deps.store.addInvocationOverride(policyPath)
+                await deps.store.addDisabled({ name, description: resolved.skill.description, path: policyPath, root: resolved.root, disabledAt: Date.now() })
+              }
             }
           } catch (error) {
             failures.push({ name, error: errorText(error) })
@@ -342,31 +391,64 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       handler: async ({ res, body }) => {
         const name = readString(body, 'name').trim()
         if (!isSkillName(name)) { writeError(res, 400, 'skill name must be kebab-case (lowercase letters, digits, dashes)'); return }
-        // 缺省根 = user-dsh；给了但类型/取值不合法时保持原样交给下面的校验拒绝。
-        const rootText = body.root === undefined ? 'user-dsh' : readString(body, 'root')
-        if (!isWritableSource(rootText)) { writeError(res, 400, 'root must be user-dsh or user-agents'); return }
-        const root: WritableRoot = rootText
-        const existing = await deps.skills.get(name)
-        if (existing !== undefined) { writeError(res, 409, 'skill name already exists: ' + name); return }
-        if (await deps.store.getDisabled(name) !== undefined) { writeError(res, 409, 'skill name is disabled: re-enable it from the disabled list first'); return }
-        // 建档前先看磁盘：三种占位都会让新目录与旧文件并存成同名两形态 ——
-        // 已启用的发现文件（frontmatter 坏了因此注册表看不见）、已禁用的占位
-        // （目录包或扁平）、以及没有 SKILL.md 的空壳目录（正是发现诊断在报的东西）。
-        const occupancy = await occupancyOf(rootPath(root, homeOf(deps)), name)
-        if (occupancy.enabled.length > 0) {
-          writeError(res, 409, 'a skill file already occupies this name on disk: ' + name + ' (check the discovery diagnostics)')
-          return
+        const workspaceText = body.workspace === undefined ? '' : readString(body, 'workspace')
+        const home = homeOf(deps)
+        let path: string
+        let createdRoot: WritableRoot | undefined
+        let createdWorkspace: string | undefined
+        if (workspaceText !== '') {
+          // 仅允许宿主已登记的工作区；创建目标固定为 <workspace>/.dsh/skills。
+          const workspace = resolve(workspaceText)
+          const known = await workspaceEntries(home)
+          if (!known.some((entry) => resolve(entry.path) === workspace)) {
+            writeError(res, 400, 'workspace is not registered: ' + workspace)
+            return
+          }
+          const existing = await deps.skills.get(name, { cwd: workspace })
+          if (existing !== undefined) { writeError(res, 409, 'skill name already exists: ' + name); return }
+          // Check both project roots: .dsh/skills is the default target, but a
+          // broken/disabled file in .agents/skills still occupies the name.
+          for (const base of [projectSkillsRoot(workspace), join(workspace, '.agents', 'skills')]) {
+            const occupancy = await occupancyOf(base, name)
+            if (occupancy.enabled.length > 0) {
+              writeError(res, 409, 'a skill file already occupies this name on disk: ' + name + ' (check the discovery diagnostics)')
+              return
+            }
+            if (occupancy.disabled.length > 0 || occupancy.bareDir !== undefined) {
+              writeError(res, 409, 'name is occupied by a disabled placeholder or an empty directory on disk: ' + name + ' (check the discovery diagnostics)')
+              return
+            }
+          }
+          path = await createSkillInDir(projectSkillsRoot(workspace), name, readString(body, 'description'), readString(body, 'body'))
+          createdWorkspace = workspace
+        } else {
+          // 缺省根 = user-dsh；给了但类型/取值不合法时保持原样交给下面的校验拒绝。
+          const rootText = body.root === undefined ? 'user-dsh' : readString(body, 'root')
+          if (!isWritableSource(rootText)) { writeError(res, 400, 'root must be user-dsh or user-agents'); return }
+          const root: WritableRoot = rootText
+          const existing = await deps.skills.get(name)
+          if (existing !== undefined) { writeError(res, 409, 'skill name already exists: ' + name); return }
+          if (await deps.store.getDisabled(name) !== undefined) { writeError(res, 409, 'skill name is disabled: re-enable it from the disabled list first'); return }
+          // 建档前先看磁盘：三种占位都会让新目录与旧文件并存成同名两形态 ——
+          // 已启用的发现文件（frontmatter 坏了因此注册表看不见）、已禁用的占位
+          // （目录包或扁平）、以及没有 SKILL.md 的空壳目录（正是发现诊断在报的东西）。
+          const occupancy = await occupancyOf(rootPath(root, home), name)
+          if (occupancy.enabled.length > 0) {
+            writeError(res, 409, 'a skill file already occupies this name on disk: ' + name + ' (check the discovery diagnostics)')
+            return
+          }
+          if (occupancy.disabled.length > 0 || occupancy.bareDir !== undefined) {
+            writeError(res, 409, 'name is occupied by a disabled placeholder or an empty directory on disk: ' + name + ' (check the discovery diagnostics)')
+            return
+          }
+          path = await createSkill(root, name, readString(body, 'description'), home, readString(body, 'body'))
+          createdRoot = root
         }
-        if (occupancy.disabled.length > 0 || occupancy.bareDir !== undefined) {
-          writeError(res, 409, 'name is occupied by a disabled placeholder or an empty directory on disk: ' + name + ' (check the discovery diagnostics)')
-          return
-        }
-        const path = await createSkill(root, name, readString(body, 'description'), homeOf(deps))
-        // 新技能自动归入默认场景（「通用」）。
+        // 新技能自动归入默认角色（「通用」）。
         const defaultTag = await deps.store.getDefaultTag()
         if (defaultTag !== undefined) await deps.store.addSkillToTag(defaultTag.id, name)
         deps.invalidate?.()
-        writeJson(res, 201, { ok: true, path, root } satisfies CreateResponse)
+        writeJson(res, 201, { ok: true, path, ...(createdRoot !== undefined ? { root: createdRoot } : {}), ...(createdWorkspace !== undefined ? { workspace: createdWorkspace } : {}) } satisfies CreateResponse)
       },
     },
     // ---------------------------------------------------------------- stats

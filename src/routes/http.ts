@@ -131,14 +131,18 @@ export function writeRouteError(res: ServerResponse, error: unknown): void {
   writeError(res, 500, error)
 }
 
-/** Read a JSON request body (undefined when too large or unparseable). */
+/**
+ * Read a JSON request body (undefined when unparseable). Oversized bodies
+ * throw {@link PayloadTooLargeError} so the route can answer 413 instead of
+ * conflating the two failure modes with a generic 400.
+ */
 export async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown> | undefined> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
     const buffer = chunk as Buffer
     size += buffer.length
-    if (size > MAX_JSON_BODY_BYTES) return undefined
+    if (size > MAX_JSON_BODY_BYTES) throw new PayloadTooLargeError()
     chunks.push(buffer)
   }
   try {

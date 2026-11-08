@@ -123,7 +123,7 @@ export function useGroupFlow(
     }, () => shared.setTagBusy(false))
   }, [api, applyTags, shared])
 
-  /** 拖拽重排场景分组 */
+  /** 拖拽重排角色分组 */
   const reorderTags = useCallback(async (orderedIds: string[]): Promise<void> => {
     shared.setTagBusy(true)
     shared.clearFail()

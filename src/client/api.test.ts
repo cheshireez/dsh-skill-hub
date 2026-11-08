@@ -30,6 +30,21 @@ describe('resolveApiUrl (issue #18)', () => {
 describe('SkillHubApi outbound boundary (issue #18)', () => {
   afterEach(() => { vi.unstubAllGlobals() })
 
+  it('passes a workspace cwd when toggling a project skill', async () => {
+    let seenBody: string | undefined
+    vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+      seenBody = typeof init?.body === 'string' ? init.body : undefined
+      return new Response(JSON.stringify({ ok: true, catalog: { skills: [], disabled: [], diagnostics: [], complete: true } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+
+    const api = new SkillHubApi()
+    await api.toggle('proj-skill', false, { cwd: '/repo' })
+    expect(JSON.parse(seenBody ?? '{}')).toEqual({ name: 'proj-skill', enabled: false, cwd: '/repo' })
+  })
+
   it('sends every request through the resolved URL, prefix included', async () => {
     vi.stubGlobal('document', { baseURI: 'https://host.example.com/app/dsh/' })
     const seen: string[] = []

@@ -42,7 +42,7 @@ export interface TrashEntry {
     ref?: string
     commitSha: string
   }
-  /** 移入回收站前所属的场景（tag）ID；恢复时重新加回这些场景。 */
+  /** 移入回收站前所属的角色（tag）ID；恢复时重新加回这些角色。 */
   tagIds?: string[]
 }
 

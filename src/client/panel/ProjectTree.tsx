@@ -1,13 +1,16 @@
 /**
  * ProjectTree — 项目级顶层卡片：把项目技能按 workspace 聚合（可折叠），
- * 并支持按 .dsh/.agents 细分两层。顶层拖拽 props 由 SourcesView 传入，
- * 拖拽排序状态与回调仍归 SourcesView 所有。
+ * 并支持按 .dsh/.agents 细分两层。顶层拖拽 props 可选：独立工作区页
+ * 没有同层排序时不需要拖拽。
  */
 
 import type { JSX } from 'react'
 import type { CatalogSkill } from '../../protocol.ts'
 import { tt } from '../helpers.ts'
-import { SkillRow, type SkillRowProps } from './SkillRow.tsx'
+import type { SkillRowProps } from './SkillRow.tsx'
+import { SkillRows } from './SkillRows.tsx'
+import { GroupHeader } from './GroupHeader.tsx'
+import { GroupSection } from './GroupSection.tsx'
 import { GroupSummary } from './GroupSummary.tsx'
 import { ReorderButtons } from './ReorderButtons.tsx'
 import type { DragReorderProps } from './useDragReorder.ts'
@@ -24,8 +27,8 @@ export interface ProjectTreeProps {
   toggleSubdivide: (key: string) => void
   /** SkillRow 收窄后的 props（skill 由行内传入）；uses / hubConfig 也取自它。 */
   rowProps: Omit<SkillRowProps, 'skill'>
-  /** 顶层拖拽 props（SourcesView 的 useDragReorder 产出）。 */
-  dragProps: DragReorderProps
+  /** 顶层拖拽 props；工作区独立页不传。 */
+  dragProps?: DragReorderProps
   /** 编辑模式（显示上移/下移按钮）。 */
   editMode: boolean
   /** 顶层排序位置边界。 */
@@ -47,34 +50,26 @@ export function ProjectTree(props: ProjectTreeProps): JSX.Element {
     else entry.skills.push(skill)
   }
   return (
-    <section {...dragProps}>
-      <div className={css.groupHead}>
-        <span className={css.dragHandle} aria-hidden title={tt('drag.reorder')}>⋮⋮</span>
-        <button type='button' className={css.disclosure} aria-expanded={!topCollapsed} onClick={() => { toggleGroupCollapse('project') }}>
-          <span className={css.chevron + (topCollapsed ? ' ' + css.chevronCollapsed : '')} />
-          <span className={css.groupTitle}>{tt('groups.project')} · {byProject.size}</span>
-        </button>
-        {editMode ? (
-          <span className={css.groupOps}>
-            <ReorderButtons canMoveUp={canMoveUp} canMoveDown={canMoveDown} onMove={onMove} />
-          </span>
-        ) : null}
-      </div>
+    <GroupSection dragProps={dragProps}>
+      <GroupHeader
+        title={<>{tt('groups.project')} · {byProject.size}</>}
+        collapsed={topCollapsed}
+        onToggle={() => { toggleGroupCollapse('project') }}
+        leading={dragProps !== undefined ? <span className={css.dragHandle} aria-hidden title={tt('drag.reorder')}>⋮⋮</span> : undefined}
+        actions={editMode ? <ReorderButtons canMoveUp={canMoveUp} canMoveDown={canMoveDown} onMove={onMove} /> : undefined}
+      />
       {!topCollapsed ? [...byProject.entries()].map(([key, proj]) => {
         const projKey = 'project:' + key
         const projCollapsed = collapsedGroups.has(projKey)
         const subdivided = subdividedProjects.has(key)
         return (
           <div key={projKey} className={css.projectNest}>
-            <div className={css.groupHead}>
-              <button type='button' className={css.disclosure} aria-expanded={!projCollapsed} onClick={() => { toggleGroupCollapse(projKey) }}>
-                <span className={css.chevron + (projCollapsed ? ' ' + css.chevronCollapsed : '')} />
-                <span className={css.groupTitle}>{proj.title} · {proj.skills.length}<GroupSummary members={proj.skills.map((s) => s.name)} uses={rowProps.uses} hubConfig={rowProps.hubConfig} /></span>
-              </button>
-              <span className={css.groupOps}>
-                <button type='button' className={css.opBtn} onClick={(event) => { event.stopPropagation(); toggleSubdivide(key) }}>{subdivided ? tt('groups.merge') : tt('groups.subdivide')}</button>
-              </span>
-            </div>
+            <GroupHeader
+              title={<>{proj.title} · {proj.skills.length}<GroupSummary members={proj.skills.map((s) => s.name)} uses={rowProps.uses} hubConfig={rowProps.hubConfig} /></>}
+              collapsed={projCollapsed}
+              onToggle={() => { toggleGroupCollapse(projKey) }}
+              actions={<button type='button' className={css.opBtn} onClick={(event) => { event.stopPropagation(); toggleSubdivide(key) }}>{subdivided ? tt('groups.merge') : tt('groups.subdivide')}</button>}
+            />
             {!projCollapsed ? (
               subdivided ? (
                 <div className={css.projectNest}>
@@ -85,22 +80,21 @@ export function ProjectTree(props: ProjectTreeProps): JSX.Element {
                     const srcCollapsed = collapsedGroups.has(srcKey)
                     return (
                       <div key={srcKey} className={css.projectNest}>
-                        <div className={css.groupHead}>
-                          <button type='button' className={css.disclosure} aria-expanded={!srcCollapsed} onClick={() => { toggleGroupCollapse(srcKey) }}>
-                            <span className={css.chevron + (srcCollapsed ? ' ' + css.chevronCollapsed : '')} />
-                            <span className={css.groupTitle}>{tt(('badge.source.' + source) as 'badge.source.project-dsh' | 'badge.source.project-agents')} · {list.length}</span>
-                          </button>
-                        </div>
-                        {!srcCollapsed ? list.map((skill) => <SkillRow key={skill.name} skill={skill} {...rowProps} />) : null}
+                        <GroupHeader
+                          title={<>{tt(('badge.source.' + source) as 'badge.source.project-dsh' | 'badge.source.project-agents')} · {list.length}</>}
+                          collapsed={srcCollapsed}
+                          onToggle={() => { toggleGroupCollapse(srcKey) }}
+                        />
+                        {!srcCollapsed ? <SkillRows skills={list} rowProps={rowProps} /> : null}
                       </div>
                     )
                   })}
                 </div>
-              ) : proj.skills.map((skill) => <SkillRow key={skill.name} skill={skill} {...rowProps} />)
+              ) : <SkillRows skills={proj.skills} rowProps={rowProps} />
             ) : null}
           </div>
         )
       }) : null}
-    </section>
+    </GroupSection>
   )
 }

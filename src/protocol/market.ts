@@ -124,6 +124,13 @@ export interface MarketSyncResponse {
   commitSha: string
   /** Local skills tracked from this repo (candidates for a batch update). */
   skills: string[]
+  /**
+   * Skills whose upstream content differs under the newly resolved ref.
+   * Present only when a tracked source exists and its tree could be loaded.
+   */
+  updated?: string[]
+  /** Skills removed upstream under the newly resolved ref (same availability as `updated`). */
+  deleted?: string[]
 }
 
 /**

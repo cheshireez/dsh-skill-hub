@@ -115,6 +115,23 @@ export function isAbortError(error: unknown): boolean {
 const TRANSIENT_ATTEMPTS = 3
 const TRANSIENT_BACKOFF_MS = [150, 400] as const
 
+/** DNS/证书/URL 这类错误重试也不会变好，立即失败别拖慢批量检查。 */
+function isPermanentNetworkError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const cause = (error as Error & { cause?: unknown }).cause
+  const causeText = cause instanceof Error
+    ? cause.message + ' ' + String((cause as Error & { code?: unknown }).code ?? '')
+    : typeof cause === 'object' && cause !== null ? String((cause as { code?: unknown }).code ?? '') : String(cause ?? '')
+  return /ENOTFOUND|EAI_NONAME|ERR_INVALID_URL|Invalid URL|CERT_|SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE/i.test(error.message + ' ' + causeText)
+}
+
+async function sleepBeforeRetry(attempt: number): Promise<boolean> {
+  const backoff = TRANSIENT_BACKOFF_MS[attempt]
+  if (backoff === undefined) return false
+  await new Promise((resolve) => setTimeout(resolve, backoff))
+  return true
+}
+
 async function fetchWithRetry(fetchImpl: typeof fetch, url: string, headers: Record<string, string>, context: string): Promise<Response> {
   let last: unknown
   for (let attempt = 0; attempt < TRANSIENT_ATTEMPTS; attempt += 1) {
@@ -122,10 +139,9 @@ async function fetchWithRetry(fetchImpl: typeof fetch, url: string, headers: Rec
       return await fetchImpl(url, { headers })
     } catch (error) {
       if (isAbortError(error)) throw error
+      if (isPermanentNetworkError(error)) throw new RepoFetchError(context + ': ' + (errorText(error)))
       last = error
-      const backoff = TRANSIENT_BACKOFF_MS[attempt]
-      if (backoff === undefined) break
-      await new Promise((resolve) => setTimeout(resolve, backoff))
+      if (!(await sleepBeforeRetry(attempt))) break
     }
   }
   throw new RepoFetchError(context + ': ' + (errorText(last)))
@@ -136,13 +152,21 @@ async function fetchWithRetry(fetchImpl: typeof fetch, url: string, headers: Rec
  * RepoFetchError，调用方无需重复写 try/catch。
  */
 export async function fetchJson(url: string, fetchImpl: typeof fetch, context: string, headers: Record<string, string> = apiHeaders()): Promise<{ json: unknown; response: Response }> {
-  const response = await fetchWithRetry(fetchImpl, url, headers, context)
-  if (!response.ok) throw fetchError(context, response)
-  try {
-    return { json: await response.json(), response }
-  } catch {
-    throw new RepoFetchError('invalid github response for ' + url)
+  // A proxy can reset the connection after the headers arrived but while the
+  // body is being read. That throws in response.json(), outside the fetch
+  // retry above; retry the whole request so a truncated body is not reported
+  // as a malformed GitHub response.
+  for (let attempt = 0; attempt < TRANSIENT_ATTEMPTS; attempt += 1) {
+    const response = await fetchWithRetry(fetchImpl, url, headers, context)
+    if (!response.ok) throw fetchError(context, response)
+    try {
+      return { json: await response.json(), response }
+    } catch (error) {
+      if (!(await sleepBeforeRetry(attempt))) break
+      // body parse failed; loop and re-fetch the same URL
+    }
   }
+  throw new RepoFetchError('invalid github response for ' + url)
 }
 
 /**
@@ -154,19 +178,24 @@ export async function fetchJsonCached(url: string, fetchImpl: typeof fetch, cont
   const cached = etagCache.get(url)
   const headers: Record<string, string> = { ...apiHeaders() }
   if (cached !== undefined) headers['if-none-match'] = cached.etag
-  const response = await fetchWithRetry(fetchImpl, url, headers, context)
-  if (response.status === 304 && cached !== undefined) {
-    // Return cached JSON with a synthetic 200-like response for error mapping.
-    return { json: cached.json, response }
+  for (let attempt = 0; attempt < TRANSIENT_ATTEMPTS; attempt += 1) {
+    const response = await fetchWithRetry(fetchImpl, url, headers, context)
+    if (response.status === 304 && cached !== undefined) {
+      // Return cached JSON with a synthetic 200-like response for error mapping.
+      return { json: cached.json, response }
+    }
+    if (!response.ok) throw fetchError(context, response)
+    let json: unknown
+    try {
+      json = await response.json()
+    } catch (error) {
+      if (!(await sleepBeforeRetry(attempt))) break
+      // 响应体读取阶段断流：重发请求，而不是把截断的 body 当坏 JSON。
+      continue
+    }
+    const etag = response.headers.get('etag')
+    if (etag !== null && etag !== '') etagCacheSet(url, etag, json)
+    return { json, response }
   }
-  if (!response.ok) throw fetchError(context, response)
-  let json: unknown
-  try {
-    json = await response.json()
-  } catch {
-    throw new RepoFetchError('invalid github response for ' + url)
-  }
-  const etag = response.headers.get('etag')
-  if (etag !== null && etag !== '') etagCacheSet(url, etag, json)
-  return { json, response }
+  throw new RepoFetchError('invalid github response for ' + url)
 }

@@ -7,6 +7,8 @@ export interface FrontmatterValue {
   name: string
   description: string
   whenToUse?: string
+  /** Claude Code 的 `argument-hint`：/name 的参数提示，dsh 不消费但不能丢。 */
+  argumentHint?: string
   invocation: { modelInvocable: boolean; userInvocable: boolean }
   /** Instruction body after the frontmatter block, trimmed. */
   content: string
@@ -43,6 +45,7 @@ export function parseFrontmatter(text: string): { value: FrontmatterValue } | { 
   const description = typeof record.description === 'string' ? record.description.trim() : ''
   if (description === '') return { error: 'frontmatter requires a description field' }
   const whenToUse = typeof record.whenToUse === 'string' && record.whenToUse.trim() !== '' ? record.whenToUse.trim() : undefined
+  const argumentHint = typeof record['argument-hint'] === 'string' && record['argument-hint'].trim() !== '' ? record['argument-hint'].trim() : undefined
   if (Object.hasOwn(record, 'disableModelInvocation')) return { error: 'frontmatter field "disableModelInvocation" is unsupported; use "disable-model-invocation"' }
   if (Object.hasOwn(record, 'modelInvocable')) return { error: 'frontmatter field "modelInvocable" is unsupported; use "disable-model-invocation"' }
   if (Object.hasOwn(record, 'userInvocable')) return { error: 'frontmatter field "userInvocable" is unsupported; use "user-invocable"' }
@@ -54,7 +57,7 @@ export function parseFrontmatter(text: string): { value: FrontmatterValue } | { 
   } catch (error) {
     return { error: errorText(error) }
   }
-  return { value: { name, description, ...(whenToUse !== undefined ? { whenToUse } : {}), invocation, content: (match[2] ?? '').trim() } }
+  return { value: { name, description, ...(whenToUse !== undefined ? { whenToUse } : {}), ...(argumentHint !== undefined ? { argumentHint } : {}), invocation, content: (match[2] ?? '').trim() } }
 }
 
 /**

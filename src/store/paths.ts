@@ -2,7 +2,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { DisabledSkill, HubConfig, MarketSourceRecord, MarketStatsSnapshot, SkillStatsCheckpoint, SkillTag, SourceRecord, TrashEntry } from '../protocol.ts'
 
-/** 默认场景名（系统预置的兜底场景，新技能自动归入）。 */
+/** 默认角色名（系统预置的兜底角色，新技能自动归入）。 */
 export const DEFAULT_SCENE_NAME = '通用'
 
 /** Wire shape persisted on disk. */
@@ -30,9 +30,9 @@ export interface StoreFile {
   /**
    * 模型调用覆盖：发现文件绝对路径 → 该技能的模型自动调用被 hub 关掉。
    *
-   * 这是项目技能唯一可用的停用方式 —— 项目根不在可写根里，文件改名会污染
-   * 用户的 git 仓库；覆盖只改 invocation（模型不自动调，`/name` 仍可用），
-   * 文件一个字节都不动。用户级技能不走这里（它们有改名这条真停用路径）。
+   * 所有技能的停用都走这里（第一轮重构后统一）：覆盖只改 invocation
+   * （模型不自动调，`/name` 仍可用），文件一个字节都不动，项目根也不会被
+   * 污染。台账 `disabled[]` 记「谁被停用了」，真值在这份路径集合里。
    */
   invocationOverrides?: string[]
 }

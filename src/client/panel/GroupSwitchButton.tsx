@@ -1,5 +1,5 @@
 /**
- * The tri-state group switch shared by the source cards and the scene cards:
+ * The tri-state group switch shared by the source cards and the role cards:
  * one switch whose state is derived from the group's members (all enabled →
  * 'on', none → 'off', otherwise 'mixed'). Only the group identity, its member
  * count and the toggle callback differ between the two call sites.

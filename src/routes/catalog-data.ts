@@ -103,10 +103,14 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
     if (!snapshot.complete) complete = false
     for (const skill of snapshot.skills) {
       const logicalKey = isProjectSource(skill.source) && ws.path !== '' ? `${skill.name}\0${ws.path}\0${skill.source}` : skill.name
-      let identities = identitiesByKey.get(logicalKey)
+      // Duplicate detection is by name + workspace for project skills: the two
+      // project roots (.dsh/.agents) of one workspace are the same identity
+      // namespace even though they are separate rows in `byKey`.
+      const identityKey = isProjectSource(skill.source) && ws.path !== '' ? `${skill.name}\0${ws.path}` : skill.name
+      let identities = identitiesByKey.get(identityKey)
       if (identities === undefined) {
         identities = new Set()
-        identitiesByKey.set(logicalKey, identities)
+        identitiesByKey.set(identityKey, identities)
       }
       identities.add(skill.source + '\0' + skill.provider)
       if (byKey.has(logicalKey)) continue
@@ -119,16 +123,10 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
   const disabled = await deps.store.listDisabled()
   const overridden = new Set(await deps.store.listInvocationOverrides())
   const byName = byKey
-  // A hub-disabled record whose name is also enabled elsewhere hides one
-  // identity behind the toggle; flag it as well.
-  for (const d of disabled) {
-    let identities = identitiesByKey.get(d.name)
-    if (identities === undefined) {
-      identities = new Set()
-      identitiesByKey.set(d.name, identities)
-    }
-    identities.add('hub-disabled\0' + d.root)
-  }
+  // Disabled records are user intent (a paused local skill), not another
+  // active identity. A disabled sidecar can coexist with an active copy from
+  // a different root (e.g. a CC Switch install); counting it here would flag
+  // a perfectly normal active row as a duplicate. Only active providers count.
   const duplicateNames = [...identitiesByKey.entries()]
     .filter(([, identities]) => identities.size > 1)
     .map(([key]) => key.split('\0')[0])
@@ -140,13 +138,13 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
   // 全部技能并发收集（面板每 5 秒轮询一次，逐个串行 stat 会让响应随技能
   // 数量线性变慢）。
   const timesByName = new Map<string, { addedAt: number; updatedAt: number }>()
-  await Promise.all([...byName.values()].map(async ({ skill }) => {
+  await Promise.all([...byName.entries()].map(async ([logicalKey, { skill }]) => {
     if (!isWritableSource(skill.source)) return
     const base = rootPath(skill.source as WritableRoot, home)
     for (const candidate of [join(base, skill.name, 'SKILL.md'), join(base, skill.name), join(base, skill.name + '.md')]) {
       try {
         const times = await stat(candidate)
-        timesByName.set(skill.name, { addedAt: times.birthtimeMs, updatedAt: times.mtimeMs })
+        timesByName.set(logicalKey, { addedAt: times.birthtimeMs, updatedAt: times.mtimeMs })
         return
       } catch {
         // 目录/文件不存在则尝试下一个候选路径。
@@ -189,14 +187,14 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
       },
       provider: skill.provider,
       writable: isWritableSource(skill.source),
-      // 项目技能可开关（invocation 覆盖，不动文件）；可写根的技能由 writable 蕴含开关能力。
-      ...(isProjectSource(skill.source) ? { toggleable: true } : {}),
+      // 有发现路径的技能都可开关（invocation 覆盖，不动文件）；可写根的技能由 writable 蕴含开关能力。
+      ...(skill.path !== undefined ? { toggleable: true } : {}),
       // hub 关掉的模型调用（项目技能停用）：UI 据此显示开关状态与提示。
       ...(skill.path !== undefined && overridden.has(skill.path) ? { modelOverride: true } : {}),
       source: skill.source,
       ...(workspace !== undefined ? { workspace, workspaceTitle: workspaceTitle ?? workspace } : {}),
     }
-    const times = timesByName.get(skill.name)
+    const times = timesByName.get(logicalKey)
     if (times !== undefined) {
       row.addedAt = times.addedAt
       row.updatedAt = times.updatedAt
@@ -220,6 +218,7 @@ export async function buildCatalog(deps: SkillHubRouteDeps, cwd?: string): Promi
     disabled,
     diagnostics,
     announcement: computeAnnouncementBudget(skills),
+    workspaces,
     ...(duplicateNames.length > 0 ? { duplicateNames } : {}),
   }
 }
@@ -245,6 +244,7 @@ export function toDetail(skill: SkillDefinition): SkillDetail {
       userInvocable: skill.invocation.userInvocable,
     },
     provider: skill.provider,
+    source: skill.source,
     ...(skill.path !== undefined ? { path: skill.path } : {}),
     content: skill.content,
   }

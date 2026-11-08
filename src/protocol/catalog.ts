@@ -16,15 +16,15 @@ export interface CatalogSkill {
   whenToUse?: string
   invocation: HubInvocation
   provider: string
-  /** Whether the hub may toggle this skill (user-level filesystem skills only). */
+  /** Whether the hub may toggle this skill by renaming files (user-level filesystem skills only). */
   writable: boolean
   /**
    * Whether the hub may toggle this skill without touching its files
-   * (project skills only: an invocation override flips `modelInvocable`).
-   * `writable` implies toggling too — this flag only ADDS project skills.
+   * (an invocation override flips `modelInvocable`). This covers project
+   * skills and read-only external providers; `writable` implies toggling too.
    */
   toggleable?: boolean
-  /** The hub has switched this skill's model invocation off (project skills; `/name` still works). */
+  /** The hub has switched this skill's model invocation off (invocation override; `/name` still works). */
   modelOverride?: boolean
   /** 技能来源标识（user-dsh/user-agents/project-dsh/project-agents/...）。 */
   source: string
@@ -45,11 +45,11 @@ export interface CatalogSkill {
   defaultPrompt?: string
 }
 
-/** One disabled skill tracked by the hub sidecar (SKILL.md renamed away). */
+/** One paused skill tracked by the hub sidecar. The discovery file stays on disk. */
 export interface DisabledSkill {
   name: string
   description: string
-  /** Absolute path of the renamed file (SKILL.md.disabled / <name>.md.disabled). */
+  /** Absolute path of the discovery file (SKILL.md / <name>.md), still in place. */
   path: string
   root: WritableRoot
   disabledAt: number
@@ -138,6 +138,8 @@ export interface CatalogResponse {
   skills: CatalogSkill[]
   /** Skills the hub has toggled off (kept outside provider discovery). */
   disabled: DisabledSkill[]
+  /** Known workspaces (dsh workspace.json); used by the create dialog. */
+  workspaces?: Array<{ path: string; title: string }>
   /** Files in the writable roots the provider ignores, with reasons. */
   diagnostics: DiagnosticEntry[]
   /** 技能目录占用的公告预算（见 AnnouncementBudget）。 */
@@ -151,8 +153,12 @@ export interface SkillDetail {
   name: string
   description: string
   whenToUse?: string
+  /** Claude Code 的 `argument-hint`（/name 的参数提示），dsh 不消费，详情里展示。 */
+  argumentHint?: string
   invocation: HubInvocation
   provider: string
+  /** Discovery source that produced this winning skill. */
+  source?: string
   /** Absolute file path when the skill came from disk. */
   path?: string
   /** SKILL.md creation time (epoch ms); absent when the file is unreadable. */
@@ -193,6 +199,8 @@ export interface ToggleRequest {
   name: string
   /** true re-enables a hub-disabled skill; false disables an enabled one. */
   enabled: boolean
+  /** Workspace path for project-level skills (passed through as the registry cwd). */
+  cwd?: string
 }
 
 export interface ToggleResponse {
@@ -205,6 +213,8 @@ export interface ToggleResponse {
 export interface ToggleBatchRequest {
   names: string[]
   enabled: boolean
+  /** Workspace path when the names belong to one project workspace. */
+  cwd?: string
 }
 
 /** POST /api/skill-hub/toggle-batch */
@@ -221,12 +231,17 @@ export interface CreateRequest {
   name: string
   /** Optional one-line routing description for the frontmatter. */
   description?: string
+  /** Optional Markdown body written after the frontmatter. */
+  body?: string
   /** Target user root; defaults to user-dsh (~/.dsh/skills). */
   root?: WritableRoot
+  /** Target workspace path (absolute); takes precedence over root. */
+  workspace?: string
 }
 
 export interface CreateResponse {
   ok: true
   path: string
-  root: WritableRoot
+  root?: WritableRoot
+  workspace?: string
 }

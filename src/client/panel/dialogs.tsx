@@ -52,10 +52,12 @@ export interface MarketSyncDialogState {
   ref: string
   skills: string[]
   selected: ReadonlySet<string>
+  /** 这些技能的磁盘内容与上次导入/同步不一致（同步会覆盖本地修改）。 */
+  localModified: readonly string[]
 }
 
 /** Overlay + centered alert-dialog shell; outside click or Escape cancels. */
-export function DialogShell(props: { onClose: () => void; children: ReactNode }): JSX.Element {
+export function DialogShell(props: { onClose: () => void; children: ReactNode; role?: 'alertdialog' | 'dialog'; className?: string }): JSX.Element {
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') props.onClose()
@@ -65,7 +67,7 @@ export function DialogShell(props: { onClose: () => void; children: ReactNode })
   })
   return (
     <div className={css.dialogOverlay} onClick={props.onClose}>
-      <div className={css.dialog} role='alertdialog' aria-modal='true' onClick={(event) => { event.stopPropagation() }}>
+      <div className={css.dialog + (props.className !== undefined ? ' ' + props.className : '')} role={props.role ?? 'alertdialog'} aria-modal='true' onClick={(event) => { event.stopPropagation() }}>
         {props.children}
       </div>
     </div>
@@ -100,7 +102,7 @@ export function ConfirmDialog(props: {
           {items.map((name) => (
             <li key={name}>
               <span className={css.rowNameText}>{name}</span>
-              {markedSet.has(name) ? <span className={css.statusBadge + ' ' + css.statusLocal} style={{ marginLeft: 6 }}>{tt('source.localModifiedBadge')}</span> : null}
+              {markedSet.has(name) ? <span className={css.statusBadge + ' ' + css.statusLocal + ' ' + css.badgeGap}>{tt('source.localModifiedBadge')}</span> : null}
             </li>
           ))}
         </ul>
@@ -110,6 +112,59 @@ export function ConfirmDialog(props: {
         <button type='button' className={css.button + (danger === true ? ' ' + css.danger : ' ' + css.primary)} onClick={onConfirm}>
           {confirmLabel}
         </button>
+      </div>
+    </DialogShell>
+  )
+}
+
+/**
+ * Role activation confirm. Switching a role pauses every enabled skill that is
+ * not a member, which is destructive for anyone who only wanted the role's own
+ * set on. This dialog lists those skills and lets the user spare any of them;
+ * unchecked (default) means "pause it", so agreeing without reading keeps the
+ * old all-or-nothing behaviour.
+ */
+export function RoleActivateDialog(props: {
+  roleName: string
+  /** Members that will be turned on. */
+  enableCount: number
+  /** Enabled non-members the switch would pause. */
+  pausable: readonly string[]
+  /** Subset of `pausable` the user chose to keep enabled. */
+  keep: ReadonlySet<string>
+  onToggle: (name: string, keep: boolean) => void
+  onKeepAll: () => void
+  onKeepNone: () => void
+  onCancel: () => void
+  onConfirm: () => void
+}): JSX.Element {
+  const { roleName, enableCount, pausable, keep, onToggle, onKeepAll, onKeepNone, onCancel, onConfirm } = props
+  const kept = pausable.filter((name) => keep.has(name)).length
+  return (
+    <DialogShell onClose={onCancel}>
+      <h3 className={css.dialogTitle}>{tt('role.confirmTitle', { name: roleName })}</h3>
+      <p className={css.dialogText}>{tt('role.pickText', { on: enableCount, total: pausable.length, off: pausable.length - kept })}</p>
+      {pausable.length === 0 ? <p className={css.dialogText}>{tt('role.pickNone')}</p> : (
+        <>
+          <div className={css.dialogRowBar}>
+            <span className={css.dialogRowBarHint}>{tt('role.pickKeepHint')}</span>
+            <button type='button' className={css.opBtn} onClick={onKeepAll}>{tt('role.pickKeepAll')}</button>
+            <button type='button' className={css.opBtn} onClick={onKeepNone}>{tt('role.pickKeepNone')}</button>
+          </div>
+          <div className={css.dialogList + ' ' + css.dialogListTall}>
+            {pausable.map((name) => (
+              <label key={name} className={css.dialogRow}>
+                <input type='checkbox' checked={keep.has(name)}
+                  onChange={(event) => { onToggle(name, event.target.checked) }} />
+                <span className={css.rowNameText}>{name}</span>
+              </label>
+            ))}
+          </div>
+        </>
+      )}
+      <div className={css.dialogActions}>
+        <button type='button' className={css.button} onClick={onCancel}>{tt('form.cancel')}</button>
+        <button type='button' className={css.button + ' ' + css.primary} onClick={onConfirm}>{tt('role.confirm')}</button>
       </div>
     </DialogShell>
   )
@@ -210,7 +265,7 @@ export function VersionChoiceDialog(props: {
       <p className={css.dialogText}>{tt('market.versionText', { repo: choice.repo })}{choice.current !== undefined ? ` (${tt('market.versionCurrent', { ref: choice.current })})` : ''}</p>
       {choice.loading ? <p className={css.dialogText}>{tt('market.scanning')}</p> : (
         <>
-          <div className={css.segmented} role='group' aria-label={tt('market.versionTitle')} style={{ marginBottom: 8 }}>
+          <div className={css.segmented + ' ' + css.dialogSegmented} role='group' aria-label={tt('market.versionTitle')}>
             <button
               type='button'
               className={css.segBtn + (refGroup === 'releases' ? ' ' + css.segBtnActive : '')}
@@ -232,7 +287,7 @@ export function VersionChoiceDialog(props: {
               {selectRefs.map((ref) => <option key={ref} value={ref}>{ref}</option>)}
             </select>
           ) : null}
-          <p className={css.dialogText} style={{ marginBottom: 4 }}>{tt('market.versionCustom')}</p>
+          <p className={css.dialogText + ' ' + css.dialogTextTight}>{tt('market.versionCustom')}</p>
           <input className={css.input + ' ' + css.dialogSelect} value={choice.custom}
             onChange={(event) => { onCustom(event.target.value) }} placeholder='v1.2.3 / main / abc1234' />
         </>
@@ -256,10 +311,12 @@ export function MarketSyncDialog(props: {
   onConfirm: () => void
 }): JSX.Element {
   const { dialog, busy, onToggle, onCancel, onConfirm } = props
+  const localModified = new Set(dialog.localModified)
   return (
     <DialogShell onClose={onCancel}>
       <h3 className={css.dialogTitle}>{tt('market.syncTitle')}</h3>
       <p className={css.dialogText}>{tt('market.syncText', { ref: dialog.ref })}</p>
+      <p className={css.dialogText}>{tt('market.syncOverwriteWarning')}</p>
       {dialog.skills.length === 0 ? (
         <p className={css.dialogText}>{tt('market.syncNone')}</p>
       ) : (
@@ -269,13 +326,14 @@ export function MarketSyncDialog(props: {
               <input type='checkbox' checked={dialog.selected.has(name)}
                 onChange={(event) => { onToggle(name, event.target.checked) }} />
               <span className={css.rowNameText}>{name}</span>
+              {localModified.has(name) ? <span className={css.statusBadge + ' ' + css.statusLocal + ' ' + css.badgeGap}>{tt('source.localModifiedBadge')}</span> : null}
             </label>
           ))}
         </div>
       )}
       <div className={css.dialogActions}>
         <button type='button' className={css.button} onClick={onCancel}>{tt('market.syncCancel')}</button>
-        <button type='button' className={css.button + ' ' + css.primary} disabled={busy || dialog.skills.length === 0} onClick={onConfirm}>
+        <button type='button' className={css.button + ' ' + css.primary} disabled={busy || dialog.selected.size === 0} onClick={onConfirm}>
           {busy ? tt('source.syncing') : tt('source.sync')}
         </button>
       </div>

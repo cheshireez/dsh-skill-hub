@@ -39,7 +39,7 @@ src/client/locales/     dictionaries by view (common/skills/market/sources/detai
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (420 tests across 23 suites)
+npm test            # vitest (478 tests across 24 suites)
 npm run build       # tsc declarations + tsdown bundles (lib/index.js + lib/client.js)
 ```
 
@@ -68,8 +68,9 @@ npm run build       # tsc declarations + tsdown bundles (lib/index.js + lib/clie
 ```bash
 # after a change:
 npm run build
-# restart the dsh web process, then verify both surfaces:
-#   Settings → 技能              — the skill hub panel
+# restart the dsh web process, then verify both surfaces (three entry points):
+#   Settings → Skills Hub        — the skill hub panel
+#   sidebar 插件 → 技能中枢       — the same panel, 960px sidebar mount
 #   sidebar 插件 → dsh-skill-hub  — the plugin's settings card
 ```
 

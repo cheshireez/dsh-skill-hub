@@ -61,8 +61,8 @@ export class SkillHubStore {
   }
 
   /**
-   * 保证存在默认场景：没有任何 default 标记的 tag 时创建「通用」。
-   * 新技能创建后自动归入它；用户可改名，但默认场景不可删除。
+   * 保证存在默认角色：没有任何 default 标记的 tag 时创建「通用」。
+   * 新技能创建后自动归入它；用户可改名，但默认角色不可删除。
    */
   private async ensureDefaultTag(): Promise<void> {
     if ([...this.tagsById.values()].some((tag) => tag.default === true)) return
@@ -167,16 +167,16 @@ export class SkillHubStore {
     return tag
   }
 
-  /** Delete a tag by id (no-op when absent). The default scene cannot be deleted. */
+  /** Delete a tag by id (no-op when absent). The default role cannot be deleted. */
   async deleteTag(id: string): Promise<void> {
     await this.ensureLoaded()
     const tag = this.tagsById.get(id)
-    if (tag?.default === true) throw new StoreError('conflict', 'the default scene cannot be deleted')
+    if (tag?.default === true) throw new StoreError('conflict', 'the default role cannot be deleted')
     if (!this.tagsById.delete(id)) return
     await this.persist()
   }
 
-  /** The default scene (「通用」), guaranteed to exist after ensureLoaded. */
+  /** The default role (「通用」), guaranteed to exist after ensureLoaded. */
   async getDefaultTag(): Promise<SkillTag | undefined> {
     await this.ensureLoaded()
     return [...this.tagsById.values()].find((tag) => tag.default === true)
@@ -474,6 +474,9 @@ export class SkillHubStore {
       this.marketSources.push(ref !== undefined && ref !== '' ? { repo, ref } : { repo })
     } else if (ref !== undefined && ref !== '' && existing.ref !== ref) {
       existing.ref = ref
+      // 重新钉版必须丢掉旧 commit 基线：它是上一个 ref 的提交，留着会让
+      // 下一次市场检查把「版本不同」误报成「有更新」。
+      delete existing.commitSha
     }
     await this.persist()
     return [...this.marketSources]
@@ -493,9 +496,30 @@ export class SkillHubStore {
   async setMarketSourceRef(repo: string, ref: string): Promise<MarketSourceRecord | undefined> {
     await this.ensureLoaded()
     const entry = this.marketSources.find((item) => item.repo === repo)
-    if (entry === undefined || ref.trim() === '') return entry
-    entry.ref = ref.trim()
+    const trimmed = ref.trim()
+    if (entry === undefined || trimmed === '') return entry
+    // Confirming the already-selected version must be a no-op: otherwise the
+    // commit baseline is dropped and the next check reports a false update.
+    if (entry.ref === trimmed) return entry
+    entry.ref = trimmed
     delete entry.commitSha
+    await this.persist()
+    return entry
+  }
+
+  /**
+   * Pin a market source to `ref` and record the commit it resolved to in one
+   * persist. Market sync resolves the commit first; this method is the only
+   * write in its success path, so a failed lookup cannot leave the source
+   * pinned to a ref that was never verified.
+   */
+  async setMarketSourcePin(repo: string, ref: string, commitSha: string): Promise<MarketSourceRecord | undefined> {
+    await this.ensureLoaded()
+    const entry = this.marketSources.find((item) => item.repo === repo)
+    if (entry === undefined) return entry
+    const trimmed = ref.trim()
+    if (trimmed !== '') entry.ref = trimmed
+    if (commitSha !== '') entry.commitSha = commitSha
     await this.persist()
     return entry
   }

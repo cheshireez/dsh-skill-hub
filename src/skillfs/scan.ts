@@ -105,8 +105,67 @@ export interface SkillInterface {
   defaultPrompt?: string
 }
 
-/** Read UI metadata from `agents/openai.yaml` beside a directory skill (mirrors codex SkillInterface). */
+/** 展示元数据的字符串清洗：限长，空串视为未设置。三家 adapter 共用。 */
+function interfaceString(value: unknown, maxLen: number): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const cleaned = value.trim()
+  return cleaned === '' || cleaned.length > maxLen ? undefined : cleaned
+}
+
+/** WorkBuddy 市场技能把展示名与双语简介放在 `workbuddy.json`。 */
+async function readWorkBuddyJsonInterface(directory: string): Promise<SkillInterface | undefined> {
+  let text: string
+  try { text = await readFile(join(directory, 'workbuddy.json'), 'utf8') } catch { return undefined }
+  let data: unknown
+  try { data = JSON.parse(text) } catch { return undefined }
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
+  const record = data as Record<string, unknown>
+  const displayName = interfaceString(record.display_name, 64)
+  const shortDescription = interfaceString(record.description_zh ?? record.description_en, 1024)
+  if (displayName === undefined && shortDescription === undefined) return undefined
+  return {
+    ...(displayName !== undefined ? { displayName } : {}),
+    ...(shortDescription !== undefined ? { shortDescription } : {}),
+  }
+}
+
+/** WorkBuddy 自建技能没有 sidecar，把同样的字段直接写在 SKILL.md frontmatter 里。 */
+async function readFrontmatterInterface(directory: string): Promise<SkillInterface | undefined> {
+  let text: string
+  try { text = await readFile(join(directory, 'SKILL.md'), 'utf8') } catch { return undefined }
+  const lines = text.split('\n')
+  if (lines[0]?.trim() !== '---') return undefined
+  const end = lines.findIndex((line, index) => index > 0 && line.trim() === '---')
+  if (end <= 1) return undefined
+  let data: unknown
+  try { data = load(lines.slice(1, end).join('\n')) } catch { return undefined }
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
+  const record = data as Record<string, unknown>
+  const displayName = interfaceString(record.display_name, 64)
+  const shortDescription = interfaceString(record.description_zh ?? record.description_en, 1024)
+  if (displayName === undefined && shortDescription === undefined) return undefined
+  return {
+    ...(displayName !== undefined ? { displayName } : {}),
+    ...(shortDescription !== undefined ? { shortDescription } : {}),
+  }
+}
+
+/**
+ * 各家的展示元数据散在不同文件里，按优先级依次尝试（命中即停，不合并）：
+ *   1. Codex / Claude Code 的 `agents/openai.yaml`
+ *   2. WorkBuddy 市场技能的 `workbuddy.json`
+ *   3. WorkBuddy 自建技能写在 `SKILL.md` frontmatter 里的同名字段
+ * 三者是同一语义：展示名 + 一句话简介，映射到 hub 的 displayName / shortDescription。
+ * `readCodexInterface` 定义在下面（函数声明提升，这里可以先用）。
+ */
 export async function readSkillInterface(directory: string): Promise<SkillInterface | undefined> {
+  return (await readCodexInterface(directory))
+    ?? (await readWorkBuddyJsonInterface(directory))
+    ?? (await readFrontmatterInterface(directory))
+}
+
+/** Read UI metadata from `agents/openai.yaml` beside a directory skill (mirrors codex SkillInterface). */
+async function readCodexInterface(directory: string): Promise<SkillInterface | undefined> {
   const yamlPath = join(directory, 'agents', 'openai.yaml')
   let text: string
   try {

@@ -6,7 +6,7 @@ export interface SkillTag {
   name: string
   /** 成员技能名（集合技能与独立技能都可加入）。 */
   skillNames: string[]
-  /** 默认场景（「通用」）：系统预置、不可删除、新技能自动归入。 */
+  /** 默认角色（「通用」）：系统预置、不可删除、新技能自动归入。 */
   default?: boolean
 }
 
@@ -72,7 +72,7 @@ export interface TagMembersResponse {
   tags: SkillTag[]
 }
 
-/** POST /api/skill-hub/tag/reorder — 拖拽重排场景分组 */
+/** POST /api/skill-hub/tag/reorder — 拖拽重排角色分组 */
 export interface TagReorderRequest {
   /** 按新顺序排列的 tag id 列表（需包含全部 id） */
   orderedIds: string[]

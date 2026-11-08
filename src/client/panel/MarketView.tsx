@@ -17,11 +17,13 @@ import css from './panel.module.css'
 
 export function MarketView(props: { hub: SkillHubState }): JSX.Element {
   const { hub } = props
-  const { marketState, sourceCheck, scanningRepo, newSourceName, setNewSourceName, tagBusy, addSource, addMarketSource, checkMarket, checkSources, updateAllDialog, setUpdateAllDialog, updateAll, skillsShQuery, skillsShState, setSkillsShQuery, runSkillsShSearch, skillsShInstalling, installSkillsSh } = hub
+  const { marketState, marketCheck, sourceCheck, scanningRepo, newSourceName, setNewSourceName, tagBusy, batchBusy, addSource, addMarketSource, checkMarket, checkSources, updateAllDialog, setUpdateAllDialog, updateAll, removeMarketDialog, cancelRemoveMarketSource, confirmRemoveMarketSource, skillsShQuery, skillsShState, setSkillsShQuery, runSkillsShSearch, skillsShInstalling, installSkillsSh } = hub
   /** 市场操作的总忙态：扫描中或标签写入中都不该再触发新的源操作。 */
-  const marketBusy = scanningRepo !== null || tagBusy
-  /** 有可更新技能的来源（全部更新按钮与确认列表共用）。 */
-  const updatableRepos = Object.entries(sourceCheck).filter(([, check]) => check.changed && check.updated.length > 0)
+  const marketBusy = scanningRepo !== null || tagBusy || batchBusy
+  /** 有可更新内容的 repo：来源技能更新与市场新 release 的并集。 */
+  const sourceUpdatableRepos = Object.entries(sourceCheck).filter(([, check]) => check.changed && check.updated.length > 0)
+  const releaseUpdatableRepos = Object.entries(marketCheck).filter(([, check]) => check.updateAvailable === true)
+  const updatableRepos = [...new Set([...sourceUpdatableRepos.map(([repo]) => repo), ...releaseUpdatableRepos.map(([repo]) => repo)])]
 
   // 打开市场 tab 即拉一次星星/下载数（服务端小时级缓存）。挂载一次即可：
   // hub 对象每次渲染都是新引用，依赖它会让每次渲染都重拉。
@@ -64,11 +66,11 @@ export function MarketView(props: { hub: SkillHubState }): JSX.Element {
       <section className={css.section}>
         <div className={css.sectionTitle + ' ' + css.sectionHeadRow}>
           <span className={css.sectionTitleFill}>{tt('market.title')}</span>
-          <button type='button' className={css.opBtn} onClick={() => { void checkSources(); void checkMarket() }}>{tt('market.checkAll')}</button>
+          <button type='button' className={css.opBtn} disabled={marketBusy} onClick={() => { void checkSources(); void checkMarket() }}>{tt('market.checkAll')}</button>
           <button
             type='button'
             className={css.opBtn + (updatableRepos.length > 0 ? ' ' + css.opDanger : '')}
-            disabled={updatableRepos.length === 0 || tagBusy}
+            disabled={updatableRepos.length === 0 || tagBusy || batchBusy}
             onClick={() => { setUpdateAllDialog(true) }}
           >{tt('market.updateAll')}</button>
         </div>
@@ -82,11 +84,12 @@ export function MarketView(props: { hub: SkillHubState }): JSX.Element {
           />
           <button type='button' className={css.button + ' ' + css.primary} disabled={newSourceName.trim() === ''} onClick={() => { void addMarketSource() }}>{tt('market.addSource')}</button>
         </div>
-        {unaddedCatalog.length > 0 ? <p className={css.hintLine + ' ' + css.hintPadded}>{tt('market.catalogHint')}</p> : null}
+        {marketState.status === 'ready' && unaddedCatalog.length > 0 ? <p className={css.hintLine + ' ' + css.hintPadded}>{tt('market.catalogHint')}</p> : null}
 
         {marketState.status === 'loading' ? <div className={css.empty}>{tt('panel.loading')}</div> : null}
-        {marketState.status !== 'loading' && rows.length === 0 ? <div className={css.empty}>{tt('market.noSources')}</div> : null}
-        {marketState.status !== 'loading' ? rows.map((row) => <Fragment key={row.key}>{row.element}</Fragment>) : null}
+        {marketState.status === 'error' ? <div className={css.empty}>{tt('market.loadFailed')}</div> : null}
+        {marketState.status === 'ready' && rows.length === 0 ? <div className={css.empty}>{tt('market.noSources')}</div> : null}
+        {marketState.status === 'ready' ? rows.map((row) => <Fragment key={row.key}>{row.element}</Fragment>) : null}
       </section>
       {/* skills.sh 搜索：独立区块。它是「发现」层 —— 结果不进市场源列表，
           点「添加」之后才变成一条普通市场源，由同一个扫描卡片接管。 */}
@@ -113,7 +116,7 @@ export function MarketView(props: { hub: SkillHubState }): JSX.Element {
         </div>
         <p className={css.hintLine + ' ' + css.hintPadded}>{tt('market.skillsShHint')}</p>
         {skillsShState.status === 'error' ? (
-          <p className={css.hintLine + ' ' + css.hintPadded} style={{ color: 'var(--hub-danger)' }}>{skillsShState.message}</p>
+          <p className={css.hintLine + ' ' + css.hintPadded + ' ' + css.formErrorText}>{skillsShState.message}</p>
         ) : null}
         {skillsShState.status === 'ready' && skillsShState.skills.length === 0 ? <div className={css.empty}>{tt('market.skillsShEmpty')}</div> : null}
         {skillsShState.skills.map((entry) => {
@@ -158,11 +161,29 @@ export function MarketView(props: { hub: SkillHubState }): JSX.Element {
       {/* 扫描结果归属卡片：用同一 section 卡片包裹扫描中/错误/就绪，标题直接点明所属仓库，消除割裂感 */}
       <RepoScanCard hub={hub} />
 
+      {removeMarketDialog !== null ? (
+        <ConfirmDialog
+          title={tt('market.removeConfirmTitle')}
+          text={tt('market.removeConfirmText', { repo: removeMarketDialog })}
+          confirmLabel={tt('market.removeConfirm')}
+          danger
+          onCancel={cancelRemoveMarketSource}
+          onConfirm={() => { void confirmRemoveMarketSource() }}
+        />
+      ) : null}
+
       {updateAllDialog ? (
         <ConfirmDialog
           title={tt('market.updateAllConfirmTitle')}
           text={tt('market.updateAllConfirmText')}
-          items={updatableRepos.map(([repo, check]) => tt('market.updateAllItem', { repo, count: check.updated.length }))}
+          items={updatableRepos.map((repo) => {
+            const check = sourceCheck[repo]
+            if (check !== undefined && check.changed && check.updated.length > 0) {
+              return tt('market.updateAllItem', { repo, count: check.updated.length })
+            }
+            const release = marketCheck[repo]
+            return tt('market.updateAllReleaseItem', { repo, version: release?.latestTag ?? tt('market.updated') })
+          })}
           confirmLabel={tt('market.updateAll')}
           danger
           onCancel={() => { setUpdateAllDialog(false) }}

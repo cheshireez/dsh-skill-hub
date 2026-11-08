@@ -115,6 +115,13 @@ describe('createSkill / disableSkill / enableSkill', () => {
     expect(parseFrontmatter(text)).toMatchObject({ value: { name: 'demo-skill', description: 'Does demo things' } })
   })
 
+  it('writes the provided Markdown body after the frontmatter', async () => {
+    const path = await createSkill('user-dsh', 'body-skill', 'Has body', home, '## Steps\n\n1. Run the tests.')
+    const text = await readFile(path, 'utf8')
+    expect(text).toContain('## Steps\n\n1. Run the tests.')
+    expect(text.endsWith('\n')).toBe(true)
+  })
+
   it('scaffolds numeric-looking names as YAML strings', async () => {
     const path = await createSkill('user-dsh', '1312', '1231', home)
     const text = await readFile(path, 'utf8')

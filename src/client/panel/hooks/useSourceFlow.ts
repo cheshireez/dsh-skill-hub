@@ -45,11 +45,13 @@ export function useSourceFlow(
     setCheckingSource(repo ?? 'all')
     await runFlow(shared, async () => {
       const result = await api.checkSources(repo)
-      const next: Record<string, SourceCheckResult> = { ...sourceCheck }
-      for (const item of result.results) next[item.repo] = item
-      setSourceCheck(next)
+      setSourceCheck((previous) => {
+        const next: Record<string, SourceCheckResult> = { ...previous }
+        for (const item of result.results) next[item.repo] = item
+        return next
+      })
     }, () => setCheckingSource(null))
-  }, [api, sourceCheck, shared])
+  }, [api, shared])
 
   /** 请求同步某个来源的所选技能（弹确认，因为会覆盖本地修改）。 */
   const requestSync = useCallback((repo: string, skills: string[]): void => {
@@ -71,6 +73,8 @@ export function useSourceFlow(
       await runFlow(shared, async () => {
         const result = await api.syncSource(dialog.repo, dialog.skills)
         await Promise.all([reloadCatalog(), reloadGroups(), loadSources()])
+        // 同步后旧检查结果已经过期；服务端清了节流，立即重查让徽章回到真实状态。
+        await checkSources(dialog.repo)
         if (result.failed.length > 0) {
           shared.fail('sync: ' + result.failed.map((failure) => failure.name + ': ' + failure.error).join('; '))
         }
@@ -80,11 +84,13 @@ export function useSourceFlow(
       try {
         await api.confirmDeleteSource(dialog.repo, dialog.skills)
         await Promise.all([reloadCatalog(), reloadGroups(), loadSources()])
+        // 跟进删除也要刷新检查结果，否则「上游已删」徽章会一直挂着。
+        void checkSources(dialog.repo)
       } catch (error) {
         shared.fail(errorMessage(error))
       }
     }
-  }, [confirmDialog, api, reloadCatalog, reloadGroups, loadSources, shared])
+  }, [confirmDialog, api, reloadCatalog, reloadGroups, loadSources, checkSources, shared])
 
   /** 从回收站恢复一个技能。 */
   const restoreTrash = useCallback(async (name: string): Promise<void> => {

@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { pruneStaleDisabledSkills, reconcileDisabledSkills } from './reconcile.ts'
+import { migrateRenamedDisabledSkills, pruneStaleDisabledSkills, reconcileDisabledSkills } from './reconcile.ts'
 import { SkillHubStore, statePath } from './store.ts'
 
 describe('reconcileDisabledSkills', () => {
@@ -145,5 +145,60 @@ describe('pruneStaleDisabledSkills', () => {
     await writeFile(join(agentsHome, 'skills', 'agent-ghost.md.disabled'), '---\nname: agent-ghost\ndescription: x\n---', 'utf8')
     const result = await pruneStaleDisabledSkills(store, home)
     expect(result.repaired.map((entry) => entry.path)).toEqual([join(agentsHome, 'skills', 'agent-ghost.md.disabled')])
+  })
+})
+
+describe('migrateRenamedDisabledSkills', () => {
+  let dir: string
+  let home: string
+  let agentsHome: string
+  let previousAgentsHome: string | undefined
+  let store: SkillHubStore
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dsh-skill-hub-migrate-'))
+    home = join(dir, 'home')
+    agentsHome = join(dir, 'agents')
+    await mkdir(join(home, 'skills'), { recursive: true })
+    await mkdir(join(agentsHome, 'skills'), { recursive: true })
+    previousAgentsHome = process.env.DSH_AGENTS_HOME
+    process.env.DSH_AGENTS_HOME = agentsHome
+    store = new SkillHubStore(statePath(home))
+  })
+
+  afterEach(async () => {
+    if (previousAgentsHome === undefined) delete process.env.DSH_AGENTS_HOME
+    else process.env.DSH_AGENTS_HOME = previousAgentsHome
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('renames a legacy .disabled file back and moves the state into an override', async () => {
+    const skillDir = join(home, 'skills', 'legacy')
+    await mkdir(skillDir, { recursive: true })
+    const disabledPath = join(skillDir, 'SKILL.md.disabled')
+    await writeFile(disabledPath, '---\nname: legacy\ndescription: Legacy paused\n---\n\nBody', 'utf8')
+    await store.addDisabled({ name: 'legacy', description: 'Legacy paused', path: disabledPath, root: 'user-dsh', disabledAt: 1 })
+
+    const migrated = await migrateRenamedDisabledSkills(store, home)
+    const enabledPath = join(skillDir, 'SKILL.md')
+    expect(migrated).toEqual([enabledPath])
+    await expect(access(enabledPath)).resolves.toBeUndefined()
+    await expect(access(disabledPath)).rejects.toThrow()
+    await expect(readFile(enabledPath, 'utf8')).resolves.toContain('name: legacy')
+    expect(await store.listInvocationOverrides()).toContain(enabledPath)
+    expect((await store.getDisabled('legacy'))?.path).toBe(enabledPath)
+    // 幂等：迁移后磁盘上不再有 .disabled，第二次什么都不做。
+    expect(await migrateRenamedDisabledSkills(store, home)).toEqual([])
+  })
+
+  it('adopts an orphan .disabled file with no sidecar record', async () => {
+    const skillDir = join(home, 'skills', 'orphan')
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(join(skillDir, 'SKILL.md.disabled'), '---\nname: orphan\ndescription: Orphan paused\n---\n\nBody', 'utf8')
+
+    await migrateRenamedDisabledSkills(store, home)
+    const enabledPath = join(skillDir, 'SKILL.md')
+    expect((await store.getDisabled('orphan'))?.path).toBe(enabledPath)
+    expect(await store.listInvocationOverrides()).toContain(enabledPath)
   })
 })

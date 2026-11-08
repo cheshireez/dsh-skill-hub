@@ -1,9 +1,10 @@
 /**
  * Skill filesystem operations for the writable roots and the hub provider's
- * discovery. Toggling works by renaming the discovery file (SKILL.md inside
- * a directory bundle, or the flat <name>.md) to a .disabled name; the
- * watcher (ours or the preset's official filesystem provider) then updates
- * the live catalog by itself.
+ * discovery. Pausing a skill is a sidecar policy (see store.ts), not a file
+ * move — the discovery file stays in place. The `disableSkill`/`enableSkill`
+ * rename helpers below are legacy: they remain for tests and for reading
+ * pre-migration state; the startup migrateRenamedDisabledSkills() converts any
+ * leftover `.disabled` file into the policy form.
  *
  * Frontmatter parsing mirrors @deepseek-ai/dsh-skill-filesystem semantics:
  * required name (kebab-case) + description, optional whenToUse, invocation
@@ -35,15 +36,12 @@ export * from './skillfs/zip.ts'
  * template. Refuses non-kebab-case names.
  * @returns the created SKILL.md path.
  */
-export async function createSkill(root: WritableRoot, name: string, description: string, home = dshHome()): Promise<string> {
-  if (!isSkillName(name)) {
-    throw new TypeError('skill name must be kebab-case (lowercase letters, digits, dashes): "' + name + '"')
-  }
-  const dir = join(rootPath(root, home), name)
+async function writeSkillFile(dir: string, name: string, description: string, body: string): Promise<string> {
   const file = join(dir, 'SKILL.md')
   await mkdir(dir, { recursive: true })
   const safeDescription = description.trim() === '' ? 'New dsh skill created from the skill hub.' : description.trim()
-  const body = [
+  const trimmedBody = body.trim()
+  const content = [
     '---',
     // dump() emits a quoted string when plain text would parse as a number,
     // mapping, or other non-string YAML (the official parser requires strings).
@@ -51,13 +49,32 @@ export async function createSkill(root: WritableRoot, name: string, description:
     'description: ' + dump(safeDescription).trim(),
     '---',
     '',
-    '# ' + name,
-    '',
-    'Describe what this skill does, when the agent should use it, and what output is expected.',
+    ...(trimmedBody === ''
+      ? [
+        '# ' + name,
+        '',
+        'Describe what this skill does, when the agent should use it, and what output is expected.',
+      ]
+      : [trimmedBody]),
     '',
   ].join('\n')
-  await writeFile(file, body, 'utf8')
+  await writeFile(file, content, 'utf8')
   return file
+}
+
+export async function createSkill(root: WritableRoot, name: string, description: string, home = dshHome(), body = ''): Promise<string> {
+  if (!isSkillName(name)) {
+    throw new TypeError('skill name must be kebab-case (lowercase letters, digits, dashes): "' + name + '"')
+  }
+  return writeSkillFile(join(rootPath(root, home), name), name, description, body)
+}
+
+/** Create a skill directory at an already-resolved root (for a project workspace). */
+export async function createSkillInDir(rootDir: string, name: string, description: string, body = ''): Promise<string> {
+  if (!isSkillName(name)) {
+    throw new TypeError('skill name must be kebab-case (lowercase letters, digits, dashes): "' + name + '"')
+  }
+  return writeSkillFile(join(rootDir, name), name, description, body)
 }
 
 /**

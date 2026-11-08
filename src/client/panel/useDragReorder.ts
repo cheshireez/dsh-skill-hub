@@ -1,5 +1,5 @@
 /**
- * Drag-reorder wiring shared by the top-level group cards and the scene cards:
+ * Drag-reorder wiring shared by the top-level group cards and the role cards:
  * one draggable container per key, with the section/dragging/dragOver class
  * composition and the drag handler sequence kept in a single place. The
  * dragged/drag-over state and the reorder callback stay owned by the list.

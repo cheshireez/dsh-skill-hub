@@ -59,7 +59,7 @@ export function groupRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         const id = readString(body, 'id')
         if (id === '') { writeError(res, 400, 'tag id is required'); return }
         const tag = await deps.store.getTag(id)
-        if (tag?.default === true) { writeError(res, 409, 'the default scene cannot be deleted'); return }
+        if (tag?.default === true) { writeError(res, 409, 'the default role cannot be deleted'); return }
         await deps.store.deleteTag(id)
         writeJson(res, 200, { ok: true, tags: await deps.store.listTags() } satisfies TagDeleteResponse)
       },
@@ -82,7 +82,7 @@ export function groupRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       },
     },
     // ---------------------------------------------------------- tag/reorder
-    // 拖拽重排场景分组顺序
+    // 拖拽重排角色分组顺序
     {
       path: SKILL_HUB_API.tagReorder,
       methods: ['POST'],

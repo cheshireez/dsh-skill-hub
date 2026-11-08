@@ -96,11 +96,11 @@ export async function hashSkillDirectory(dir: string): Promise<string | undefine
 }
 
 /**
- * 从一个发现文件推断技能形态并算哈希：`SKILL.md`（含 `.disabled` 变体）是
- * 目录包，其余 `<name>.md` 是扁平技能。两种形态共用同一个返回契约。
+ * 从一个发现文件推断技能形态并算哈希：`SKILL.md` 是目录包，其余 `<name>.md`
+ * 是扁平技能。停用不再改文件名，所以没有 `.disabled` 变体需要还原。
  */
 export async function hashSkillAt(discoveryPath: string): Promise<string | undefined> {
-  const file = basename(discoveryPath).replace(/\.disabled$/, '')
+  const file = basename(discoveryPath)
   if (file === 'SKILL.md') return hashSkillDirectory(dirname(discoveryPath))
   try {
     const info = await lstat(discoveryPath)

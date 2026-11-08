@@ -13,7 +13,7 @@
  * GUI resolves with a dialog; the helpers below compute both sides.
  */
 
-import type { CatalogSkill, CollectionGroup, DisabledSkill, SkillTag } from '../protocol.ts'
+import type { CatalogSkill, CollectionGroup, SkillTag } from '../protocol.ts'
 import { isProjectSource } from '../protocol.ts'
 
 export { isProjectSource }
@@ -44,6 +44,114 @@ export function groupSwitchView(members: readonly string[], enabledNames: Readon
   }
   const state: GroupSwitchState = disabled.length === 0 ? 'on' : enabled.length === 0 ? 'off' : 'mixed'
   return { state, enabled, disabled }
+}
+
+/* ------------------------------------------------------------------ roles */
+
+/** Names that must be switched to reach a target enablement layout. */
+export interface RoleActivationPlan {
+  toEnable: string[]
+  toDisable: string[]
+}
+
+/**
+ * Only skills the hub can actually switch take part in a role activation.
+ * Project skills live in the Workspace tab; read-only/bundled/runtime rows
+ * cannot be toggled at all. `actionNames` comes from the catalog flow.
+ */
+function switchableSkills(skills: readonly CatalogSkill[], actionNames: ReadonlySet<string>): CatalogSkill[] {
+  return skills.filter((skill) => !isProjectSource(skill.source) && actionNames.has(skill.name))
+}
+
+/**
+ * Skills a role activation would otherwise pause: enabled, switchable, and
+ * not a member. The confirm dialog lists them so the user can spare any of
+ * them instead of accepting an all-or-nothing switch.
+ */
+export function rolePausableSkills(
+  members: readonly string[],
+  skills: readonly CatalogSkill[],
+  actionNames: ReadonlySet<string>,
+): string[] {
+  const memberSet = new Set(members)
+  const names: string[] = []
+  for (const skill of switchableSkills(skills, actionNames)) {
+    if (!memberSet.has(skill.name) && skill.modelOverride !== true) names.push(skill.name)
+  }
+  return names
+}
+
+/**
+ * Plan "activate this role": turn the role's members on and every other
+ * switchable skill off, except the names in `keepEnabled` the user chose to
+ * spare. Already-correct rows are omitted so a second run is a no-op
+ * (idempotent).
+ */
+export function roleActivationPlan(
+  members: readonly string[],
+  skills: readonly CatalogSkill[],
+  actionNames: ReadonlySet<string>,
+  keepEnabled?: ReadonlySet<string>,
+): RoleActivationPlan {
+  const memberSet = new Set(members)
+  const toEnable: string[] = []
+  const toDisable: string[] = []
+  for (const skill of switchableSkills(skills, actionNames)) {
+    const enabled = skill.modelOverride !== true
+    if (memberSet.has(skill.name)) {
+      if (!enabled) toEnable.push(skill.name)
+    } else if (enabled) {
+      // Spared by the user: leave the switch exactly as it is.
+      if (keepEnabled?.has(skill.name) === true) continue
+      toDisable.push(skill.name)
+    }
+  }
+  return { toEnable, toDisable }
+}
+
+/** Switch states captured right before a role activation, kept for restore. */
+export interface RoleSnapshot {
+  roleId: string
+  roleName: string
+  at: number
+  states: Array<{ name: string; enabled: boolean }>
+}
+
+export function takeRoleSnapshot(
+  roleId: string,
+  roleName: string,
+  skills: readonly CatalogSkill[],
+  actionNames: ReadonlySet<string>,
+): RoleSnapshot {
+  return {
+    roleId,
+    roleName,
+    at: Date.now(),
+    states: switchableSkills(skills, actionNames).map((skill) => ({ name: skill.name, enabled: skill.modelOverride !== true })),
+  }
+}
+
+/**
+ * Plan "restore before the last role activation". Skills installed after the
+ * snapshot are left untouched — pausing them would silently undo a newer
+ * user decision.
+ */
+export function roleRestorePlan(
+  snapshot: RoleSnapshot,
+  skills: readonly CatalogSkill[],
+  actionNames: ReadonlySet<string>,
+): RoleActivationPlan {
+  const before = new Map(snapshot.states.map((state) => [state.name, state.enabled]))
+  const toEnable: string[] = []
+  const toDisable: string[] = []
+  for (const skill of switchableSkills(skills, actionNames)) {
+    const target = before.get(skill.name)
+    if (target === undefined) continue
+    const enabled = skill.modelOverride !== true
+    if (target && !enabled) toEnable.push(skill.name)
+    if (!target && enabled) toDisable.push(skill.name)
+  }
+  return { toEnable, toDisable }
 }
 
 /** Names of every group a skill belongs to (tags + collections). */
@@ -87,39 +195,105 @@ export function filterBySource(skills: readonly CatalogSkill[], source: string, 
   })
 }
 
-/** One origin collection with the members visible under the current filters. */
-export interface VisibleCollection {
-  collection: CollectionGroup
-  /** Enabled, currently visible members. */
-  skills: CatalogSkill[]
-  /** Disabled records passing the current name/description filter. */
-  disabledMembers: DisabledSkill[]
+// 停用技能已在 `catalog.skills` 里带 `modelOverride` 呈现；sidecar 的
+// `disabled[]` 退为纯台账（占名、恢复归属、详情反推），不再作为第二种技能行
+// 渲染。因此不再需要 dropShadowedDisabled / visibleDisabledRecords 这条链路。
+
+/** Status filter values shared by the list shell and the row components. */
+export type SkillStatusFilter = 'all' | 'enabled' | 'disabled'
+/** Invocation filter values (who may trigger the skill). */
+export type InvocationFilter = 'all' | 'model' | 'user'
+
+/**
+ * Free-text + invocation filtering. Deliberately view-independent: every view
+ * applies it, including the role cards, because typing in the search box is an
+ * explicit, momentary narrowing.
+ */
+export function filterSkillsByQuery(
+  skills: readonly CatalogSkill[],
+  query: string,
+  invocation: InvocationFilter,
+): CatalogSkill[] {
+  const normalized = query.trim().toLocaleLowerCase()
+  return skills.filter((skill) => {
+    if (invocation === 'model' && !skill.invocation.modelInvocable) return false
+    if (invocation === 'user' && !skill.invocation.userInvocable) return false
+    if (normalized.length === 0) return true
+    return skill.name.toLocaleLowerCase().includes(normalized)
+      || skill.description.toLocaleLowerCase().includes(normalized)
+      || skill.displayName?.toLocaleLowerCase().includes(normalized)
+      || skill.shortDescription?.toLocaleLowerCase().includes(normalized)
+  })
 }
 
 /**
- * Match origin collections against the currently visible enabled skills and
- * disabled records, dropping collections with no visible member. Without
- * this, a stale origin (skill deleted on disk, or a `.disabled` file whose
- * sidecar record was lost) renders a group header with zero rows — an empty
- * shell the sources tab otherwise never shows (project/personal groups
- * already disappear when they have nothing to display).
+ * The status filter belongs to list views only. Role cards skip it: a role is a
+ * roster the user curated by hand, so hiding paused members — or losing the
+ * whole card once every member is filtered out — reads as data loss.
+ */
+export function filterSkillsByStatus(skills: readonly CatalogSkill[], status: SkillStatusFilter): CatalogSkill[] {
+  if (status === 'all') return [...skills]
+  return skills.filter((skill) => {
+    // Project and external read-only skills are never moved into the disabled
+    // sidecar; their switch is an invocation override. Keep every toggleable
+    // override row for the "disabled" view, not only project ones.
+    if (status === 'disabled') return skill.toggleable === true && skill.modelOverride === true
+    return skill.modelOverride !== true
+  })
+}
+
+/** One discovery root (where the skill files live) with its members. */
+export interface LocationGroup {
+  /** Discovery source id: `user-dsh`, `user-agents`, `agent-codex`, … */
+  id: string
+  skills: CatalogSkill[]
+}
+
+/** Local roots come first — they are the ones the hub can actually write. */
+const LOCAL_LOCATIONS = ['user-dsh', 'user-agents']
+
+function locationRank(id: string): number {
+  const index = LOCAL_LOCATIONS.indexOf(id)
+  return index === -1 ? LOCAL_LOCATIONS.length : index
+}
+
+/**
+ * Group skills by the discovery root that produced them (`CatalogSkill.source`).
+ * This is the "location" axis, orthogonal to the upstream origin (`origins`)
+ * and to roles. Project skills are left out on purpose: the workspace tab
+ * already groups them, and a project root is really its workspace path.
+ */
+export function groupByLocation(skills: readonly CatalogSkill[]): LocationGroup[] {
+  const buckets = new Map<string, CatalogSkill[]>()
+  for (const skill of skills) {
+    if (isProjectSource(skill.source)) continue
+    const bucket = buckets.get(skill.source)
+    if (bucket === undefined) buckets.set(skill.source, [skill])
+    else bucket.push(skill)
+  }
+  return [...buckets.entries()]
+    .map(([id, members]) => ({ id, skills: members }))
+    .sort((a, b) => locationRank(a.id) - locationRank(b.id) || a.id.localeCompare(b.id))
+}
+
+/** One origin collection with the members visible under the current filters. */
+export interface VisibleCollection {  collection: CollectionGroup
+  skills: CatalogSkill[]
+}
+
+/**
+ * Match origin collections against the currently visible skills, dropping
+ * collections with no visible member. Paused skills stay in `skills` with
+ * `modelOverride`, so there is no second "disabled rows" stream to merge.
  */
 export function visibleCollections(
   collections: readonly CollectionGroup[],
   visibleSkills: readonly CatalogSkill[],
-  disabledRecords: readonly DisabledSkill[],
-  normalized: string,
-  sourceFilter: string,
-  origins: Readonly<Record<string, string>>,
 ): VisibleCollection[] {
   const visible: VisibleCollection[] = []
   for (const collection of collections) {
     const skills = visibleSkills.filter((skill) => collection.skillNames.includes(skill.name))
-    const disabledMembers = disabledRecords.filter((record) =>
-      collection.skillNames.includes(record.name)
-      && (normalized.length === 0 || record.name.toLocaleLowerCase().includes(normalized) || record.description.toLocaleLowerCase().includes(normalized))
-      && (sourceFilter === 'all' || (origins[record.name] ?? PRIVATE_SOURCE) === sourceFilter))
-    if (skills.length > 0 || disabledMembers.length > 0) visible.push({ collection, skills, disabledMembers })
+    if (skills.length > 0) visible.push({ collection, skills })
   }
   return visible
 }

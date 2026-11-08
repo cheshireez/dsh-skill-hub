@@ -34,6 +34,8 @@ export interface ForeignSkillView {
   scope: ForeignScope
   /** `scope === 'project'` 时的项目根。 */
   projectRoot?: string
+  /** 同一份真实文件也在这些 agent 目录里出现（软链集中管理），已合并为一条。 */
+  alsoIn?: string[]
 }
 
 /** GET /api/skill-hub/foreign */
@@ -66,4 +68,6 @@ export interface ForeignImportResponse {
   replaced?: string[]
   skipped: Array<{ name: string; reason: string }>
   failed: Array<{ name: string; error: string }>
+  /** 导入成功但副本可能不完整：包内符号链接按安全策略被跳过。 */
+  warnings?: Array<{ name: string; skippedSymlinks: number }>
 }

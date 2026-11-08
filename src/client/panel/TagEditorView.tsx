@@ -1,5 +1,5 @@
 /**
- * Full-page tag (scene) editor: rename / delete header, member checkbox
+ * Full-page tag (role) editor: rename / delete header, member checkbox
  * lists (enabled + disabled skills), and the save-members action. Pure
  * presentation — the draft state lives in the panel and arrives as props.
  */
@@ -25,7 +25,7 @@ export interface TagEditorViewProps {
   onToggleMember: (name: string, checked: boolean) => void
   /** Rename with the current draft (disabled while blank). */
   onRename: () => void
-  /** Delete this tag (hidden for the default scene). */
+  /** Delete this tag (hidden for the default role). */
   onDelete: () => void
   /** Persist the current member draft and leave the editor. */
   onSaveMembers: () => void

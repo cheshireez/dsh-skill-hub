@@ -5,7 +5,7 @@
  * 碰其他域的 state。
  */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type {
   MarketSkillsShEntry,
   MarketStatsResponse,
@@ -43,6 +43,10 @@ export function useMarketFlow(
   const [versionDialog, setVersionDialog] = useState<VersionChoiceState | null>(null)
   const [versionBusy, setVersionBusy] = useState(false)
   const [updateAllDialog, setUpdateAllDialog] = useState(false)
+  /** 移除市场源的确认框（破坏性操作，和删除技能一样先确认）。 */
+  const [removeMarketDialog, setRemoveMarketDialog] = useState<string | null>(null)
+  /** 批量更新防重入：按钮被连点或两个窗口同时触发时只跑一轮。 */
+  const updatingAllRef = useRef(false)
 
   /** 加载市场源列表。 */
   const loadMarket = useCallback(async (): Promise<void> => {
@@ -106,8 +110,31 @@ export function useMarketFlow(
     await runFlow(shared, async () => {
       const result = await api.removeMarketSource(repo)
       setMarketState({ status: 'ready', repos: result.repos })
+      // Drop stale per-repo check/stats so「全部更新」never targets a source
+      // that was just removed (the server would answer 404 forever).
+      setMarketCheck((previous) => {
+        if (previous[repo] === undefined) return previous
+        const next = { ...previous }
+        delete next[repo]
+        return next
+      })
+      setMarketStats((previous) => {
+        if (previous[repo] === undefined) return previous
+        const next = { ...previous }
+        delete next[repo]
+        return next
+      })
     }, () => shared.setTagBusy(false))
   }, [api, shared])
+
+  const requestRemoveMarketSource = useCallback((repo: string): void => { setRemoveMarketDialog(repo) }, [])
+  const cancelRemoveMarketSource = useCallback((): void => { setRemoveMarketDialog(null) }, [])
+  const confirmRemoveMarketSource = useCallback(async (): Promise<void> => {
+    const repo = removeMarketDialog
+    if (repo === null) return
+    setRemoveMarketDialog(null)
+    await removeMarketSource(repo)
+  }, [removeMarketDialog, removeMarketSource])
 
   const openVersionDialog = useCallback(async (repo: string): Promise<void> => {
     const current = marketState.repos.find((item) => item.repo === repo)?.ref
@@ -136,24 +163,40 @@ export function useMarketFlow(
     if (ref === '') return
     setVersionBusy(true)
     await runFlow(shared, async () => {
-      await api.setMarketSourceRef(versionDialog.repo, ref)
+      const repo = versionDialog.repo
+      await api.setMarketSourceRef(repo, ref)
+      // 旧 ref 的 release 检查结果不能再挂在行上，否则「全部更新」可能按
+      // 旧目标把用户刚切换的版本又钉回去。
+      setMarketCheck((previous) => {
+        if (previous[repo] === undefined) return previous
+        const next = { ...previous }
+        delete next[repo]
+        return next
+      })
       setVersionDialog(null)
       await loadMarket()
-      await scanRepo(versionDialog.repo)
+      await scanRepo(repo)
     }, () => setVersionBusy(false))
   }, [api, versionDialog, loadMarket, scanRepo, shared])
 
-  /** 检查所有市场源的上游更新（服务端节流）。 */
+  /** 检查所有市场源的上游更新（服务端节流）。节流结果保留旧的检查结果，
+   * 避免「刚刚检查过」把上一次发现的更新覆盖成「已是最新」。 */
   const checkMarket = useCallback(async (): Promise<void> => {
     try {
       const result = await api.marketCheck()
-      const next: Record<string, MarketCheckResult> = {}
-      for (const item of result.results) next[item.repo] = item
-      setMarketCheck(next)
-    } catch {
-      // 检查失败不打扰市场列表本身。
+      setMarketCheck((previous) => {
+        const next: Record<string, MarketCheckResult> = { ...previous }
+        for (const item of result.results) {
+          // 节流表示这次没访问网络，旧结果才是已知的最新事实。
+          if (item.throttled === true && previous[item.repo] !== undefined) continue
+          next[item.repo] = item
+        }
+        return next
+      })
+    } catch (error) {
+      shared.fail(errorMessage(error))
     }
-  }, [api])
+  }, [api, shared])
 
   /** 市场源星星/下载数（SWR：先即时缓存渲染，后台刷新后合并，失败静默）。 */
   const loadMarketStats = useCallback(async (): Promise<void> => {
@@ -182,45 +225,111 @@ export function useMarketFlow(
     setSyncingMarket(repo)
     await runFlow(shared, async () => {
       const result = await api.marketSync(repo, ref)
-      setMarketSyncDialog({ repo: result.repo, ref: result.ref, skills: result.skills, selected: new Set(result.skills) })
+      const localModified = sourceCheck[repo]?.localModified ?? []
+      // 服务端会带上「这次版本变化涉及的技能」；旧服务端没有该字段时退回全选。
+      const updated = result.updated
+      const selected = updated !== undefined
+        ? new Set(result.skills.filter((name) => updated.includes(name)))
+        : new Set(result.skills)
+      setMarketSyncDialog({ repo: result.repo, ref: result.ref, skills: result.skills, selected, localModified })
+      // 市场源已切到新 ref，旧的 release 检查结果立刻失效（尤其是用户点
+      // 「跳过」时，不能留下「新版本」或误显示「已是最新」）。
+      setMarketCheck((previous) => {
+        if (previous[result.repo] === undefined) return previous
+        const next = { ...previous }
+        delete next[result.repo]
+        return next
+      })
+      // 重新核对来源侧（服务端在成功同步后会清掉检查节流）；没有 tracked
+      // source 的纯市场源不能调 checkSources，否则会得到 404 红条。
+      if (result.skills.length > 0) void checkSources(result.repo)
       await loadMarket()
     }, () => setSyncingMarket(null))
-  }, [api, loadMarket, shared])
+  }, [api, checkSources, loadMarket, shared, sourceCheck])
 
   /** 批量更新本地技能到市场源当前版本（复用来源同步路径）。 */
   const confirmMarketSync = useCallback(async (): Promise<void> => {
     if (marketSyncDialog === null) return
+    const repo = marketSyncDialog.repo
     const selected = [...marketSyncDialog.selected]
     setSyncBusy(true)
     await runFlow(shared, async () => {
+      const issues: string[] = []
       if (selected.length > 0) {
-        const result = await api.syncSource(marketSyncDialog.repo, selected)
-        if (result.failed.length > 0) shared.fail(result.failed.map((item) => item.name + ': ' + item.error).join('\n'))
+        const result = await api.syncSource(repo, selected)
+        if (result.failed.length > 0) issues.push(result.failed.map((item) => item.name + ': ' + item.error).join('\n'))
+        if (result.overwritten !== undefined && result.overwritten.length > 0) {
+          issues.push(tt('market.syncOverwritten', { names: result.overwritten.join(', ') }))
+        }
       }
       setMarketSyncDialog(null)
+      // 本地技能已与市场源对齐；旧的 release 检查结果立刻失效。
+      setMarketCheck((previous) => {
+        if (previous[repo] === undefined) return previous
+        const next = { ...previous }
+        delete next[repo]
+        return next
+      })
       await Promise.all([reloadCatalog(), reloadGroups(), reloadSources()])
+      // checkSources 内部会 clearFail，提示必须放在它之后再发，避免被清掉。
+      await checkSources(repo)
       void checkMarket()
+      if (issues.length > 0) shared.fail(issues.join('\n'))
     }, () => setSyncBusy(false))
-  }, [api, marketSyncDialog, reloadCatalog, reloadGroups, reloadSources, checkMarket, shared])
+  }, [api, marketSyncDialog, reloadCatalog, reloadGroups, reloadSources, checkSources, checkMarket, shared])
 
   /**
-   * 一键全部更新：把每个「有可更新技能」的来源逐个同步到上游最新版本
+   * 一键全部更新：市场 release 更新先重钉并同步，再处理来源侧技能更新
    * （复用来源同步路径，覆盖本地修改），随后刷新并重新检查。
    */
   const updateAll = useCallback(async (): Promise<void> => {
+    if (updatingAllRef.current) { setUpdateAllDialog(false); return }
+    updatingAllRef.current = true
     setUpdateAllDialog(false)
     shared.setBatchBusy(true)
     shared.clearFail()
     const failures: string[] = []
+    const processed = new Set<string>()
+    const liveRepos = new Set(marketState.repos.map((item) => item.repo))
     let done = 0
     try {
+      for (const [repo, check] of Object.entries(marketCheck)) {
+        if (!liveRepos.has(repo)) continue
+        if (check.updateAvailable !== true) continue
+        try {
+          const sync = await api.marketSync(repo, check.latestTag)
+          // 市场源已重钉成功；后续 sourceCheck 分支不再重复处理同一 repo。
+          processed.add(repo)
+          // 新服务端会告诉本次版本变化涉及的技能；旧服务端退回全部技能。
+          const updated = sync.updated
+          const skills = updated !== undefined
+            ? sync.skills.filter((name) => updated.includes(name))
+            : sync.skills
+          if (skills.length > 0) {
+            const result = await api.syncSource(repo, skills)
+            if (result.failed.length > 0) {
+              failures.push(tt('market.updateAllItem', { repo, count: result.failed.length }) + ': ' + result.failed.map((item) => item.name + ': ' + item.error).join('; '))
+            }
+            if (result.overwritten !== undefined && result.overwritten.length > 0) {
+              failures.push(tt('market.syncOverwritten', { names: result.overwritten.join(', ') }))
+            }
+          }
+          done += 1
+        } catch (error) {
+          failures.push(repo + ': ' + errorMessage(error))
+        }
+      }
       for (const [repo, check] of Object.entries(sourceCheck)) {
+        if (processed.has(repo)) continue
         if (!check.changed || check.updated.length === 0) continue
         try {
           const result = await api.syncSource(repo, check.updated)
           done += 1
           if (result.failed.length > 0) {
             failures.push(tt('market.updateAllItem', { repo, count: result.failed.length }) + ': ' + result.failed.map((item) => item.name + ': ' + item.error).join('; '))
+          }
+          if (result.overwritten !== undefined && result.overwritten.length > 0) {
+            failures.push(tt('market.syncOverwritten', { names: result.overwritten.join(', ') }))
           }
         } catch (error) {
           failures.push(repo + ': ' + errorMessage(error))
@@ -233,8 +342,9 @@ export function useMarketFlow(
       else if (done > 0) shared.succeed(tt('market.updateAllDone', { count: done }))
     } finally {
       shared.setBatchBusy(false)
+      updatingAllRef.current = false
     }
-  }, [api, sourceCheck, checkSources, checkMarket, reloadCatalog, reloadGroups, reloadSources, shared])
+  }, [api, marketCheck, marketState.repos, sourceCheck, checkSources, checkMarket, reloadCatalog, reloadGroups, reloadSources, shared])
 
   /**
    * skills.sh 搜索状态。
@@ -295,7 +405,7 @@ export function useMarketFlow(
     skillsShQuery, skillsShState, skillsShInstalling,
     setBranchChoice, setMarketSyncDialog, setNewSourceName, setRepoSelected,
     setUpdateAllDialog, setVersionDialog, setSkillsShQuery,
-    loadMarket, addSource, addMarketSource, removeMarketSource, scanRepo, confirmBranchChoice,
+    loadMarket, addSource, addMarketSource, removeMarketSource, requestRemoveMarketSource, cancelRemoveMarketSource, confirmRemoveMarketSource, removeMarketDialog, scanRepo, confirmBranchChoice,
     openVersionDialog, confirmVersionDialog, toggleRepoSelected, importRepo, cancelImport,
     clearScan, checkMarket, loadMarketStats, syncMarketSource, confirmMarketSync, updateAll,
     runSkillsShSearch, installSkillsSh,
