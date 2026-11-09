@@ -23,6 +23,7 @@ export type AuditRuleId =
   | 'zero-width'
   | 'dangerous-command'
   | 'credential-path'
+  | 'unknown-host'
   | 'file-too-large'
   | 'bundle-too-large'
   | 'too-many-files'
@@ -81,6 +82,68 @@ const CREDENTIAL_PATHS: ReadonlyArray<{ re: RegExp; label: string }> = [
   { re: /(?:^|\s)\/etc\/shadow\b/, label: 'system password database' },
 ]
 
+/**
+ * 已知主机：属于正常工具链（托管、注册表、规范站）。按标签边界匹配：
+ * docs.npmjs.com 命中 npmjs.com，而 evilnpmjs.com 不命中。
+ */
+const KNOWN_HOSTS: ReadonlyArray<string> = [
+  'localhost',
+  'github.com',
+  'gitlab.com',
+  'raw.githubusercontent.com',
+  'npmjs.org',
+  'npmjs.com',
+  'agentskills.io',
+  'skills.sh',
+  'pypi.org',
+  'huggingface.co',
+  'example.com',
+  'example.org',
+  'w3.org',
+  'json-schema.org',
+  'nodejs.org',
+  'python.org',
+  'developer.mozilla.org',
+  'deepseek.com',
+  'openai.com',
+  'anthropic.com',
+  'googleapis.com',
+  'telegram.org',
+]
+
+/**
+ * 主机名。允许 IDN（西里尔域名）与 userinfo（user:pass@host）——
+ * 否则前者完全不被检测，后者会把用户名当成主机名报出来。
+ */
+const URL_HOST_RE = /https?:\/\/(?:[^/\s"'<>@]*@)?([^/\s"'<>:#?\[\]]+)/gi
+
+/** 私有/回环/链路本地 IPv4：不是互联网主机，不制造噪音。公网 IP 仍然告警。 */
+function isPrivateHost(host: string): boolean {
+  if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return false
+  const [a, b] = host.split('.').map(Number)
+  if (a === 0 || a === 10 || a === 127) return true
+  if (a === 192 && b === 168) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  if (a === 169 && b === 254) return true
+  return false
+}
+
+/** 收集不在已知清单里的外部主机；返回首处命中的下标与去重后的列表。 */
+function collectUnknownHosts(text: string, allowHosts: ReadonlyArray<string>): { first: number; hosts: string[] } {
+  const isKnown = (host: string): boolean =>
+    allowHosts.some((known) => host === known || host.endsWith('.' + known))
+  const seen = new Set<string>()
+  let first = -1
+  for (const match of text.matchAll(URL_HOST_RE)) {
+    const host = match[1].toLowerCase().replace(/\.+$/, '')
+    if (host.length === 0) continue
+    if (isPrivateHost(host) || isKnown(host)) continue
+    if (first === -1) first = match.index ?? 0
+    seen.add(host)
+  }
+  return { first, hosts: [...seen] }
+}
+
 /** 1 起行号（按 `\n` 计）。 */
 function lineOf(text: string, index: number): number {
   let line = 1
@@ -107,7 +170,11 @@ function collect(text: string, re: RegExp): { first: number; count: number } {
  * 审计一段技能文本（SKILL.md 正文、脚本、参考文档都适用）。
  * 纯函数：同样的输入永远给同样的结果，便于单测与「改动前后对比」。
  */
-export function auditSkillText(relativePath: string, text: string): AuditFinding[] {
+export function auditSkillText(
+  relativePath: string,
+  text: string,
+  allowHosts: ReadonlyArray<string> = KNOWN_HOSTS,
+): AuditFinding[] {
   const findings: AuditFinding[] = []
   // 文件开头的 BOM 是合法编码标记，不算零宽隐藏；先剥掉再检测。
   const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
@@ -150,6 +217,18 @@ export function auditSkillText(relativePath: string, text: string): AuditFinding
     }
   }
 
+  const external = collectUnknownHosts(body, allowHosts)
+  if (external.hosts.length > 0) {
+    const shown = external.hosts.slice(0, 3).join(', ')
+    const more = external.hosts.length > 3 ? ' (+' + (external.hosts.length - 3) + ' more)' : ''
+    push(
+      'unknown-host',
+      'warn',
+      'references host(s) outside the known list: ' + shown + more + '; a skill may call a legitimate API, but an unrecognised host is where a body would be sent',
+      external.first,
+    )
+  }
+
   return findings
 }
 
@@ -177,7 +256,11 @@ export interface AuditBundleFile {
  * 审计一个完整技能目录：体积/数量上限 + 每个文本文件的规则扫描。
  * `block` 级发现（体积越界）意味着不该落盘；文本级 `block` 由调用方决定。
  */
-export function auditSkillBundle(files: readonly AuditBundleFile[], description?: string): AuditFinding[] {
+export function auditSkillBundle(
+  files: readonly AuditBundleFile[],
+  description?: string,
+  allowHosts: ReadonlyArray<string> = KNOWN_HOSTS,
+): AuditFinding[] {
   const findings: AuditFinding[] = []
   if (files.length > MAX_SKILL_FILES) {
     findings.push({
@@ -206,7 +289,7 @@ export function auditSkillBundle(files: readonly AuditBundleFile[], description?
       })
       continue
     }
-    if (file.text !== undefined) findings.push(...auditSkillText(file.path, file.text))
+    if (file.text !== undefined) findings.push(...auditSkillText(file.path, file.text, allowHosts))
   }
   if (description !== undefined) findings.push(...auditDescription('SKILL.md', description))
   return findings
