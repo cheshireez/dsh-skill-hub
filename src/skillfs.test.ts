@@ -256,6 +256,7 @@ describe('scanDiagnostics', () => {
     expect(entries).toHaveLength(2)
     expect(entries.map((entry) => entry.reason)).toContain('missing YAML frontmatter (--- block)')
     expect(entries.map((entry) => entry.reason)).toContain('invalid skill name "Bad Name" (must be kebab-case)')
+    expect(entries.every((entry) => entry.level === 'error')).toBe(true)
   })
 
   it('skips hub-disabled files', async () => {
@@ -287,6 +288,7 @@ describe('scanDiagnostics', () => {
     const entries = await scanDiagnostics('user-dsh', home)
     expect(entries).toHaveLength(1)
     expect(entries[0].reason).toContain('does not match the discovery path "folder-name"')
+    expect(entries[0].level).toBe('warn')
   })
 
   it('flags a too-short description', async () => {
@@ -295,6 +297,7 @@ describe('scanDiagnostics', () => {
     const entries = await scanDiagnostics('user-dsh', home)
     expect(entries).toHaveLength(1)
     expect(entries[0].reason).toContain('description is only 1 chars')
+    expect(entries[0].level).toBe('warn')
   })
 
   it('flags hidden Unicode tag characters as a security finding', async () => {
@@ -309,6 +312,7 @@ describe('scanDiagnostics', () => {
     const security = entries.filter((entry) => entry.kind === 'security')
     expect(security).toHaveLength(1)
     expect(security[0]?.severity).toBe('block')
+    expect(security[0]?.level).toBe('error')
     expect(security[0]?.reason).toContain('invisible Unicode tag')
     expect(security[0]?.path).toBe(join(skills, 'hidden-skill', 'SKILL.md'))
   })
@@ -324,6 +328,7 @@ describe('scanDiagnostics', () => {
     const security = entries.filter((entry) => entry.kind === 'security')
     expect(security).toHaveLength(1)
     expect(security[0]?.severity).toBe('warn')
+    expect(security[0]?.level).toBe('warn')
     expect(security[0]?.reason).toContain('line 7:')
     expect(security[0]?.fixable).toBeUndefined()
   })
@@ -332,6 +337,15 @@ describe('scanDiagnostics', () => {
     await createSkill('user-dsh', 'clean-skill', 'Runs the test suite and reports failures', home)
     const entries = await scanDiagnostics('user-dsh', home)
     expect(entries.filter((entry) => entry.kind === 'security')).toEqual([])
+  })
+
+  it('grades a skipped file as error and a loadable-with-issues file as warn in one scan', async () => {
+    await writeFile(join(skills, 'skipped.md'), '# no frontmatter', 'utf8')
+    await mkdir(join(skills, 'short-desc'))
+    await writeFile(join(skills, 'short-desc', 'SKILL.md'), '---\nname: short-desc\ndescription: x\n---', 'utf8')
+    const levels = new Map((await scanDiagnostics('user-dsh', home)).map((entry) => [entry.path, entry.level]))
+    expect(levels.get(join(skills, 'skipped.md'))).toBe('error')
+    expect(levels.get(join(skills, 'short-desc', 'SKILL.md'))).toBe('warn')
   })
 })
 

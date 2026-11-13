@@ -195,6 +195,22 @@ export function filterBySource(skills: readonly CatalogSkill[], source: string, 
   })
 }
 
+/**
+ * 「已装 N 个」的判据：只数 catalog 里真实存在的技能名。
+ *
+ * `source.skills` 是导入时写下的名字清单；技能文件被 hub 之外的方式删掉
+ * （git 切分支、手工清理、外部工具）之后名字会留着，直接数它会让市场行
+ * 显示「已装 3 个」而下面只有 1 行。
+ *
+ * `catalogLoaded=false` 时退回清单长度：冷启动那一瞬间宁可先显示旧值，
+ * 也不要在用户眼皮底下把「已装 3 个」闪成 0。
+ */
+export function countInstalled(record: { skills: readonly string[] } | undefined, installed: ReadonlySet<string>, catalogLoaded: boolean): number {
+  if (record === undefined) return 0
+  if (!catalogLoaded) return record.skills.length
+  return record.skills.filter((name) => installed.has(name)).length
+}
+
 // 停用技能已在 `catalog.skills` 里带 `modelOverride` 呈现；sidecar 的
 // `disabled[]` 退为纯台账（占名、恢复归属、详情反推），不再作为第二种技能行
 // 渲染。因此不再需要 dropShadowedDisabled / visibleDisabledRecords 这条链路。

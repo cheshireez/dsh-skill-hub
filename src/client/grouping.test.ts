@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CatalogSkill, CollectionGroup, SkillTag } from '../protocol.ts'
-import { conflictsOnClose, filterBySource, filterSkillsByQuery, filterSkillsByStatus, formatRelativeTime, groupByLocation, groupNamesOf, groupSwitchView, PRIVATE_SOURCE, roleActivationPlan, rolePausableSkills, roleRestorePlan, sortSkills, takeRoleSnapshot, visibleCollections } from './grouping.ts'
+import { conflictsOnClose, countInstalled, filterBySource, filterSkillsByQuery, filterSkillsByStatus, formatRelativeTime, groupByLocation, groupNamesOf, groupSwitchView, PRIVATE_SOURCE, roleActivationPlan, rolePausableSkills, roleRestorePlan, sortSkills, takeRoleSnapshot, visibleCollections } from './grouping.ts'
 
 function skill(name: string, writable = true): CatalogSkill {
   return {
@@ -271,5 +271,26 @@ describe('formatRelativeTime', () => {
 
   it('clamps future timestamps to just now', () => {
     expect(formatRelativeTime(now + 5_000, now)).toEqual({ key: 'time.justNow' })
+  })
+})
+
+describe('countInstalled', () => {
+  const record = { skills: ['one', 'two', 'gone'] }
+
+  it('counts only names that still exist in the catalog', () => {
+    expect(countInstalled(record, new Set(['one', 'two']), true)).toBe(2)
+  })
+
+  it('reports 0 when every recorded name is an orphan', () => {
+    expect(countInstalled(record, new Set(), true)).toBe(0)
+  })
+
+  it('falls back to the recorded length before the catalog has loaded', () => {
+    // 冷启动那一瞬间 catalog 还是 null，不能把「已装 3 个」闪成 0。
+    expect(countInstalled(record, new Set(), false)).toBe(3)
+  })
+
+  it('reports 0 for a repo with no source record', () => {
+    expect(countInstalled(undefined, new Set(['one']), true)).toBe(0)
   })
 })

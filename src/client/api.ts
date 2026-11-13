@@ -143,8 +143,12 @@ const MARKET_CHECK_TIMEOUT_MS = 60_000
 async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ms = 10_000): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), ms)
+  const caller = init?.signal
+  // Never overwrite a caller-supplied signal: the old `{ ...init, signal }`
+  // made every in-flight request impossible to cancel from the caller side.
+  const signal = caller != null ? AbortSignal.any([caller, controller.signal]) : controller.signal
   try {
-    return await fetch(typeof input === 'string' ? resolveApiUrl(input) : input, { ...init, signal: controller.signal })
+    return await fetch(typeof input === 'string' ? resolveApiUrl(input) : input, { ...init, signal })
   } finally {
     clearTimeout(timer)
   }

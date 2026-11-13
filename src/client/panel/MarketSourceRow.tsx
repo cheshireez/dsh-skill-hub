@@ -5,18 +5,21 @@
  */
 
 import type { JSX } from 'react'
+import { countInstalled } from '../grouping.ts'
 import { tt } from '../helpers.ts'
 import type { MarketSourceRecord } from '../../protocol.ts'
 import type { SkillHubState } from './useSkillHub.ts'
 import { formatCount } from './market-format.ts'
 import css from './panel.module.css'
 
-export function MarketSourceRow(props: { hub: SkillHubState; record: MarketSourceRecord }): JSX.Element {
-  const { hub, record } = props
+export function MarketSourceRow(props: { hub: SkillHubState; record: MarketSourceRecord; installedNames: ReadonlySet<string> }): JSX.Element {
+  const { hub, record, installedNames } = props
   const { marketCheck, sourceCheck, sourcesState, scanningRepo, syncingMarket, checkingSource, tagBusy, batchBusy, checkSources, checkMarket, syncMarketSource, requestSync, requestDelete, requestRemoveMarketSource, scanRepo } = hub
   const releaseCheck = marketCheck[record.repo]
   const skillCheck = sourceCheck[record.repo]
-  const installedCount = sourcesState?.sources.find((source) => source.repo === record.repo)?.skills.length ?? 0
+  const sourceRecord = sourcesState?.sources.find((source) => source.repo === record.repo)
+  /** 「已装」只数 catalog 里真实存在的技能，见 countInstalled 的判据。 */
+  const installedCount = countInstalled(sourceRecord, installedNames, hub.catalog !== null)
   const scanning = scanningRepo === record.repo
   const syncing = syncingMarket === record.repo
   const checking = checkingSource === record.repo

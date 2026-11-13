@@ -10,8 +10,8 @@ import type { RepoSkillEntry } from '../protocol.ts'
 import { errorText } from '../error-text.ts'
 import { mapConcurrent } from '../concurrency.ts'
 import { parseFrontmatter } from '../skillfs.ts'
-import { auditSkillBundle, blockingReason, MAX_SKILL_FILE_BYTES, type AuditBundleFile } from '../skillfs/audit.ts'
-import { NO_COMPRESSION, RepoFetchError, fetchError, githubAuthHeaders, isAbortError } from './github-client.ts'
+import { asAuditText, auditSkillBundle, blockingReason, MAX_SKILL_FILE_BYTES, type AuditBundleFile } from '../skillfs/audit.ts'
+import { NO_COMPRESSION, RepoFetchError, fetchError, githubAuthHeaders, githubRequestSignal, isAbortError, readBoundedResponse } from './github-client.ts'
 import { relativeToSkillDir } from './discovery.ts'
 import type { RepoFile } from './types.ts'
 
@@ -28,7 +28,9 @@ export async function downloadGitHubFile(repo: string, ref: string, path: string
   let firstError: string | null = null
   let response: Response | null = null
   try {
-    response = await fetchImpl(rawUrl, { headers: { ...NO_COMPRESSION, ...githubAuthHeaders() }, ...(signal !== undefined ? { signal } : {}) })
+    // `redirect: 'error'` keeps the Authorization header from following a 302
+    // to a third-party host; a hard timeout keeps a hung CDN from wedging the job.
+    response = await fetchImpl(rawUrl, { headers: { ...NO_COMPRESSION, ...githubAuthHeaders() }, signal: githubRequestSignal(signal), redirect: 'error' })
   } catch (error) {
     if (isAbortError(error)) throw error
     firstError = errorText(error)
@@ -41,7 +43,7 @@ export async function downloadGitHubFile(repo: string, ref: string, path: string
     // tag-pinned import (issue #15).
     const apiUrl = `https://api.github.com/repos/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`
     try {
-      response = await fetchImpl(apiUrl, { headers: { accept: 'application/vnd.github.raw', ...NO_COMPRESSION, ...githubAuthHeaders() }, ...(signal !== undefined ? { signal } : {}) })
+      response = await fetchImpl(apiUrl, { headers: { accept: 'application/vnd.github.raw', ...NO_COMPRESSION, ...githubAuthHeaders() }, signal: githubRequestSignal(signal), redirect: 'error' })
     } catch (error) {
       if (isAbortError(error)) throw error
       throw new RepoFetchError('download failed: ' + (firstError ?? (errorText(error))))
@@ -51,23 +53,17 @@ export async function downloadGitHubFile(repo: string, ref: string, path: string
     throw fetchError('download failed', response)
   }
   try {
-    return Buffer.from(await response.arrayBuffer())
+    // /contents can answer with base64 (~4/3 of the raw bytes), so allow headroom
+    // over the 2 MiB per-file limit while still bounding the read.
+    return await readBoundedResponse(response, MAX_SKILL_FILE_BYTES * 2)
   } catch (error) {
     if (isAbortError(error)) throw error
     throw new RepoFetchError('download read failed: ' + (errorText(error)))
   }
 }
 
-/**
- * Treat a downloaded buffer as text when it plausibly is one: no NUL byte and
- * no U+FFFD from a failed UTF-8 decode. Binary files (icons, archives) are
- * size-checked only — running the text rules over a PNG would produce noise.
- */
-function asAuditText(buffer: Buffer): string | undefined {
-  if (buffer.includes(0)) return undefined
-  const text = buffer.toString('utf8')
-  return text.includes('\uFFFD') ? undefined : text
-}
+// Text normalization lives in skillfs/audit.ts so every import entry shares
+// the same (non-bypassable) judgement — see asAuditText.
 
 /**
  * Download a full skill directory into a temporary dir, validate SKILL.md,
@@ -115,8 +111,12 @@ export async function downloadRepoSkill(
       if (buffer.length > MAX_SKILL_FILE_BYTES) {
         throw new RepoFetchError(`skill rejected by content audit: ${relative} is ${buffer.length} bytes, over the per-file limit`, 422)
       }
-      const text = asAuditText(buffer)
-      audited.push({ path: relative, size: buffer.length, ...(text !== undefined ? { text } : {}) })
+      const normalized = asAuditText(relative, buffer)
+      audited.push({
+        path: relative,
+        size: buffer.length,
+        ...(normalized !== undefined ? { text: normalized.text, ...(normalized.disguised ? { disguised: true } : {}) } : {}),
+      })
       await mkdir(dirname(target), { recursive: true })
       await writeFile(target, buffer)
       onProgress?.(buffer.length, relative)
@@ -174,7 +174,10 @@ export async function cleanupLeftoverImportDirs(targetRoot: string): Promise<num
   }
   let cleaned = 0
   for (const name of names) {
-    if (!/^\..*\.import-/.test(name)) continue
+    // All three install entries use their own dot-prefixed temp suffix; the
+    // old pattern only matched `.import-`, so ZIP / skills.sh / foreign leftovers
+    // were never reclaimed on startup.
+    if (!/^\..*\.(?:import|install|foreign)-/.test(name)) continue
     const full = join(targetRoot, name)
     try {
       await rm2(full, { recursive: true, force: true })

@@ -37,11 +37,31 @@ import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 // Type-only: pulls the connection/reset event.
 import type {} from '@deepseek-ai/dsh-client-connection/client'
 
-// The slots service is owned by ui-renderer, which this build does not depend
-// on; augment the Context locally so the browser half typechecks.
+/**
+ * The slots service is owned by ui-renderer, which this build does not depend
+ * on. Its published `SlotMap` is deliberately an empty declaration-merge point,
+ * and the four keys we register do not appear in any installed .d.ts — so
+ * `keyof SlotMap` would be `never` here and full key typing needs the host to
+ * publish those contracts. Type the call shapes instead of leaving `slots: any`:
+ * a malformed registration spec or a non-disposable inject is now a compile
+ * error, and the four slot names are collected below for a future migration.
+ */
+interface SlotRegistration {
+  name: string
+  key?: string
+  id?: string
+  order?: number
+  label?: () => string
+  locale?: string
+  inject?: () => object
+}
+interface SlotsFace {
+  inject(key: string, factory: () => () => void): () => void
+  register(spec: SlotRegistration, component?: unknown): () => void
+}
 declare module '@deepseek-ai/cordis' {
   interface Context {
-    slots: any
+    slots: SlotsFace
   }
 }
 import { HUB_ENTRY_ID, type HubSettingsValue } from '../protocol.ts'
@@ -149,6 +169,22 @@ export function apply(ctx: ClientContext): void {
     'dsh-skill-hub: sidebar entry',
   )
 
-  // Host shell has no section-icon registration; keep the nav gear swapped for the skill icon.
+  // Settings nav icon. dsh 0.2.2-rc.2 起宿主提供 `settings.section.icon`
+  // （list / root，注册 id 必须等于目标 section 的 id），图标随 section 声明
+  // 一起渲染。
+  //
+  // 无条件注册：注册进未声明的 key 只是「不渲染」，不会抛错。老宿主自然
+  // 拿不到效果，由下面的 DOM 兜底接手。
+  ctx.effect(
+    () => ctx.slots.inject('settings.section.icon', () => ctx.slots.register({
+      name: 'settings.section.icon',
+      id: HUB_ENTRY_ID,
+      order: 0,
+      inject: () => ({}),
+    }, (owner: { size: number }) => <IconSkillOutline16 size={owner.size} />)),
+    'dsh-skill-hub: settings section icon',
+  )
+  // 兜底：没有该 slot 的宿主（0.2.2-rc.2 之前）在设置弹窗里把默认齿轮换成
+  // 同一个图标。官方 slot 生效时两者都指向同一张图，视觉无差异。
   ctx.effect(() => applySettingsNavIcon(), 'dsh-skill-hub: settings nav icon')
 }

@@ -95,6 +95,65 @@ async function enableDisabledRecord(deps: SkillHubRouteDeps, name: string, recor
   await deps.store.removeDisabled(name)
 }
 
+interface ToggleOutcome {
+  ok: boolean
+  /** A "nothing to do" state mismatch: /toggle reports it as 4xx, /toggle-batch skips it. */
+  noOp?: boolean
+  status?: number
+  error?: string
+}
+
+/**
+ * One enable/disable decision, shared by /toggle and /toggle-batch.
+ *
+ * The two handlers used to duplicate the whole "non-writable discovery →
+ * invocation overrides → disabled sidecar record" chain and had already
+ * drifted apart. One implementation means a new skill source only has to be
+ * handled once; `noOp` preserves the batch route's historical silent-skip
+ * semantics for state mismatches.
+ */
+async function applyToggle(deps: SkillHubRouteDeps, name: string, enabled: boolean, cwd: string): Promise<ToggleOutcome> {
+  const lookupCwd = cwd !== '' ? cwd : undefined
+  if (enabled) {
+    // With a workspace cwd, a project/external skill is enabled through its
+    // invocation override. Resolve that before consulting the disabled sidecar
+    // so a same-name user record cannot hijack it.
+    const invocationPath = await nonWritableDiscoveryPath(deps, name, cwd)
+    if (invocationPath !== undefined) {
+      if ((await deps.store.listInvocationOverrides()).includes(invocationPath)) {
+        await deps.store.removeInvocationOverride(invocationPath)
+        return { ok: true }
+      }
+      return { ok: false, noOp: true, status: 409, error: 'skill is already enabled: ' + name }
+    }
+    const record = await deps.store.getDisabled(name)
+    if (record !== undefined) {
+      await enableDisabledRecord(deps, name, record)
+      return { ok: true }
+    }
+    const discovered = await discoveryPathOf(deps, name, lookupCwd)
+    const overridePath = discovered === undefined ? undefined : resolve(discovered)
+    if (overridePath === undefined || !(await deps.store.listInvocationOverrides()).includes(overridePath)) {
+      return { ok: false, noOp: true, status: 404, error: 'skill is not hub-disabled: ' + name }
+    }
+    await deps.store.removeInvocationOverride(overridePath)
+    return { ok: true }
+  }
+  const resolved = await resolveWritableSkill(deps, name, lookupCwd)
+  if (!resolved.ok) {
+    // Project / external read-only skills are paused through an invocation
+    // override: not a single byte of the project is touched.
+    const discovered = await discoveryPathOf(deps, name, lookupCwd)
+    if (discovered === undefined) return { ok: false, status: resolved.status, error: resolved.error }
+    await deps.store.addInvocationOverride(resolve(discovered))
+    return { ok: true }
+  }
+  const policyPath = resolve(resolved.path)
+  await deps.store.addInvocationOverride(policyPath)
+  await deps.store.addDisabled({ name, description: resolved.skill.description, path: policyPath, root: resolved.root, disabledAt: Date.now() })
+  return { ok: true }
+}
+
 export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
   return [
     // ------------------------------------------------------------ catalog
@@ -271,60 +330,8 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
           writeJson(res, 200, { ok: true, catalog: current } satisfies ToggleResponse)
           return
         }
-        if (enabled) {
-          // With a workspace cwd, a project/external skill is enabled through
-          // its invocation override. Resolve that before consulting the
-          // disabled sidecar so a same-name user record cannot hijack it.
-          const invocationPath = await nonWritableDiscoveryPath(deps, name, cwd)
-          if (invocationPath !== undefined) {
-            if ((await deps.store.listInvocationOverrides()).includes(invocationPath)) {
-              await deps.store.removeInvocationOverride(invocationPath)
-              deps.invalidate?.()
-              writeJson(res, 200, { ok: true, catalog: await buildCatalog(deps, lookup?.cwd) } satisfies ToggleResponse)
-              return
-            }
-            writeError(res, 409, 'skill is already enabled: ' + name)
-            return
-          }
-          const record = await deps.store.getDisabled(name)
-          if (record === undefined) {
-            // 不是文件改名停用：可能是 invocation 覆盖停用的项目/外部技能。
-            const discovered = await discoveryPathOf(deps, name, cwd !== '' ? cwd : undefined)
-            const overridePath = discovered === undefined ? undefined : resolve(discovered)
-            if (overridePath === undefined || !(await deps.store.listInvocationOverrides()).includes(overridePath)) {
-              writeError(res, 404, 'skill is not hub-disabled: ' + name)
-              return
-            }
-            await deps.store.removeInvocationOverride(overridePath)
-            deps.invalidate?.()
-            writeJson(res, 200, { ok: true, catalog: await buildCatalog(deps, lookup?.cwd) } satisfies ToggleResponse)
-            return
-          }
-          await enableDisabledRecord(deps, name, record)
-        } else {
-          const resolved = await resolveWritableSkill(deps, name, cwd !== '' ? cwd : undefined)
-          if (!resolved.ok) {
-            // 不在可写根：项目技能和外部 provider 的停用走 invocation 覆盖（不改文件，git 干净）。
-            const discovered = await discoveryPathOf(deps, name, cwd !== '' ? cwd : undefined)
-            if (discovered === undefined) { writeError(res, resolved.status, resolved.error); return }
-            await deps.store.addInvocationOverride(resolve(discovered))
-            deps.invalidate?.()
-            writeJson(res, 200, { ok: true, catalog: await buildCatalog(deps, lookup?.cwd) } satisfies ToggleResponse)
-            return
-          }
-          // 停用 = 写策略，不改磁盘。SKILL.md 留在原位，provider 通过 override
-          // 把 modelInvocable 压成 false；文件不动 ⇒ 天然幂等、不会连点爆红，
-          // 也不会留下 .disabled 占位和 ENOTEMPTY 那类问题。
-          const policyPath = resolve(resolved.path)
-          await deps.store.addInvocationOverride(policyPath)
-          await deps.store.addDisabled({
-            name,
-            description: resolved.skill.description,
-            path: policyPath,
-            root: resolved.root,
-            disabledAt: Date.now(),
-          })
-        }
+        const outcome = await applyToggle(deps, name, enabled, cwd)
+        if (!outcome.ok) { writeError(res, outcome.status ?? 400, outcome.error ?? 'toggle failed'); return }
         deps.invalidate?.()
         writeJson(res, 200, { ok: true, catalog: await buildCatalog(deps, lookup?.cwd) } satisfies ToggleResponse)
       },
@@ -347,34 +354,10 @@ export function catalogRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         const failures: Array<{ name: string; error: string }> = []
         for (const name of names) {
           try {
-            if (enabled) {
-              const invocationPath = await nonWritableDiscoveryPath(deps, name, cwd)
-              if (invocationPath !== undefined) {
-                if ((await deps.store.listInvocationOverrides()).includes(invocationPath)) {
-                  await deps.store.removeInvocationOverride(invocationPath)
-                }
-                continue
-              }
-              const record = await deps.store.getDisabled(name)
-              if (record !== undefined) {
-                await enableDisabledRecord(deps, name, record)
-              } else {
-                // 不是文件改名停用：可能是项目/外部技能的 invocation 覆盖。
-                const discovered = await discoveryPathOf(deps, name, cwd !== '' ? cwd : undefined)
-                if (discovered !== undefined) await deps.store.removeInvocationOverride(resolve(discovered))
-              }
-            } else {
-              const resolved = await resolveWritableSkill(deps, name, cwd !== '' ? cwd : undefined)
-              if (!resolved.ok) {
-                const discovered = await discoveryPathOf(deps, name, cwd !== '' ? cwd : undefined)
-                if (discovered === undefined) { failures.push({ name, error: resolved.error }); continue }
-                await deps.store.addInvocationOverride(resolve(discovered))
-              } else {
-                const policyPath = resolve(resolved.path)
-                await deps.store.addInvocationOverride(policyPath)
-                await deps.store.addDisabled({ name, description: resolved.skill.description, path: policyPath, root: resolved.root, disabledAt: Date.now() })
-              }
-            }
+            const outcome = await applyToggle(deps, name, enabled, cwd)
+            // State mismatches were always silent no-ops on the batch route;
+            // real failures (unwritable / unknown) are still reported.
+            if (!outcome.ok && outcome.noOp !== true) failures.push({ name, error: outcome.error ?? 'toggle failed' })
           } catch (error) {
             failures.push({ name, error: errorText(error) })
           }

@@ -45,7 +45,17 @@ export interface CatalogSkill {
   defaultPrompt?: string
 }
 
-/** One paused skill tracked by the hub sidecar. The discovery file stays on disk. */
+/**
+ * 停用台账的一条记录。**不是启用态的真值**。
+ *
+ * 真值是 sidecar 的 `invocationOverrides`（发现文件绝对路径集合）：provider
+ * 只认它，`CatalogSkill.modelOverride` 由它派生。这里存 name / path / root /
+ * description / disabledAt，用于占名、恢复归属和详情反推 —— 后两项是
+ * overrides 没有的信息，所以两份数据不能合并。
+ *
+ * 判定「某个技能是否停用」必须看 `CatalogSkill.modelOverride`，**不要拿这个
+ * 数组反查**：项目技能与外部只读技能停用时只写覆盖，根本不进台账。
+ */
 export interface DisabledSkill {
   name: string
   description: string
@@ -55,20 +65,26 @@ export interface DisabledSkill {
   disabledAt: number
 }
 
-/** One discovery diagnostic: a file the filesystem provider skips, with the reason. */
+/** One diagnostic: either a file the provider skips, or a loadable skill with an issue. */
 export interface DiagnosticEntry {
   path: string
   root: string
   reason: string
+  /**
+   * 面板呈现级别。`error` = 这个文件被 provider 跳过（解析失败、不可读、
+   * 同名冲突、阻断级审计命中），技能压根进不了列表；`warn` = 技能能加载，
+   * 但 frontmatter 或正文有值得处理的问题。由扫描端单点判定，UI 不做猜测。
+   */
+  level: 'error' | 'warn'
   /** Whether this diagnostic can be auto-fixed (e.g. unquoted colon). */
   fixable?: boolean
   /**
-   * 条目来源。缺省 = 发现诊断（provider 跳过了这个文件）；`security` = 内容审计
-   * （文件能被加载，但正文里有值得看一眼的东西）。两者共用同一块 UI，但
-   * security 条目不能「修复」，只能说清问题在哪一行。
+   * 条目来源。缺省 = 发现诊断（frontmatter / 发现路径 / 同名冲突等）；
+   * `security` = 内容审计（正文里有值得看一眼的东西）。两者共用同一块 UI，
+   * 但 security 条目不能「修复」，只能说清问题在哪一行。
    */
   kind?: 'security'
-  /** security 条目的严重度；发现诊断条目省略。 */
+  /** security 条目的原始严重度；发现诊断条目省略，统一用上面的 level 呈现。 */
   severity?: 'block' | 'warn'
 }
 
@@ -140,7 +156,7 @@ export interface CatalogResponse {
   disabled: DisabledSkill[]
   /** Known workspaces (dsh workspace.json); used by the create dialog. */
   workspaces?: Array<{ path: string; title: string }>
-  /** Files in the writable roots the provider ignores, with reasons. */
+  /** Graded diagnostics for the writable roots (provider-skipped files + loadable skills with issues). */
   diagnostics: DiagnosticEntry[]
   /** 技能目录占用的公告预算（见 AnnouncementBudget）。 */
   announcement: AnnouncementBudget

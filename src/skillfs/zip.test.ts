@@ -137,6 +137,17 @@ describe('readZip — 安全拒绝', () => {
     expect(() => readZip(zip, { maxEntryBytes: 1024 })).toThrow(/per-file limit/)
   })
 
+  it('rejects a stored entry whose declared uncompressed size lies', () => {
+    const data = 'y'.repeat(2048)
+    const zip = makeZip([{ path: 'big.md', data }])
+    // The central directory starts after the local header + name + payload.
+    const centralOffset = 30 + Buffer.byteLength('big.md') + data.length
+    // Claim 1 byte uncompressed while 2048 stored bytes are really there.
+    // The old STORE branch trusted the declaration and returned them all.
+    zip.writeUInt32LE(1, centralOffset + 24)
+    expect(() => readZip(zip, { maxEntryBytes: 1024 })).toThrow(/per-file limit/)
+  })
+
   it('rejects a package whose total expands past the limit', () => {
     const zip = makeZip([
       { path: 'a.md', data: 'a'.repeat(600) },

@@ -30,4 +30,19 @@ describe('mapConcurrent', () => {
   it('returns an empty array for empty input', async () => {
     expect(await mapConcurrent([], 4, async () => 1)).toEqual([])
   })
+
+  it('waits for in-flight runners to settle before rejecting', async () => {
+    const started: number[] = []
+    const finished: number[] = []
+    await expect(mapConcurrent([1, 2, 3, 4, 5, 6], 2, async (item) => {
+      started.push(item)
+      if (item === 2) throw new Error('boom')
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      finished.push(item)
+      return item
+    })).rejects.toThrow('boom')
+    // Promise.all used to reject while the other worker was still writing,
+    // so the caller's `finally { rm(tempDir) }` raced a live writeFile.
+    expect(started.filter((item) => item !== 2).every((item) => finished.includes(item))).toBe(true)
+  })
 })

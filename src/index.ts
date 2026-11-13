@@ -21,14 +21,14 @@ import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-settings'
-import { HUB_CONFIG_DEFAULTS, HUB_ENTRY_ID, HEX_COLOR_RE, resolveHubConfig, type HubConfig } from './protocol.ts'
+import { CONFIG_FIELDS, HUB_CONFIG_DEFAULTS, HUB_ENTRY_ID, HEX_COLOR_RE, resolveHubConfig, type HubConfig } from './protocol.ts'
 import { SkillHubProvider } from './provider.ts'
 import { hostTrustFence, makeRoutes } from './routes.ts'
 import { createSkillStatsReader, asPersistenceSeam, type SessionPersistenceLike, type SessionQueryLike, type SkillStatsReader } from './stats.ts'
 import { SkillHubStore } from './store.ts'
-import { migrateRenamedDisabledSkills, reconcileDisabledSkills, pruneStaleDisabledSkills } from './reconcile.ts'
+import { migrateRenamedDisabledSkills, reconcileDisabledSkills, pruneStaleDisabledSkills, pruneStaleTrash } from './reconcile.ts'
 import { cleanupLeftoverImportDirs, setGithubToken } from './repo.ts'
-import { dshHome } from './store.ts'
+import { dshHome } from './store/paths.ts'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -115,20 +115,6 @@ export const Config = z.object({
  */
 export const ENTRY_ID = HUB_ENTRY_ID as SettingsNamespace
 
-/** Every config field, in the order the settings page renders them (used to walk the volatile refs). */
-const CONFIG_FIELDS = [
-  'enabled',
-  'announceToAgent',
-  'dotModelColor',
-  'dotUserColor',
-  'showUseCount',
-  'showUseTime',
-  'showGroupSummary',
-  'statsWindowDays',
-  'statsScanMinutes',
-  'githubToken',
-] as const
-
 /** Order of the announcement section within the tool-guidance band. */
 const SECTION_ORDER = 152
 
@@ -210,8 +196,8 @@ function registerAgentSkillPolicy(
 
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
 export const SKILL_HUB_GUIDANCE = [
-  '本机已安装 dsh-skill-hub 插件（DSH Web GUI 技能中枢）：设置 →「技能中枢」分区为管理主页（通用 / 工作区 / 市场 / 回收站四个 tab，同一面板也作为 960px 侧栏入口挂在侧边栏「插件」区）；本插件的配置页（启用/公告开关、圆点颜色、GitHub token、统计窗口）在插件管理页——侧边栏「插件」→ 本插件，是本插件自己注册的配置卡片（默认折叠，点标题展开）。能力：完整本地技能目录（项目/自定义/用户/内置全部来源，走官方 ctx.skills 注册表，含第三方 provider）；按来源（上游仓库）、按目录（发现目录，每个根一张卡、可整目录启停）与自定义角色浏览，分组/来源头部的滑动开关可一键启用/禁用整组（跨组冲突时询问）；角色支持「切换」—— 启用成员、停用其余可切换技能（弹窗内可勾选保留，默认全停用），切换前状态留存、可一键还原（角色视图始终展示完整名单，不受来源/状态筛选影响，搜索与调用方式仍生效）；市场：内置市场目录（精选仓库一键添加）加自定义仓库源，扫描后勾选安装，每个市场源行显示已装/可更新/上游已删数量，支持「检查全部」与「全部更新」；skills.sh 索引搜索（按技能名搜，结果显示仓库与安装次数，可选「安装」直装单个技能——不跟踪上游更新，或「加为源」登记仓库后扫描）；来源跟踪：从 GitHub 仓库（市场源或直接地址）导入的技能记录上游 repo/commit 快照，可检查更新、选择同步、上游删除时跟进删除（移入回收站 tab，可恢复，恢复后保留来源与角色归属）；个人技能（无来源记录）不跟踪；调用次数与最近使用时间统计；查看技能正文；发现诊断；内容审计（隐藏字符、危险命令、凭据路径与体积上限；市场导入命中阻断级规则即整包拒绝）；技能目录公告预算（一层渐进加载注入的字符数与 token 估算）；本地内容哈希比对（标出被自己改过、同步会覆盖的技能）；从其他 agent 的技能目录只读导入（Claude Code / Codex / WorkBuddy / Cursor / Gemini CLI 等；同一份文件挂在多个 agent 目录时合并为一条；用户级收进 ~/.dsh/skills，项目级——即 <项目根>/.claude/skills 之类——收进该项目的 .dsh/skills）；从 ZIP 包导入（包内每个含 SKILL.md 的目录算一个技能，逐个过内容审计，路径穿越/符号链接/加密包/解压炸弹在解压前拦截）；新建技能向导（写入 ~/.dsh/skills 或 ~/.agents/skills）。限制：仅用户级技能（user-dsh/user-agents 根目录）可写可删；所有可开关的技能（含用户级、项目级、外部 provider 只读技能）停用都只写 sidecar 策略（关闭模型自动调用，「/技能名」仍可用，源文件一个字节不动）、内置/运行时技能只读展示；路由受 dsh 自身的 /api 信任栅栏保护（回环、监听器绑定地址、--trusted-host 声明的 authority，外加浏览器会话认证），因此反代部署下与 GUI 同一套放行规则。用户提到「技能管理 / 技能列表 / 技能开关 / 技能同步 / 技能市场 / 更新技能 / 新建技能」时即指本插件，请据此协作。',
-  'The dsh-skill-hub plugin is installed (the DSH Web GUI skill hub): Settings → "Skills Hub" is the management page (General / Workspace / Market / Trash tabs; the same panel also mounts as a 960px sidebar entry under the Plugins area of the left rail); the plugin\'s configuration page (enable / announcement toggles, dot colors, GitHub token, stats window) is registered by the plugin itself on its own page in the Plugins manager (sidebar → 插件 → the plugin; collapsed until you expand the title). Capabilities: full local skill catalog (project / custom / user / bundled roots via the official ctx.skills registry, including third-party providers); browsing by source (upstream repo), location (discovery root) and custom roles, each group header carrying a sliding switch to enable/disable the whole group in one click (cross-group conflicts prompt the user); a role can be "switched to" — enable its members, pause every other switchable skill, with the previous states saved for a one-click restore; market: a built-in catalog of curated repos (one-click add) plus custom repo sources, scan-and-install import, per-source installed / updatable / deleted-upstream badges with "check all" and "update all" actions; skills.sh index search (search by skill name; results show the hosting repo and install count, with either Install — pulls that one skill in without upstream tracking — or Add source — registers the repo and scans it); upstream source tracking: skills imported from GitHub repos (market sources or direct URLs) record the repo/commit snapshot, support update checks, selective sync, and follow-up deletion when the upstream removes a skill (moves it into the Trash tab, restorable with its source and role membership intact); personal skills (no source record) are never tracked; invocation counts and last-used times; skill body inspection; discovery diagnostics plus a content audit (hidden characters, dangerous commands, credential paths, size caps — a market import with a blocking finding is refused as a whole); the skill-catalog announcement budget (characters and estimated tokens for the first progressive-disclosure layer); local content-hash comparison (flags skills you edited that a sync would overwrite); read-only import from other agents\' skill folders (Claude Code / Codex / WorkBuddy / Cursor / Gemini CLI and friends; one file symlinked into several agent folders is merged into a single row; user-level into ~/.dsh/skills, project-level — i.e. <projectRoot>/.claude/skills and friends — into that project\'s .dsh/skills); import from a ZIP archive (every directory holding a SKILL.md becomes one skill, each audited, with path traversal / symlinks / encrypted archives / decompression bombs rejected before unpacking); new-skill wizard (writes to ~/.dsh/skills or ~/.agents/skills). Limits: only user-level skills (user-dsh/user-agents roots) are writable; every toggleable skill (user-level, project and external read-only providers alike) is paused through a sidecar policy (off = model invocation switched off while "/name" keeps working, no source file is renamed or edited); bundled/runtime skills are read-only; the routes sit behind dsh\'s own /api trust fence (loopback, the listener\'s bind address, any --trusted-host authority, plus browser-session authentication), so a reverse-proxied deployment is judged exactly like the GUI around it. When the user mentions "skill management / skill list / skill toggle / skill sync / skill market / update skills / new skill", this plugin is what they mean — collaborate accordingly.'
+  '本机已安装 dsh-skill-hub 插件（DSH Web GUI 技能中枢）：设置 →「技能中枢」分区为管理主页（通用 / 工作区 / 市场 / 回收站四个 tab，同一面板也作为 960px 侧栏入口挂在侧边栏「插件」区）；本插件的配置页（启用/公告开关、圆点颜色、GitHub token、统计窗口）在插件管理页——侧边栏「插件」→ 本插件，是本插件自己注册的配置卡片（默认折叠，点标题展开）。能力：完整本地技能目录（项目/自定义/用户/内置全部来源，走官方 ctx.skills 注册表，含第三方 provider）；按来源（上游仓库）、按目录（发现目录，每个根一张卡、可整目录启停）与自定义角色浏览，分组/来源头部的滑动开关可一键启用/禁用整组（跨组冲突时询问）；角色支持「切换」—— 启用成员、停用其余可切换技能（弹窗内可勾选保留，默认全停用），切换前状态留存、可一键还原（角色视图始终展示完整名单，不受来源/状态筛选影响，搜索与调用方式仍生效）；市场：内置市场目录（精选仓库一键添加）加自定义仓库源，扫描后勾选安装，每个市场源行显示已装/可更新/上游已删数量，支持「检查全部」与「全部更新」；skills.sh 索引搜索（按技能名搜，结果显示仓库与安装次数，可选「安装」直装单个技能——不跟踪上游更新，或「加为源」登记仓库后扫描）；来源跟踪：从 GitHub 仓库（市场源或直接地址）导入的技能记录上游 repo/commit 快照，可检查更新、选择同步、上游删除时跟进删除（移入回收站 tab，可恢复，恢复后保留来源与角色归属）；个人技能（无来源记录）不跟踪；调用次数与最近使用时间统计；查看技能正文；发现诊断（异常/提醒分级标记与计数）；内容审计（隐藏字符、危险命令、凭据路径与体积上限；市场导入命中阻断级规则即整包拒绝）；技能目录公告预算（一层渐进加载注入的字符数与 token 估算）；本地内容哈希比对（标出被自己改过、同步会覆盖的技能）；从其他 agent 的技能目录只读导入（Claude Code / Codex / WorkBuddy / Cursor / Gemini CLI 等；同一份文件挂在多个 agent 目录时合并为一条；用户级收进 ~/.dsh/skills，项目级——即 <项目根>/.claude/skills 之类——收进该项目的 .dsh/skills）；从 ZIP 包导入（包内每个含 SKILL.md 的目录算一个技能，逐个过内容审计，路径穿越/符号链接/加密包/解压炸弹在解压前拦截）；新建技能向导（写入 ~/.dsh/skills 或 ~/.agents/skills）。限制：仅用户级技能（user-dsh/user-agents 根目录）可写可删；所有可开关的技能（含用户级、项目级、外部 provider 只读技能）停用都只写 sidecar 策略（关闭模型自动调用，「/技能名」仍可用，源文件一个字节不动）、内置/运行时技能只读展示；路由受 dsh 自身的 /api 信任栅栏保护（回环、监听器绑定地址、--trusted-host 声明的 authority，外加浏览器会话认证），因此反代部署下与 GUI 同一套放行规则。用户提到「技能管理 / 技能列表 / 技能开关 / 技能同步 / 技能市场 / 更新技能 / 新建技能」时即指本插件，请据此协作。',
+  'The dsh-skill-hub plugin is installed (the DSH Web GUI skill hub): Settings → "Skills Hub" is the management page (General / Workspace / Market / Trash tabs; the same panel also mounts as a 960px sidebar entry under the Plugins area of the left rail); the plugin\'s configuration page (enable / announcement toggles, dot colors, GitHub token, stats window) is registered by the plugin itself on its own page in the Plugins manager (sidebar → 插件 → the plugin; collapsed until you expand the title). Capabilities: full local skill catalog (project / custom / user / bundled roots via the official ctx.skills registry, including third-party providers); browsing by source (upstream repo), location (discovery root) and custom roles, each group header carrying a sliding switch to enable/disable the whole group in one click (cross-group conflicts prompt the user); a role can be "switched to" — enable its members, pause every other switchable skill, with the previous states saved for a one-click restore; market: a built-in catalog of curated repos (one-click add) plus custom repo sources, scan-and-install import, per-source installed / updatable / deleted-upstream badges with "check all" and "update all" actions; skills.sh index search (search by skill name; results show the hosting repo and install count, with either Install — pulls that one skill in without upstream tracking — or Add source — registers the repo and scans it); upstream source tracking: skills imported from GitHub repos (market sources or direct URLs) record the repo/commit snapshot, support update checks, selective sync, and follow-up deletion when the upstream removes a skill (moves it into the Trash tab, restorable with its source and role membership intact); personal skills (no source record) are never tracked; invocation counts and last-used times; skill body inspection; discovery diagnostics with broken/warning tags and counts, plus a content audit (hidden characters, dangerous commands, credential paths, size caps — a market import with a blocking finding is refused as a whole); the skill-catalog announcement budget (characters and estimated tokens for the first progressive-disclosure layer); local content-hash comparison (flags skills you edited that a sync would overwrite); read-only import from other agents\' skill folders (Claude Code / Codex / WorkBuddy / Cursor / Gemini CLI and friends; one file symlinked into several agent folders is merged into a single row; user-level into ~/.dsh/skills, project-level — i.e. <projectRoot>/.claude/skills and friends — into that project\'s .dsh/skills); import from a ZIP archive (every directory holding a SKILL.md becomes one skill, each audited, with path traversal / symlinks / encrypted archives / decompression bombs rejected before unpacking); new-skill wizard (writes to ~/.dsh/skills or ~/.agents/skills). Limits: only user-level skills (user-dsh/user-agents roots) are writable; every toggleable skill (user-level, project and external read-only providers alike) is paused through a sidecar policy (off = model invocation switched off while "/name" keeps working, no source file is renamed or edited); bundled/runtime skills are read-only; the routes sit behind dsh\'s own /api trust fence (loopback, the listener\'s bind address, any --trusted-host authority, plus browser-session authentication), so a reverse-proxied deployment is judged exactly like the GUI around it. When the user mentions "skill management / skill list / skill toggle / skill sync / skill market / update skills / new skill", this plugin is what they mean — collaborate accordingly.'
 ].join('\n\n')
 
 /**
@@ -433,7 +419,8 @@ export function apply(ctx: Context, config?: Config): void {
   // Startup: 清理 Issue #3 遗留的 .*.import-* 临时目录（尽早回收，不阻塞）
   void (async () => {
     const home = dshHome()
-    const agentsHome = process.env.DSH_AGENTS_HOME ?? join(homedir(), '.agents')
+    const configuredAgentsHome = process.env.DSH_AGENTS_HOME?.trim()
+    const agentsHome = configuredAgentsHome !== undefined && configuredAgentsHome !== '' ? configuredAgentsHome : join(homedir(), '.agents')
     for (const root of [join(home, 'skills'), join(agentsHome, 'skills')]) {
       try {
         const c = await cleanupLeftoverImportDirs(root)
@@ -468,6 +455,17 @@ export function apply(ctx: Context, config?: Config): void {
       }
     } catch (error) {
       logWarn('[dsh-skill-hub] startup disabled-record prune failed', error)
+    }
+    // 回收站对账：记录还在、目录已不在 → 删记录。不做这一步，「恢复」按钮会
+    // 永远失败（rename ENOENT），而「永久删除」因为 rm --force 反而成功 ——
+    // 同一条记录的两条撤销路径表现相反。
+    try {
+      const prunedTrash = await pruneStaleTrash(store)
+      if (prunedTrash.length > 0) {
+        logInfo(`[dsh-skill-hub] startup pruned ${prunedTrash.length} stale trash record(s): ${prunedTrash.map((entry) => entry.name).join(', ')}`)
+      }
+    } catch (error) {
+      logWarn('[dsh-skill-hub] startup trash-record prune failed', error)
     }
   })()
 

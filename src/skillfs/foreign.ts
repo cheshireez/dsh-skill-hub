@@ -22,7 +22,7 @@ import { basename, dirname, join, relative } from 'node:path'
 import type { ForeignScope } from '../protocol/foreign.ts'
 import { parseFrontmatter } from './frontmatter.ts'
 import { scanRoot } from './scan.ts'
-import { auditSkillBundle, blockingReason, MAX_SKILL_FILES, type AuditBundleFile } from './audit.ts'
+import { asAuditText, auditSkillBundle, blockingReason, MAX_SKILL_FILES, type AuditBundleFile } from './audit.ts'
 
 /** 一个外部 agent 的技能根。`agent` 是展示用的稳定标识。 */
 export interface ForeignRoot {
@@ -260,12 +260,8 @@ async function collectForCopy(skill: ForeignSkill): Promise<WalkState> {
   return state
 }
 
-/** 文本文件的判定与市场导入一致：无 NUL、解码无替换字符。 */
-function asText(buffer: Buffer): string | undefined {
-  if (buffer.includes(0)) return undefined
-  const text = buffer.toString('utf8')
-  return text.includes('\uFFFD') ? undefined : text
-}
+// Text normalization is shared with the market/ZIP entries (asAuditText in
+// ./audit.ts); a local copy here used to let foreign imports bypass the rules.
 
 /**
  * WorkBuddy 市场元数据里带指向**原安装目录**的绝对路径、外部 CDN 链接和针对
@@ -304,8 +300,12 @@ export async function importForeignSkill(skill: ForeignSkill, targetRoot: string
   const payload: Array<{ relative: string; buffer: Buffer }> = []
   for (const file of collected) {
     const buffer = sanitizeForeignMetadata(file.path, await readFile(file.absolute))
-    const text = asText(buffer)
-    audited.push({ path: file.path, size: buffer.length, ...(text !== undefined ? { text } : {}) })
+    const normalized = asAuditText(file.path, buffer)
+    audited.push({
+      path: file.path,
+      size: buffer.length,
+      ...(normalized !== undefined ? { text: normalized.text, ...(normalized.disguised ? { disguised: true } : {}) } : {}),
+    })
     payload.push({ relative: file.path, buffer })
   }
   const blocked = blockingReason(auditSkillBundle(audited))

@@ -21,3 +21,46 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  coverage:
+    name: coverage report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run coverage
+
+  # The failures that were hardest to reproduce were never in typecheck/tests:
+  # a published tarball that only resolved its server-side bare imports on a
+  # developer machine (link: + the host's bareModuleBaseUrl), and optional peers
+  # being auto-installed into a clean profile. Install the exact artifact we
+  # would publish into an empty directory and check the imports resolve there.
+  clean-install:
+    name: clean-profile install smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Pack the artifact that would be published
+        run: |
+          mkdir -p /tmp/dsh-pack
+          npm pack --pack-destination /tmp/dsh-pack
+      - name: Install the tarball into an empty directory (no dev deps, no host profile)
+        run: |
+          mkdir -p /tmp/dsh-clean
+          cd /tmp/dsh-clean
+          npm init -y >/dev/null
+          npm install /tmp/dsh-pack/dsh-skill-hub-*.tgz --omit=dev --no-audit --no-fund
+      - name: Server entry's bare imports must resolve from the clean tree
+        run: |
+          cd /tmp/dsh-clean
+          node --input-type=module -e "await import('@deepseek-ai/schemastery'); await import('@deepseek-ai/dsh-skill'); console.log('clean-profile bare imports resolved')"

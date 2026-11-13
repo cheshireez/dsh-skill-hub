@@ -8,13 +8,27 @@
  * no record, which makes the skill invisible in every view (it is neither
  * enabled nor disabled) and leaves its origin collection rendering as an
  * empty shell. This walk rebuilds the missing records from disk at startup.
+ *
+ * 启动对账的范围与判据（扩范围前先读这段）：
+ * - `disabled` 台账：双向都做 —— 补缺失记录、修路径、删死记录。
+ * - `trash`：只做反向（记录在、条目不在 → 删记录），见 `pruneStaleTrash`。
+ * - `sources`：**不做自动清理**。判断「某个 skills[] 名字是否还有效」需要
+ *   全量 catalog，而启动时工作区可能尚未挂载 —— 按「扫不到就删」会把用户
+ *   的来源归属和 `localHashes` 基线删掉，下次导入变成「本地已改」。这项
+ *   清理已有正确时机：删除技能时走 `removeSkillFromSources`。
+ * - `invocationOverrides`：**不做启动清理**。覆盖的语义是「这个发现文件不要自动
+ *   调用」，文件暂时不存在时它是惰性的；用户恢复同一路径的文件时，那条覆盖
+ *   正是他当初的意图。按「文件不在就删」会让技能在恢复文件后悄悄复活。
+ *   （事件驱动的清理是另一回事：`retireNamePlaceholders` 替换占位时会清掉指向
+ *   该发现文件的覆盖 —— 那时文件确实被移走了，留着会让新落地的同名技能继承
+ *   幽灵停用。两处判据不同，别合并。）
  */
 
 import { readFile, rename, stat } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
-import type { DisabledSkill } from './protocol.ts'
+import type { DisabledSkill, TrashEntry } from './protocol.ts'
 import { disabledOccupancyIn, parseFrontmatter, rootPath, scanDisabledRoot, WRITABLE_ROOTS } from './skillfs.ts'
-import { dshHome } from './store.ts'
+import { dshHome } from './store/paths.ts'
 
 /** Narrow store view used by the reconcile (SkillHubStore satisfies it). */
 export interface DisabledReconcileStore {
@@ -25,6 +39,12 @@ export interface DisabledReconcileStore {
 /** Narrow store view used by the reverse reconcile (adds record removal). */
 export interface DisabledPruneStore extends DisabledReconcileStore {
   removeDisabled(name: string): Promise<void>
+}
+
+/** Narrow store view used by the trash reconcile. */
+export interface TrashReconcileStore {
+  listTrash(): Promise<TrashEntry[]>
+  removeTrash(path: string): Promise<void>
 }
 
 /**
@@ -109,6 +129,41 @@ export async function pruneStaleDisabledSkills(store: DisabledPruneStore, home =
     result.repaired.push(repaired)
   }
   return result
+}
+
+/**
+ * 回收站对账：记录还在、它指向的条目已经不在磁盘上，就把记录清掉。
+ *
+ * 什么时候会出现这种孤儿：用户手动清了 `.trash` 目录、外部同步工具重建了
+ * 技能目录、或从备份恢复 sidecar 时目录没跟着回来。不清的后果是两条撤销
+ * 路径表现不一致 —— `restoreSkill` 走 `rename` 直接 ENOENT 报错，而
+ * `clearTrash` 因为 `rm --force` 反而「成功」，用户点恢复永远失败。
+ *
+ * 判据（宁可不删，不可错删）：
+ * - 只有 `ENOENT` / `ENOTDIR` 算「不存在」。`EACCES` / `EIO` / 挂载点抖动
+ *   一律**保留记录**：磁盘暂时读不到不等于用户删了，按「读不到就删」会把
+ *   整份回收站记录清空，那才是真的数据丢失；
+ * - 只处理 `<某处>/.trash/<name>` 形态的记录，非法路径原样保留（与
+ *   `pruneStaleDisabledSkills` 对异常 root 的处理一致）。
+ *
+ * 只删**记录**，不碰磁盘：目录已经不在，这里没有任何可删的实体。
+ */
+export async function pruneStaleTrash(store: TrashReconcileStore): Promise<TrashEntry[]> {
+  const removed: TrashEntry[] = []
+  for (const entry of await store.listTrash()) {
+    if (basename(dirname(entry.path)) !== '.trash') continue
+    let gone = false
+    try {
+      await stat(entry.path)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      gone = code === 'ENOENT' || code === 'ENOTDIR'
+    }
+    if (!gone) continue
+    await store.removeTrash(entry.path)
+    removed.push(entry)
+  }
+  return removed
 }
 
 /** 一次性迁移所需的 store 视图：策略写入 + 台账读写。 */

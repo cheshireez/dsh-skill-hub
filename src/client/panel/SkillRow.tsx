@@ -3,7 +3,7 @@
  * disable actions. Shared by the flat list and both grouped views.
  */
 
-import { useState, type JSX } from 'react'
+import { memo, useState, type JSX } from 'react'
 import type { CatalogSkill, HubConfig } from '../../protocol.ts'
 import type { SkillStatusFilter } from './hooks/useCatalogFlow.ts'
 import { IconTrashOutline16 } from '../icons.tsx'
@@ -36,7 +36,7 @@ export interface SkillRowProps {
   requestDeleteSkill: (name: string) => void
 }
 
-export function SkillRow(props: SkillRowProps): JSX.Element {
+export function SkillRowImpl(props: SkillRowProps): JSX.Element {
   const { skill, uses, hubConfig, busyNames, editMode, tagBusy, duplicateNames, hideSourceBadge, toggle, openDetail, requestDeleteSkill } = props
   const [menuOpen, setMenuOpen] = useState(false)
   const stat = uses.get(skill.name)
@@ -112,3 +112,17 @@ export function SkillRow(props: SkillRowProps): JSX.Element {
     </div>
   )
 }
+
+/**
+ * 行级 memo —— 面板里唯一会被成百次渲染的组件。
+ *
+ * 5 秒轮询、搜索、筛选、排序都会让父级重跑；没有 memo 时每次都是「全部行 ×
+ * 全量重建」。加上之后，只有 `skill` 引用变化（该行数据真变了）、或空闲态 /
+ * 忙碌态 / 编辑模式变化时才重渲染。
+ *
+ * 生效前提（都在父级保证，改动时别破坏）：
+ * - `toggle` 经 `catalogRef` 读快照，依赖收敛到 `[api, shared]`，引用稳定；
+ * - `duplicateNames` 用 `useMemo` 缓存，不再每次 `new Set()`；
+ * - 其余字段直接来自 state，值不变则引用不变。
+ */
+export const SkillRow = memo(SkillRowImpl)

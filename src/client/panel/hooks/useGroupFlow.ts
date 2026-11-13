@@ -7,7 +7,7 @@
 import { useCallback, useState, type FormEvent } from 'react'
 import type { GroupsResponse, SkillTag } from '../../../protocol.ts'
 import type { SkillHubApi } from '../../api.ts'
-import { errorMessage } from '../../helpers.ts'
+import { errorMessage, tt } from '../../helpers.ts'
 import { conflictsOnClose, type GroupSwitchState } from '../../grouping.ts'
 import { runFlow, type FlowNotices } from './shared.ts'
 import type { ConflictDialogState } from '../dialogs.tsx'
@@ -133,12 +133,12 @@ export function useGroupFlow(
     } catch (error) {
       const msg = errorMessage(error)
       if (msg.includes('404') || msg.toLowerCase().includes('not found')) {
-        // 旧宿主无此路由：本地重排
+        // 旧宿主无此路由：只在内存里重排，不持久化 —— 文案必须如实说明。
         const byId = new Map(groupsState?.tags.map((t) => [t.id, t] as const) ?? [])
         const reordered = orderedIds.map((id) => byId.get(id)).filter((t): t is NonNullable<typeof t> => t !== undefined)
         if (reordered.length === orderedIds.length) {
           applyTags(reordered as typeof groupsState extends { tags: infer T } ? T : never)
-          shared.succeed('已临时调整顺序（本地生效，重启宿主后持久化）')
+          shared.succeed(tt('group.reorderLocalOnly'))
         } else {
           shared.fail(msg)
         }
@@ -160,7 +160,7 @@ export function useGroupFlow(
     } catch (error) {
       const msg = errorMessage(error)
       if (msg.includes('404') || msg.toLowerCase().includes('not found')) {
-        // 旧宿主无此路由：本地重排顶层顺序，提示重启后持久化
+        // 旧宿主无此路由：只在内存里重排，重启后恢复 —— 不谎报已持久化。
         setGroupsState((prev) => {
           if (prev === null) return prev
           // 本地重排 collections 以匹配 topOrderedKeys 中的 col:xxx 顺序
@@ -170,7 +170,7 @@ export function useGroupFlow(
           for (const c of prev.collections) if (!reordered.some((r) => r.name === c.name)) reordered.push(c)
           return { ...prev, collections: reordered, sourceGroupOrder: orderedKeys }
         })
-        shared.succeed('已临时调整顺序（本地生效，重启宿主后持久化）')
+        shared.succeed(tt('group.reorderLocalOnly'))
       } else {
         shared.fail(msg)
       }

@@ -111,8 +111,12 @@ export function useSkillHub(api: SkillHubApi) {
   )
 
   // ------------------------------------------------------------- derived
-  /** skillName → origin repo（无来源记录的技能不在此映射中，筛选中视为 private）。 */
-  const origins = groupFlow.groupsState?.origins ?? {}
+  /**
+   * skillName → origin repo（无来源记录的技能不在此映射中，筛选中视为 private）。
+   * 必须 memo：`groupsState?.origins ?? {}` 的字面量兜底每次渲染都是新引用，
+   * 会让 `sourceOptions` 与各视图的 `useMemo` 全部重算。
+   */
+  const origins = useMemo(() => groupFlow.groupsState?.origins ?? {}, [groupFlow.groupsState])
   /** 来源筛选选项：来源记录中的仓库（排序）+ 末尾的「个人」；没有技能的仓库不列。 */
   const sourceOptions = useMemo(() => {
     const skills = (catalogFlow.catalog?.skills ?? []).filter((skill) => !isProjectSource(skill.source))

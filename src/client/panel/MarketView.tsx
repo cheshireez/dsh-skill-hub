@@ -6,7 +6,7 @@
  * 行渲染在 MarketSourceRow，扫描卡片在 RepoScanCard，数字格式在 market-format。
  */
 
-import { Fragment, useEffect, type JSX } from 'react'
+import { Fragment, useEffect, useMemo, type JSX } from 'react'
 import { tt } from '../helpers.ts'
 import { MARKET_CATALOG } from '../market-catalog.ts'
 import { ConfirmDialog } from './dialogs.tsx'
@@ -32,11 +32,19 @@ export function MarketView(props: { hub: SkillHubState }): JSX.Element {
 
   // 统一列表：内置目录（未添加 → 描述+添加按钮；已添加 → 完整行）在前，
   // 自定义市场源（不在内置目录里）随后。同一个仓库不会出现两次。
+  /**
+   * 「已装 N 个」按 catalog 里的真实技能过滤。
+   *
+   * `sources[].skills` 是导入时写下的名字清单，技能文件被 hub 之外的方式删掉
+   * （git 切分支、手工清理、外部工具）之后名字会留着，直接数它就会显示
+   * 「已装 3 个」而下面只有 1 行。catalog 只覆盖当前已发现的技能，判据正好。
+   */
+  const installedNames = useMemo(() => new Set((hub.catalog?.skills ?? []).map((skill) => skill.name)), [hub.catalog])
   const rows: Array<{ key: string; element: JSX.Element }> = []
   for (const entry of MARKET_CATALOG) {
     const record = marketState.repos.find((item) => item.repo === entry.repo)
     if (record !== undefined) {
-      rows.push({ key: entry.repo, element: <MarketSourceRow hub={hub} record={record} /> })
+      rows.push({ key: entry.repo, element: <MarketSourceRow hub={hub} record={record} installedNames={installedNames} /> })
     } else {
       const busy = scanningRepo !== null || tagBusy
       rows.push({
@@ -57,7 +65,7 @@ export function MarketView(props: { hub: SkillHubState }): JSX.Element {
   }
   for (const record of marketState.repos) {
     if (MARKET_CATALOG.some((entry) => entry.repo === record.repo)) continue
-    rows.push({ key: record.repo, element: <MarketSourceRow hub={hub} record={record} /> })
+    rows.push({ key: record.repo, element: <MarketSourceRow hub={hub} record={record} installedNames={installedNames} /> })
   }
   const unaddedCatalog = MARKET_CATALOG.filter((entry) => !marketState.repos.some((record) => record.repo === entry.repo))
 

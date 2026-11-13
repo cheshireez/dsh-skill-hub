@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { NO_COMPRESSION, apiHeaders, collectRepoSkillFiles, diffRemoteSkills, discoverRepoEntries, downloadGitHubFile, downloadRepoSkill, fetchJson, getLatestReleaseTag, getRepoStats, listRepoBranches, normalizeRepoInput, originForRoot, rateLimitResetAt, relativeToSkillDir, repoSkillEntry, repoSlug, skillDirOf, skillFileAt, skillManifest } from './repo.ts'
 import type { RepoTreeItem } from './repo.ts'
 import type { RepoSkillEntry } from './protocol.ts'
+import { MAX_RESPONSE_BYTES } from './repo/github-client.ts'
 
 function blob(path: string, size = 1): RepoTreeItem {
   return { path, type: 'blob', size }
@@ -554,20 +555,30 @@ describe('github 瞬时失败重试', () => {
     let calls = 0
     const stub = (async () => {
       calls += 1
-      return {
-        ok: true,
-        status: 200,
-        headers: new Headers(),
-        json: async () => {
-          if (calls === 1) throw new TypeError('terminated')
-          return { tag_name: 'v1.3.2' }
-        },
-      } as unknown as Response
+      if (calls === 1) {
+        // A proxy can reset the connection after the headers arrived while the
+        // body is still streaming. The bounded reader sees that as a stream
+        // error and the whole request is retried.
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) { controller.enqueue(new TextEncoder().encode('{"tag_name":')) },
+          pull() { throw new TypeError('terminated') },
+        })
+        return new Response(body, { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ tag_name: 'v1.3.2' }), { status: 200, headers: { 'content-type': 'application/json' } })
     }) as unknown as typeof fetch
     await expect(fetchJson('https://api.github.com/repos/mattpocock/skills/releases/latest', stub, 'github release lookup failed')).resolves.toMatchObject({
       json: { tag_name: 'v1.3.2' },
     })
     expect(calls).toBe(2)
+  })
+
+  it('rejects a response whose declared size exceeds the cap', async () => {
+    const stub = (async () => new Response('x', {
+      status: 200,
+      headers: { 'content-length': String(MAX_RESPONSE_BYTES + 1) },
+    })) as unknown as typeof fetch
+    await expect(fetchJson('https://api.github.com/repos/x/y', stub, 'ctx')).rejects.toThrow(/exceeds the/)
   })
 
   it('DNS 永久错误不重试', async () => {

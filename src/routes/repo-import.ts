@@ -22,6 +22,7 @@ import {
   isAbortError,
   listRepoBranches,
   loadRepoTree,
+  loadRepoTreeAt,
   normalizeRepoInput,
   repoSlug,
   skillManifest,
@@ -40,7 +41,7 @@ import {
   type RouteSpec,
   type SkillHubRouteDeps,
 } from './helpers.ts'
-import { gcImportJobs, importJobs, retireNamePlaceholders, type ImportJob } from './route-state.ts'
+import { gcImportJobs, importJobs, retireNamePlaceholders, settleJob, type ImportJob } from './route-state.ts'
 
 /**
  * 导入让位（issue #16）：磁盘上已有同名占位但**没有启用的技能**时，把占位移入
@@ -120,11 +121,18 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         const repo = repoSlug(parsed)
         const requestedRef = readString(body, 'ref')
         const ref = requestedRef !== '' ? requestedRef : parsed.ref
-        const { ref: resolvedRef, tree } = await loadRepoTree(repo, ref)
+        // Pin the commit FIRST, then resolve the tree at that immutable SHA and
+        // download by the same SHA. The old flow pulled the tree and the bytes
+        // from a mutable branch while recording a commit looked up in a second,
+        // separate request — so the recorded pin and the landed bytes could be
+        // different snapshots (the same class of bug as the 2026 plugin-pin
+        // bypasses: a verified SHA written but never bound to the content).
+        const latest = await getLatestCommit(repo, ref)
+        const commitSha = latest.commitSha
+        const tree = await loadRepoTreeAt(repo, latest.treeSha)
         // 导入去重同 discover：已禁用不算「已存在」（issue #16）。
         const existing = await knownSkillNames(deps, { includeDisabled: false })
         const entries = discoverRepoEntries(tree, repo, existing)
-        // truncated tree is still usable for the selected paths the user already picked from the prior discover response
         const byPath = new Map(entries.map((entry) => [entry.path, entry]))
         const selected = paths.map((path) => byPath.get(path)).filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
         if (selected.length === 0) { writeError(res, 400, 'no matching skills for selected paths'); return }
@@ -132,15 +140,8 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         const totalBytes = selected.reduce((sum, entry) => sum + entry.totalBytes, 0)
         if (totalBytes > 200 * 1024 * 1024) { writeError(res, 400, 'selected skills exceed the 200MB import limit'); return }
 
-        let commitSha = ''
-        try {
-          const latest = await getLatestCommit(repo, resolvedRef)
-          commitSha = latest.commitSha
-        } catch {
-          // empty snapshot ok
-        }
-
-        const jobId = 'imp_' + randomUUID().slice(0, 8)
+        // Full UUID: a 32-bit suffix was enumerable through the GET progress route.
+        const jobId = 'imp_' + randomUUID()
         const controller = new AbortController()
         const now = Date.now()
         const job: ImportJob = {
@@ -205,11 +206,11 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
             if (controller.signal.aborted) break
             const files = collectRepoSkillFiles(tree, entry.dir)
             try {
-              const result = await downloadRepoSkill(repo, resolvedRef, entry, files, targetRoot, fetch, controller.signal, (bytes, file) => {
+              const result = await downloadRepoSkill(repo, commitSha, entry, files, targetRoot, fetch, controller.signal, (bytes, file) => {
                 job.downloadedBytes += bytes
                 job.currentFile = skillPathIn(entry.dir, file)
               })
-              await deps.store.addSourceSkill(repo, entry.root, commitSha, resolvedRef, entry.name)
+              await deps.store.addSourceSkill(repo, entry.root, commitSha, ref, entry.name)
               await deps.store.mergeSourceManifest(repo, skillManifest(tree, entry.dir), entry.dir)
               // 采集刚落盘内容的哈希：这是之后区分「上游变了」与「本地改过」的唯一依据。
               const hash = await hashSkillAt(result.skillPath)
@@ -227,20 +228,19 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
               job.done += 1
             }
           }
-          if (controller.signal.aborted) {
-            job.status = 'cancelled'
-            job.current = undefined
-            job.currentFile = undefined
-          } else {
-            job.status = 'done'
-            job.current = undefined
-            job.currentFile = undefined
+          // settleJob is the only writer of a terminal status: a cancel that
+          // lands between the check and the write can no longer be overwritten.
+          if (controller.signal.aborted) settleJob(job, 'cancelled')
+          else settleJob(job, 'done')
+          job.current = undefined
+          job.currentFile = undefined
+          if (job.status === 'done') {
             // 确保字节进度最终对齐（避免浮点/并发尾差）
             job.downloadedBytes = job.totalBytes
           }
           if (needInvalidate) deps.invalidate?.()
         })().catch((error) => {
-          job.status = 'error'
+          settleJob(job, 'error')
           job.error = errorText(error)
           job.current = undefined
           job.currentFile = undefined
@@ -256,6 +256,9 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       handler: async ({ res, url }) => {
         const jobId = queryParam(url, 'jobId') ?? ''
         if (jobId === '') { writeError(res, 400, 'jobId is required'); return }
+        // GC used to run only when a new job was created; without a later
+        // import, finished jobs (and their AbortControllers) stayed in memory.
+        gcImportJobs()
         const job = importJobs.get(jobId)
         if (job === undefined) { writeError(res, 404, 'import job not found: ' + jobId); return }
         const elapsedSec = Math.max(0.5, (Date.now() - job.startTime) / 1000)
@@ -289,11 +292,14 @@ export function repoImportRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
         if (jobId === '') { writeError(res, 400, 'jobId is required'); return }
         const job = importJobs.get(jobId)
         if (job === undefined) { writeError(res, 404, 'import job not found: ' + jobId); return }
+        gcImportJobs()
         if (job.status === 'running') {
           job.controller.abort()
-          job.status = 'cancelled'
+          settleJob(job, 'cancelled')
         }
-        writeJson(res, 200, { ok: true, jobId: job.jobId, status: job.status as 'cancelled' | 'done' } satisfies RepoImportCancelResponse)
+        // No `as` cast: a job can already be done / failed / hung when cancel
+        // arrives, and the protocol now states all four statuses.
+        writeJson(res, 200, { ok: true, jobId: job.jobId, status: job.status } satisfies RepoImportCancelResponse)
       },
     },
   ]

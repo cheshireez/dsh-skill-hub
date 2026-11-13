@@ -128,7 +128,6 @@ function readCentralDirectory(buffer: Buffer, eocd: number): CentralEntry[] {
     if (cursor + 46 > buffer.length) throw new ZipError('corrupt zip: truncated central directory')
     if (buffer.readUInt32LE(cursor) !== CENTRAL_SIG) throw new ZipError('corrupt zip: bad central directory signature')
 
-    const versionMadeBy = buffer.readUInt16LE(cursor + 4)
     const flags = buffer.readUInt16LE(cursor + 8)
     const method = buffer.readUInt16LE(cursor + 10)
     const compressedSize = buffer.readUInt32LE(cursor + 20)
@@ -143,8 +142,10 @@ function readCentralDirectory(buffer: Buffer, eocd: number): CentralEntry[] {
     if (nameEnd > buffer.length) throw new ZipError('corrupt zip: truncated entry name')
     const rawName = buffer.toString('utf8', cursor + 46, nameEnd)
 
-    // 高字节为 3 表示由 Unix 打包，external attributes 高 16 位才是 st_mode。
-    const unixMode = (versionMadeBy >> 8) === 3 ? (externalAttributes >>> 16) & 0xffff : 0
+    // Do not gate on versionMadeBy === 3 (Unix): a crafted archive can claim
+    // another packer and still carry symlink mode bits. Readers never chmod,
+    // but the symlink check must not be bypassed by lying about the packer.
+    const unixMode = (externalAttributes >>> 16) & 0xffff
     const isDirectory = rawName.endsWith('/') || (unixMode & S_IFMT) === S_IFDIR
 
     entries.push({
@@ -179,7 +180,14 @@ function readEntryData(buffer: Buffer, entry: CentralEntry, maxEntryBytes: numbe
   }
 
   const compressed = buffer.subarray(dataStart, dataEnd)
-  if (entry.method === METHOD_STORE) return Buffer.from(compressed)
+  if (entry.method === METHOD_STORE) {
+    // Both size fields are declared values and can lie; the actual bytes are
+    // the only hard limit. Store entries have no inflater to enforce it.
+    if (compressed.length > maxEntryBytes) {
+      throw new ZipError(`${entry.path} is ${compressed.length} bytes, over the per-file limit`)
+    }
+    return Buffer.from(compressed)
+  }
   if (entry.method === METHOD_DEFLATE) {
     try {
       // maxOutputLength 是最后一道闸：声明尺寸可以撒谎，解压器不会。

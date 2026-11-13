@@ -69,6 +69,12 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
     runConfirmed, resolveConflict, confirmBranchChoice, confirmMarketSync, create, saveTag, deleteTag, enableDisabled, reloadCatalog,
   } = hub
   const { shortenedCount, fixingPaths, clearListFilters } = hub
+  /**
+   * 诊断分级由服务端单点判定（error = provider 跳过、技能不可用；warn = 能加载
+   * 但有问题）。这里只计数，别在 UI 里按 reason 文案反推级别。
+   */
+  const diagErrorCount = catalog?.diagnostics.filter((entry) => entry.level === 'error').length ?? 0
+  const diagWarnCount = (catalog?.diagnostics.length ?? 0) - diagErrorCount
 
   /**
    * ZIP 导入：选完文件立刻上传，不做二次确认 —— 服务端逐条回报
@@ -468,11 +474,18 @@ export function SkillHubPanel(props: SkillHubPanelProps): React.JSX.Element {
 
           {catalog.diagnostics.length > 0 ? (
             <section className={css.section}>
-              <div className={css.sectionTitle}>{tt('panel.diagnostics')}</div>
+              <div className={css.sectionTitle + ' ' + css.diagSectionTitle}>
+                <span>{tt('panel.diagnostics', { count: catalog.diagnostics.length })}</span>
+                <span className={css.diagSummary}>{tt('diag.summary', { error: diagErrorCount, warn: diagWarnCount })}</span>
+              </div>
               {catalog.diagnostics.map((entry, index) => (
-                <div key={entry.path + '|' + String(index)} className={css.diagRow + (entry.severity === 'block' ? ' ' + css.diagRowBlock : '') + ' ' + css.diagRowFlex}>
+                <div key={entry.path + '|' + String(index)} className={css.diagRow + (entry.level === 'error' ? ' ' + css.diagRowBlock : '') + ' ' + css.diagRowFlex}>
                   <div className={css.diagMain}>
                     <div className={css.diagPath}>
+                      <span
+                        className={css.diagBadge + ' ' + (entry.level === 'error' ? css.diagBadgeError : css.diagBadgeWarn)}
+                        title={tt(entry.level === 'error' ? 'diag.levelErrorHint' : 'diag.levelWarnHint')}
+                      >{tt(entry.level === 'error' ? 'diag.levelError' : 'diag.levelWarn')}</span>
                       {entry.kind === 'security' ? <span className={css.auditBadge}>{tt('panel.auditBadge')}</span> : null}
                       {entry.path}
                     </div>

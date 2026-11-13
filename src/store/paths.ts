@@ -39,7 +39,10 @@ export interface StoreFile {
 
 /** Resolve the DSH home directory (the filesystem provider's user-dsh root base). */
 export function dshHome(): string {
-  return process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  // A blank override must behave like an unset one: `??` alone would resolve
+  // the home to a relative path and write the sidecar into the current cwd.
+  const configured = process.env.DSH_HOME?.trim()
+  return configured !== undefined && configured !== '' ? configured : join(homedir(), '.dsh')
 }
 
 /** Resolve the sidecar state path (injectable in tests). */

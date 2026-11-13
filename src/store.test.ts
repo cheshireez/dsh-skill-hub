@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -42,12 +42,23 @@ describe('SkillHubStore', () => {
     expect(await new SkillHubStore(file).listDisabled()).toEqual([])
   })
 
-  it('survives a corrupt state file', async () => {
+  it('preserves a corrupt state file instead of overwriting it', async () => {
     await writeFile(file, 'not json at all', 'utf8')
     expect(await store.listDisabled()).toEqual([])
-    await store.addDisabled({ name: 'x', description: '', path: '/tmp/x.md.disabled', root: 'user-agents', disabledAt: 2 })
-    const raw = JSON.parse(await readFile(file, 'utf8')) as { disabled: unknown[] }
-    expect(raw.disabled).toHaveLength(1)
+    // A write must be refused, otherwise the original bytes are lost forever.
+    await expect(store.addDisabled({ name: 'x', description: '', path: '/tmp/x.md.disabled', root: 'user-agents', disabledAt: 2 }))
+      .rejects.toThrow(/refusing to overwrite/)
+    expect(await readFile(file, 'utf8')).toBe('not json at all')
+  })
+
+  it('serializes concurrent cold reads behind one load', async () => {
+    // The old implementation set `loaded = true` before awaiting readFile, so
+    // the second caller could observe an unfilled store and persist over it.
+    const [a, b] = await Promise.all([store.listTags(), store.listTags()])
+    expect(a).toHaveLength(1)
+    expect(b).toHaveLength(1)
+    expect(a[0].id).toBe(b[0].id)
+    expect(await new SkillHubStore(file).listTags()).toHaveLength(1)
   })
 
   // ------------------------------------------------------- tag 分组
@@ -347,10 +358,40 @@ describe('SkillHubStore', () => {
     expect(raw.marketSources).toEqual([{ repo: 'new/repo' }])
   })
 
-  it('rejects a newer schema by starting empty', async () => {
-    await writeFile(file, JSON.stringify({ version: 99, disabled: [{ name: 'a', path: '/tmp/a.md.disabled', root: 'user-dsh', disabledAt: 1 }] }), 'utf8')
+  it('preserves a newer schema instead of overwriting it', async () => {
+    const newer = JSON.stringify({ version: 99, disabled: [{ name: 'a', path: '/tmp/a.md.disabled', root: 'user-dsh', disabledAt: 1 }] })
+    await writeFile(file, newer, 'utf8')
     const fresh = new SkillHubStore(file)
     expect(await fresh.listDisabled()).toEqual([])
+    await expect(fresh.addDisabled({ name: 'b', description: '', path: '/tmp/b.md.disabled', root: 'user-dsh', disabledAt: 2 }))
+      .rejects.toThrow(/newer schema/)
+    // Downgrading the plugin must not irreversibly erase the newer state.
+    expect(await readFile(file, 'utf8')).toBe(newer)
+  })
+
+  it('hydrates every config field instead of dropping the stats/token keys', async () => {
+    await writeFile(file, JSON.stringify({
+      version: 4,
+      config: {
+        enabled: false,
+        announceToAgent: false,
+        dotModelColor: '#112233',
+        dotUserColor: '#445566',
+        showUseCount: false,
+        showUseTime: false,
+        showGroupSummary: false,
+        statsWindowDays: 30,
+        statsScanMinutes: 15,
+        githubToken: 'token-12345678',
+      },
+    }), 'utf8')
+    expect(await store.getConfig()).toMatchObject({
+      enabled: false,
+      dotModelColor: '#112233',
+      statsWindowDays: 30,
+      statsScanMinutes: 15,
+      githubToken: 'token-12345678',
+    })
   })
 
   it('keeps an empty root through a reload (repo-root skill), still coercing a corrupt one', async () => {
@@ -460,6 +501,54 @@ describe('SkillHubStore', () => {
     }), 'utf8')
     const fresh = new SkillHubStore(file)
     expect(await fresh.getMarketStatsState()).toBeUndefined()
+  })
+
+  // ------------------------------------------------- 拖拽排序（order）
+  // 这两个方法此前被 store.ts 的单文件覆盖率平均值掩盖，从未被直接测过：
+  // 它们写的是纯顺序数组，改错不会让任何功能报错，只会让用户拖完重开又乱。
+  it('persists collection order across reloads, dropping blanks and duplicates', async () => {
+    expect(await store.getCollectionOrder()).toEqual([])
+    const saved = await store.reorderCollections(['col:b', '', 'col:a', 'col:b'])
+    expect(saved).toEqual(['col:b', 'col:a'])
+    expect(await new SkillHubStore(file).getCollectionOrder()).toEqual(['col:b', 'col:a'])
+  })
+
+  it('persists source group order across reloads, dropping blanks and duplicates', async () => {
+    expect(await store.getSourceGroupOrder()).toEqual([])
+    const saved = await store.reorderSourceGroups(['project', 'col:x', 'project'])
+    expect(saved).toEqual(['project', 'col:x'])
+    expect(await new SkillHubStore(file).getSourceGroupOrder()).toEqual(['project', 'col:x'])
+  })
+
+  it('reorders tags and rejects a mismatched, duplicated, or unknown id list', async () => {
+    const first = await store.saveTag({ name: 'first' })
+    const second = await store.saveTag({ name: 'second' })
+    const def = (await store.getDefaultTag())!
+
+    // 三个 tag（含默认）必须全部出现，且顺序就是传入顺序。
+    const desired = [second.id, def.id, first.id]
+    const reordered = await store.reorderTags(desired)
+    expect(reordered.map((t) => t.id)).toEqual(desired)
+    expect((await new SkillHubStore(file).listTags()).map((t) => t.id)).toEqual(desired)
+
+    // 长度不符（漏一个）
+    await expect(store.reorderTags([def.id])).rejects.toThrow(/length mismatch/)
+    // 重复 id（长度对但内容重）
+    await expect(store.reorderTags([def.id, def.id, def.id])).rejects.toThrow(/duplicate tag id/)
+    // 未知 id（长度对但有个不存在的）
+    await expect(store.reorderTags([def.id, first.id, 'missing-tag'])).rejects.toThrow(/tag not found/)
+    // 失败不得改坏已保存顺序。
+    expect((await store.listTags()).map((t) => t.id)).toEqual(desired)
+  })
+
+  // ------------------------------------------- 不可读 sidecar（非 ENOENT）
+  it('refuses to write when the sidecar path is not a readable file (e.g. a directory)', async () => {
+    const blockedFile = join(dir, 'sidecar-is-a-dir.json')
+    await mkdir(blockedFile, { recursive: true })
+    const blocked = new SkillHubStore(blockedFile)
+    expect(await blocked.listDisabled()).toEqual([])
+    await expect(blocked.addDisabled({ name: 'x', description: '', path: '/tmp/x.md.disabled', root: 'user-dsh', disabledAt: 1 }))
+      .rejects.toThrow(/unreadable/)
   })
 
 })

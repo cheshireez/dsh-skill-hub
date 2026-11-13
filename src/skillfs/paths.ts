@@ -1,6 +1,8 @@
 import { homedir } from 'node:os'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { dshHome } from '../store.ts'
+// Direct submodule import: pulling the store barrel in just for dshHome drags
+// SkillHubStore, migrate and fs writes into the filesystem layer.
+import { dshHome } from '../store/paths.ts'
 import type { WritableRoot } from '../protocol.ts'
 
 /** Root ids this module may write to. */
@@ -8,7 +10,9 @@ export const WRITABLE_ROOTS: readonly WritableRoot[] = ['user-dsh', 'user-agents
 
 /** Resolve the absolute directory of one writable root. */
 export function rootPath(root: WritableRoot, home = dshHome()): string {
-  const agentsHome = process.env.DSH_AGENTS_HOME ?? join(homedir(), '.agents')
+  // A blank override must behave like an unset one (see dshHome in store/paths.ts).
+  const configured = process.env.DSH_AGENTS_HOME?.trim()
+  const agentsHome = configured !== undefined && configured !== '' ? configured : join(homedir(), '.agents')
   switch (root) {
     case 'user-dsh': return join(home, 'skills')
     case 'user-agents': return join(agentsHome, 'skills')

@@ -4,7 +4,7 @@
  */
 
 import { rm, rename } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { errorText } from '../error-text.ts'
 import { moveIntoTrash, occupancyOf, trashSourceOf } from '../skillfs.ts'
 import type { SkillHubRouteDeps } from './helpers.ts'
@@ -61,14 +61,41 @@ export interface ImportJob {
   error?: string
   controller: AbortController
   createdAt: number
+  /** When it reached a terminal status; drives GC after the TTL. */
+  settledAt?: number
 }
 export const importJobs = new Map<string, ImportJob>()
 export const IMPORT_JOB_TTL_MS = 5 * 60_000
+/** A job still `running` past this bound is considered hung and aborted. */
+export const IMPORT_JOB_RUNNING_TIMEOUT_MS = 10 * 60_000
 export const IMPORT_JOB_MAX = 100
-export function gcImportJobs(): void {
-  const now = Date.now()
+
+/**
+ * Single write point for a job's terminal status. Cancel and the background
+ * loop used to both assign `job.status` directly, so an abort landing between
+ * the loop's final check and its `done` write produced "shown as cancelled,
+ * all skills installed". Once settled, the status is immutable.
+ */
+export function settleJob(job: ImportJob, next: ImportJob['status']): ImportJob['status'] {
+  if (job.status !== 'running') return job.status
+  job.status = next
+  job.settledAt = Date.now()
+  return job.status
+}
+
+export function gcImportJobs(now = Date.now()): void {
   for (const [id, job] of importJobs) {
-    if (job.status !== 'running' && now - job.createdAt > IMPORT_JOB_TTL_MS) importJobs.delete(id)
+    if (job.status === 'running' && now - job.createdAt > IMPORT_JOB_RUNNING_TIMEOUT_MS) {
+      // A hung outbound request used to leave a `running` job forever: the old
+      // gc skipped running jobs and the background task had no watchdog.
+      job.controller.abort()
+      settleJob(job, 'error')
+      job.error = 'import job exceeded its time limit'
+      job.current = undefined
+      job.currentFile = undefined
+    }
+    const settledAt = job.settledAt ?? job.createdAt
+    if (job.status !== 'running' && now - settledAt > IMPORT_JOB_TTL_MS) importJobs.delete(id)
   }
   if (importJobs.size > IMPORT_JOB_MAX) {
     // 只淘汰已结束的任务：删掉运行中的任务会让 /progress、/cancel 变成 404，
@@ -95,10 +122,18 @@ export async function replaceInPlace(target: string, download: () => Promise<unk
   try {
     await download()
   } catch (error) {
-    await rename(backup, target).catch((rollbackError) => {
-      // 回滚失败会让技能只剩点前缀的备份：必须留痕。
-      console.warn('[dsh-skill-hub] restoring ' + target + ' from ' + backup + ' failed:', errorText(rollbackError))
-    })
+    // A failed download may already have written a partial file/dir at target,
+    // so a plain rename(backup, target) hits ENOTEMPTY and the skill is left
+    // as only a dot-prefixed backup. Clear the partial write and retry once.
+    try {
+      await rename(backup, target)
+    } catch {
+      await rm(target, { recursive: true, force: true }).catch(() => undefined)
+      await rename(backup, target).catch((rollbackError) => {
+        // 回滚失败会让技能只剩点前缀的备份：必须留痕。
+        console.warn('[dsh-skill-hub] restoring ' + target + ' from ' + backup + ' failed:', errorText(rollbackError))
+      })
+    }
     throw error
   }
   await rm(backup, { recursive: true, force: true })
@@ -126,8 +161,30 @@ export async function retireNamePlaceholders(deps: SkillHubRouteDeps, base: stri
   const trashed: string[] = []
   for (const source of sources) {
     const moved = await moveIntoTrash(source)
-    await deps.store.addTrash({ name, path: moved.path, movedAt: Date.now(), sourcePath: moved.source })
+    try {
+      await deps.store.addTrash({ name, path: moved.path, movedAt: Date.now(), sourcePath: moved.source })
+    } catch (error) {
+      // The bytes were already moved; a failed sidecar write would otherwise
+      // leave an orphan in the trash that cannot be restored. Put them back.
+      await rename(moved.path, moved.source).catch(() => undefined)
+      throw error
+    }
     trashed.push(moved.path)
+  }
+  // 占位被搬走 = 那个发现文件不存在了，指向它的调用覆盖已经没有意义。留着
+  // 会让随后落地的同名技能继承一条「幽灵停用」：台账已经删掉，UI 却显示停用。
+  // sync 路径在让位之后会按记录**无条件重建**策略（sources.ts 的
+  // addInvocationOverride），所以这里清掉不会让「同步一个已停用的技能」复活。
+  //
+  // 三种路径都要清：台账里记的（旧数据是 `.disabled` 形态）、以及两份启用态
+  // 发现文件。只清台账那一条的话，迁移写下的启用态覆盖会留下来继续拦新技能。
+  const retired = await deps.store.getDisabled(name)
+  for (const path of [
+    ...(retired !== undefined ? [resolve(retired.path)] : []),
+    resolve(join(base, name, 'SKILL.md')),
+    resolve(join(base, name + '.md')),
+  ]) {
+    await deps.store.removeInvocationOverride(path)
   }
   await deps.store.removeDisabled(name)
   return trashed

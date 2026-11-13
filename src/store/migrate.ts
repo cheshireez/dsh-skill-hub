@@ -1,5 +1,6 @@
 import type { DisabledSkill, HubConfig, MarketSourceRecord, MarketStatsSnapshot, SkillStatsCheckpoint, SkillTag, SourceRecord, TrashEntry } from '../protocol.ts'
 import { isValidRepoRoot } from '../protocol/repo.ts'
+import { CONFIG_FIELDS, CONFIG_FIELD_TYPES } from '../protocol/config.ts'
 import { STORE_VERSION } from './paths.ts'
 
 /** Normalized raw sidecar document after schema migration (fields still unvalidated). */
@@ -26,7 +27,8 @@ export interface MigratedStore {
  * v2 to v3: market sources become records ({ repo, ref?, commitSha? })
  * instead of bare repo slugs, so a source can pin a release/branch version.
  * Returns null when the file claims a newer schema than this plugin
- * understands, so the caller starts empty instead of risking data loss.
+ * understands. The caller must then refuse every write (and back the file up):
+ * starting empty and persisting would irreversibly overwrite the newer state.
  */
 export function migrateStore(parsed: unknown): MigratedStore | null {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
@@ -109,6 +111,16 @@ function cleanStringList(value: unknown): string[] {
 /**
  * 把迁移后的原始文档校验为内存状态：坏条目丢弃、坏桶降级为空，
  * 绝不因一条脏数据丢掉整个 sidecar（与原 ensureLoaded 内联逻辑一致）。
+ *
+ * 为什么不用 schemastery 换掉这些 typeof —— 已经实测过，结论是不换：
+ * - `Schema.object` 遇到缺字段/类型不符会**抛错**，要复现「只丢这一条」就得
+ *   每条包一层 try/catch，条目多一层嵌套；
+ * - 更致命的是 `Schema.dict(Schema.number())`：manifest 里只要有一个非数字
+ *   值，**整条 source 记录**校验失败。现行为是保留 source、只丢那个坏 path。
+ *   容忍度一旦收紧，用户的历史来源/哈希基线会在下次启动时整条消失；
+ * - 剩下的 typeof 判断是**逐值降级**语义，正是 schema 库不擅长表达的部分。
+ * 容忍度由 `migrate.test.ts` 的 28 个错误注入用例钉住 —— 任何替换实现都要
+ * 先让那份测试全绿。
  */
 export function hydrateMigratedState(migrated: MigratedStore): HydratedState {
   const entries = new Map<string, DisabledSkill>()
@@ -121,15 +133,19 @@ export function hydrateMigratedState(migrated: MigratedStore): HydratedState {
   }
 
   const config: Partial<HubConfig> = {}
-  const saved = migrated.config as { enabled?: unknown; announceToAgent?: unknown; dotModelColor?: unknown; dotUserColor?: unknown; showUseCount?: unknown; showUseTime?: unknown; showGroupSummary?: unknown } | undefined
+  const saved = migrated.config as Record<string, unknown> | undefined
   if (typeof saved === 'object' && saved !== null) {
-    if (typeof saved.enabled === 'boolean') config.enabled = saved.enabled
-    if (typeof saved.announceToAgent === 'boolean') config.announceToAgent = saved.announceToAgent
-    if (typeof saved.dotModelColor === 'string' && saved.dotModelColor !== '') config.dotModelColor = saved.dotModelColor
-    if (typeof saved.dotUserColor === 'string' && saved.dotUserColor !== '') config.dotUserColor = saved.dotUserColor
-    if (typeof saved.showUseCount === 'boolean') config.showUseCount = saved.showUseCount
-    if (typeof saved.showUseTime === 'boolean') config.showUseTime = saved.showUseTime
-    if (typeof saved.showGroupSummary === 'boolean') config.showGroupSummary = saved.showGroupSummary
+    // Walk the shared field list instead of a hand-written subset: adding a
+    // config field must never again mean a value is silently dropped during
+    // hydration (statsWindowDays / statsScanMinutes / githubToken were lost).
+    for (const field of CONFIG_FIELDS) {
+      const value = saved[field]
+      const expected = CONFIG_FIELD_TYPES[field]
+      if (typeof value !== expected) continue
+      if (expected === 'string' && (value as string) === '') continue
+      if (expected === 'number' && !Number.isFinite(value as number)) continue
+      ;(config as unknown as Record<string, unknown>)[field] = value
+    }
   }
 
   const tagsById = new Map<string, SkillTag>()

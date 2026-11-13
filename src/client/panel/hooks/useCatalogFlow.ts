@@ -4,7 +4,7 @@
  * 不直接碰其他域的 state。
  */
 
-import { useCallback, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import type {
   CatalogResponse,
   CatalogSkill,
@@ -30,11 +30,24 @@ export function useCatalogFlow(
 ) {
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  /**
+   * `loading` 只从 true 变一次 false。5 秒轮询每次都 dispatch 相同值看起来
+   * 无害（React 有 eager bailout），但在微任务里并不总能跳过 —— 每次轮询
+   * 多提交一次，就会让整棵视图树重渲染，而这个 hook 存在的意义正是不重渲染。
+   */
+  const loadingRef = useRef(true)
   const [detail, setDetail] = useState<SkillDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [busyNames, setBusyNames] = useState<ReadonlySet<string>>(new Set())
   /** 同步门闩：busyNames 是异步 state，挡不住同一帧内的连点。 */
   const pendingToggles = useRef<Set<string>>(new Set())
+  /** Monotonic request id: a slow older poll must never overwrite a newer one. */
+  const requestSeq = useRef(0)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const [search, setSearch] = useState('')
   /** 工作区（项目）路径；空 = 只看用户级技能。 */
   const [workspace, setWorkspace] = useState('')
@@ -52,13 +65,48 @@ export function useCatalogFlow(
   const [sortKey, setSortKey] = useState<SortKey>('name')
 
   const autoCollapsedPersonal = useRef(false)
+  /**
+   * 上一次真正提交给 React 的 catalog 序列化结果。
+   *
+   * 5 秒轮询的绝大多数响应与上次逐字节相同；无条件 `setCatalog` 会让整条
+   * 派生链（搜索 / 状态过滤 / 排序 / 分组）和每一行都重渲染，即使一个技能
+   * 都没变。序列化比较约 0.3ms，比重渲染上百行便宜一到两个数量级。
+   *
+   * 用 JSON 而不是手写字段比较：以后给 `CatalogResponse` 加字段时不会静默
+   * 漏比较 —— 漏了的后果是界面停在旧值，而且只在那个字段变化时才暴露。
+   */
+  const lastCatalogJson = useRef<string | null>(null)
+  /**
+   * 最近一次渲染的 catalog，供事件回调读取。
+   *
+   * `toggle` 需要失败回滚快照。直接把它写进依赖会让回调随每次轮询换引用，
+   * 于是 `SkillRow` 的 memo 每次都失效 —— 优化等于没做。用 ref 读，依赖
+   * 收敛到 `[api, shared]`，引用终身稳定（effect 在提交后同步，事件回调
+   * 永远晚于它）。
+   */
+  const catalogRef = useRef<CatalogResponse | null>(catalog)
+  useEffect(() => { catalogRef.current = catalog }, [catalog])
+
+  /** 提交服务端真值并同步去重基线（乐观更新与回滚不走这里，见下）。 */
+  const commitCatalog = useCallback((next: CatalogResponse): void => {
+    lastCatalogJson.current = JSON.stringify(next)
+    setCatalog(next)
+  }, [])
 
   const load = useCallback(async (): Promise<void> => {
     // 有开关写在途时别用旧快照盖掉乐观 UI（5 秒轮询正好会撞上）。
     if (pendingToggles.current.size > 0) return
+    const seq = ++requestSeq.current
     try {
       const next = await api.catalog(workspace !== '' ? { cwd: workspace } : undefined)
-      setCatalog(next)
+      // A slower older poll (large catalog, slow disk) resolving after a newer
+      // one used to setCatalog stale data — the list visibly jumped backwards.
+      if (!mounted.current || seq !== requestSeq.current) return
+      const serialized = JSON.stringify(next)
+      if (serialized !== lastCatalogJson.current) {
+        lastCatalogJson.current = serialized
+        setCatalog(next)
+      }
       // 停用技能已在 next.skills 里，台账 disabled[] 不能再加一遍。
       if (!autoCollapsedPersonal.current && next.skills.length > 80) {
         autoCollapsedPersonal.current = true
@@ -66,9 +114,13 @@ export function useCatalogFlow(
       }
       shared.clearFail()
     } catch (error) {
+      if (!mounted.current || seq !== requestSeq.current) return
       shared.fail(errorMessage(error))
     } finally {
-      setLoading(false)
+      if (mounted.current && seq === requestSeq.current && loadingRef.current) {
+        loadingRef.current = false
+        setLoading(false)
+      }
     }
   }, [api, workspace, shared, collapsePersonal])
 
@@ -90,12 +142,12 @@ export function useCatalogFlow(
     // 回滚只能在 catch 里做 —— 之前放在 runFlow 的 settle（finally）里，成功后
     // 又把刚拿到的服务端真值盖回点击前的快照，开关看起来「点了没反应」；
     // 用户再点一次就撞上状态冲突 4xx，弹出红色错误条。这就是连点爆红的根因。
-    const snapshot = catalog
+    const snapshot = catalogRef.current
     setCatalog((previous) => flipSkillEnabled(previous, skill.name, enabled))
     shared.clearFail()
     try {
       const next = await api.toggle(skill.name, enabled, skill.workspace !== undefined && skill.workspace !== '' ? { cwd: skill.workspace } : undefined)
-      setCatalog(next)
+      commitCatalog(next)
     } catch (error) {
       // 只把目标行恢复成快照，其余行保留期间被别的操作改过的值。
       setCatalog((current) => (current === null || snapshot === null ? current : rollbackSkillToSnapshot(current, snapshot, skill.name)))
@@ -108,13 +160,13 @@ export function useCatalogFlow(
         return next
       })
     }
-  }, [api, shared, catalog])
+  }, [api, shared, commitCatalog])
 
   const enableDisabled = useCallback(async (record: DisabledSkill): Promise<void> => {
     setBusyNames((previous) => new Set(previous).add(record.name))
     await runFlow(shared, async () => {
       const next = await api.toggle(record.name, true)
-      setCatalog(next)
+      commitCatalog(next)
     }, () => {
       setBusyNames((previous) => {
         const next = new Set(previous)
@@ -122,7 +174,7 @@ export function useCatalogFlow(
         return next
       })
     })
-  }, [api, shared])
+  }, [api, shared, commitCatalog])
 
   /** Toggle an explicit name set in one write (enables disabled members too). */
   const batchToggleNames = useCallback(async (names: string[], enabled: boolean): Promise<void> => {
@@ -130,12 +182,12 @@ export function useCatalogFlow(
     shared.setBatchBusy(true)
     await runFlow(shared, async () => {
       const next = await api.toggleBatch(names, enabled)
-      setCatalog(next.catalog)
+      commitCatalog(next.catalog)
       if (next.failures.length > 0) {
         shared.fail('toggle-batch: ' + next.failures.map((failure) => failure.name + ': ' + failure.error).join('; '))
       }
     }, () => shared.setBatchBusy(false))
-  }, [api, shared])
+  }, [api, shared, commitCatalog])
 
   const fixDiagnostic = useCallback(async (path: string): Promise<void> => {
     setFixingPaths((previous) => new Set(previous).add(path))

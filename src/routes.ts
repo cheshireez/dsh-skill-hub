@@ -105,7 +105,7 @@ export function makeRoutes(deps: SkillHubRouteDeps): WebRoute[] {
       // 拼写问题误导成鉴权问题，正是这条兜底要消除的误判。
       skipCsrf: true,
       handler: async ({ res, url }) => {
-        writeError(res, 404, 'unknown skill-hub route: ' + url.pathname + ' (see SKILL_HUB_API in src/protocol/api.ts)')
+        writeError(res, 404, 'unknown skill-hub route: ' + url.pathname)
       },
     }),
   ]

@@ -44,7 +44,12 @@ export async function readBinaryBody(req: IncomingMessage, limit = MAX_BINARY_BO
   for await (const chunk of req) {
     const buffer = chunk as Buffer
     size += buffer.length
-    if (size > limit) throw new PayloadTooLargeError()
+    if (size > limit) {
+      // Drain the remainder so the connection can carry the 413 response
+      // instead of sitting half-read. The for-await iterator closes on throw.
+      req.resume()
+      throw new PayloadTooLargeError()
+    }
     chunks.push(buffer)
   }
   return Buffer.concat(chunks)

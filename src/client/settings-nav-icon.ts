@@ -1,8 +1,16 @@
 /**
- * The settings shell renders section nav icons from a hard-coded id map and
- * exposes no registrant icon option, so the skill-hub section falls back to
- * the generic gear. This scoped DOM patch swaps in the official skill icon
- * whenever the settings dialog re-renders.
+ * 设置导航图标的**回退路径**。
+ *
+ * dsh 0.2.2-rc.2 起宿主提供官方 `settings.section.icon` slot，图标随 section
+ * 声明一起渲染（见 client/index.tsx）。这个 DOM 补丁只为更老的宿主保留：
+ * 它们的声明表里没有那个 slot，`specOf` 探测不到，只能在设置弹窗里按标签
+ * 文本找到按钮、把默认齿轮换成技能图标。
+ *
+ * 两条路径同时注册（官方 slot + 这个补丁）：官方生效时补丁只是把同一张图
+ * 再套一次（path 完全相同，视觉无差异），老宿主则只有补丁这一条路。
+ *
+ * 它的固有缺陷：依赖导航文案（改语言就失效）、MutationObserver 监听整个
+ * body。一旦确认目标宿主都在 rc.2 以上，就该整段删掉。
  */
 
 const SKILL_SECTION_LABELS = ['技能中枢', 'Skills Hub']

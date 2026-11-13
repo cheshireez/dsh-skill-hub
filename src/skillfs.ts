@@ -19,7 +19,7 @@ import { dump } from 'js-yaml'
 import { isSkillName } from '@deepseek-ai/dsh-skill'
 import { parseFrontmatter, repairFrontmatterFileText } from './skillfs/frontmatter.ts'
 import { rootOfPath, rootPath } from './skillfs/paths.ts'
-import { dshHome } from './store.ts'
+import { dshHome } from './store/paths.ts'
 import type { TrashEntry, WritableRoot } from './protocol.ts'
 
 // Barrel: the frontmatter parser, the writable-root path helpers and the

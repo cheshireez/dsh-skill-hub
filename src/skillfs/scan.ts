@@ -6,7 +6,7 @@ import { auditDescription, auditSkillText, type AuditFinding } from './audit.ts'
 import { rootPath } from './paths.ts'
 import { errorText } from '../error-text.ts'
 import { mapConcurrent } from '../concurrency.ts'
-import { dshHome } from '../store.ts'
+import { dshHome } from '../store/paths.ts'
 import { HEX_COLOR_RE, type DiagnosticEntry, type WritableRoot } from '../protocol.ts'
 
 /** One discoverable skill file in a scanned root. */
@@ -232,12 +232,30 @@ export async function findProjectRoot(cwd: string): Promise<string> {
 }
 
 /**
- * Scan one writable root for files the provider ignores, so the GUI can show
- * why a skill never appears — a missing frontmatter, a name that disagrees
- * with the discovery path, and the like must be visible, not silent. Files the
- * hub itself disabled (`.disabled`) are skipped: they are a toggle state, not
- * a defect.
+ * Scan one writable root for diagnostics, so the GUI can show why a skill
+ * never appears (missing frontmatter, name/path disagreement, same-name
+ * collisions) and also flag loadable skills with issues. Every entry carries a
+ * `level`: `error` means the provider skips the file, `warn` means it loads but
+ * needs attention. Files the hub itself disabled (`.disabled`) are skipped:
+ * they are a toggle state, not a defect.
  */
+interface CachedDiagnostics {
+  stamp: string
+  findings: DiagnosticEntry[]
+  discovered: Array<{ path: string; keys: string[] }>
+}
+
+/**
+ * Per-file diagnostic cache. The panel polls /catalog every 5 seconds and each
+ * poll used to re-read every SKILL.md, parse its frontmatter twice and run the
+ * full text rules. A file whose mtime/ctime/size are unchanged cannot produce
+ * different diagnostics, so the expensive work is skipped while a cheap stat
+ * still detects an external edit on the very next poll (the "live view" stays
+ * live). Bounded so a large registry cannot grow the Map without limit.
+ */
+const diagnosticCache = new Map<string, CachedDiagnostics>()
+const DIAGNOSTIC_CACHE_MAX = 4000
+
 export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Promise<DiagnosticEntry[]> {
   const entries = await listSkillEntries(root, home)
   // 同一个名字可以由两种发现形态同时占据（目录包 `<name>/SKILL.md` 与扁平
@@ -252,21 +270,44 @@ export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Pro
   // routes/catalog-data.ts is already parallel. Bounded, not a bare
   // Promise.all: a root can hold hundreds of entries.
   const perEntry = await mapConcurrent(entries, 8, async (entry): Promise<DiagnosticEntry[]> => {
+    let stamp: string
+    try {
+      const info = await stat(entry.path)
+      stamp = `${info.mtimeMs}:${info.ctimeMs}:${info.size}`
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        return [{ path: entry.path, root, reason: 'unreadable: ' + (errorText(error)), level: 'error' }]
+      }
+      return []
+    }
+    const cached = diagnosticCache.get(entry.path)
+    if (cached !== undefined && cached.stamp === stamp) {
+      for (const item of cached.discovered) discovered.push(item)
+      return cached.findings
+    }
+
     const found: DiagnosticEntry[] = []
+    const discoveredHere: Array<{ path: string; keys: string[] }> = []
+    const commit = (): DiagnosticEntry[] => {
+      diagnosticCache.set(entry.path, { stamp, findings: found, discovered: discoveredHere })
+      for (const item of discoveredHere) discovered.push(item)
+      return found
+    }
+
     let text: string
     try {
       text = await readFile(entry.path, 'utf8')
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        found.push({ path: entry.path, root, reason: 'unreadable: ' + (errorText(error)) })
+        found.push({ path: entry.path, root, reason: 'unreadable: ' + (errorText(error)), level: 'error' })
       }
-      return found
+      return commit()
     }
     const parsed = parseFrontmatter(text)
     if ('error' in parsed) {
       const fixable = repairFrontmatterFileText(text) !== null
-      found.push({ path: entry.path, root, reason: parsed.error, ...(fixable ? { fixable: true } : {}) })
-      return found
+      found.push({ path: entry.path, root, reason: parsed.error, level: 'error', ...(fixable ? { fixable: true } : {}) })
+      return commit()
     }
     // 内容审计：文件能被加载，不代表正文干净。隐藏字符与危险命令不会让
     // provider 报错，只会让人「看过却没看见」—— 和发现诊断放在同一块 UI 里，
@@ -282,29 +323,38 @@ export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Pro
         reason: (finding.line !== undefined ? `line ${finding.line}: ` : '') + finding.message,
         kind: 'security',
         severity: finding.severity,
+        level: finding.severity === 'block' ? 'error' : 'warn',
       })
     }
     // File was auto-repaired in memory (e.g. unquoted `:`); surface a fixable hint so the user can persist it.
     const repaired = repairFrontmatterFileText(text)
     if (repaired !== null) {
-      found.push({ path: entry.path, root, reason: 'frontmatter contains unquoted colon/bracket (auto-repaired in memory; click Fix to persist)', fixable: true })
+      found.push({ path: entry.path, root, reason: 'frontmatter contains unquoted colon/bracket (auto-repaired in memory; click Fix to persist)', level: 'warn', fixable: true })
     }
     const { value } = parsed
     // The provider registers a skill by its discovery path (directory name or
     // flat file name), so a frontmatter name that diverges from the path makes
     // the skill show up under a different identity than its metadata claims.
     const pathName = entry.kind === 'directory' ? basename(entry.directory) : basename(entry.path, '.md')
-    discovered.push({ path: entry.path, keys: [...new Set([pathName, value.name])] })
+    discoveredHere.push({ path: entry.path, keys: [...new Set([pathName, value.name])] })
     if (value.name !== pathName) {
-      found.push({ path: entry.path, root, reason: `frontmatter name "${value.name}" does not match the discovery path "${pathName}" (the provider registers by path)` })
+      found.push({ path: entry.path, root, reason: `frontmatter name "${value.name}" does not match the discovery path "${pathName}" (the provider registers by path)`, level: 'warn' })
     }
     // Agents decide to auto-activate a skill from its one-line description, so
     // a too-short description leaves the skill hard to discover automatically.
     if (value.description.length < 10) {
-      found.push({ path: entry.path, root, reason: `description is only ${value.description.length} chars; write a one-line description so agents can auto-activate this skill` })
+      found.push({ path: entry.path, root, reason: `description is only ${value.description.length} chars; write a one-line description so agents can auto-activate this skill`, level: 'warn' })
     }
-    return found
+    return commit()
   })
+  if (diagnosticCache.size > DIAGNOSTIC_CACHE_MAX) {
+    let excess = diagnosticCache.size - DIAGNOSTIC_CACHE_MAX
+    for (const key of diagnosticCache.keys()) {
+      diagnosticCache.delete(key)
+      excess -= 1
+      if (excess <= 0) break
+    }
+  }
   // 同名冲突：把每个命中冲突的发现文件各报一条，让用户两边都能看到并选一个处理。
   const owners = new Map<string, string[]>()
   for (const item of discovered) {
@@ -322,6 +372,7 @@ export async function scanDiagnostics(root: WritableRoot, home = dshHome()): Pro
       path: item.path,
       root,
       reason: `another skill in this root registers the same name (${shared.map((key) => '"' + key + '"').join(', ')}); the registry keeps only one of them, so this one is unreachable — delete or rename one of the two`,
+      level: 'error',
     })
   }
   // mapConcurrent preserves index order, so flattening keeps the previous

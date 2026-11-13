@@ -100,7 +100,64 @@ export function fetchError(context: string, response: Response, fallbackStatus =
 
 /** 是否限流/中断类错误（调用方可直接透出，不再包装）。 */
 export function isAbortError(error: unknown): boolean {
-  return error instanceof Error && (error.name === 'AbortError' || error.message.includes('aborted') || error.message.includes('Abort'))
+  return error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError' || error.message.includes('aborted') || error.message.includes('Abort'))
+}
+
+/** Hard cap on any GitHub response body (tree payloads are the largest). */
+export const MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
+/**
+ * Read a response body under a byte ceiling. Content-Length is checked first,
+ * then the stream is accumulated chunk-by-chunk — a missing or forged header
+ * can no longer make the process buffer an unbounded payload.
+ */
+export async function readBoundedResponse(response: Response, limit = MAX_RESPONSE_BYTES): Promise<Buffer> {
+  const declared = Number(response.headers.get('content-length') ?? '')
+  if (Number.isFinite(declared) && declared > limit) {
+    throw new RepoFetchError('github response exceeds the ' + limit + ' byte limit')
+  }
+  if (response.body === null) return Buffer.from(await response.arrayBuffer())
+  const reader = response.body.getReader()
+  const chunks: Buffer[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > limit) {
+        await reader.cancel().catch(() => undefined)
+        throw new RepoFetchError('github response exceeds the ' + limit + ' byte limit')
+      }
+      chunks.push(Buffer.from(value))
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return Buffer.concat(chunks)
+}
+
+/** Parse a bounded JSON response; replaces `response.json()`, which had no cap. */
+export async function readBoundedJson(response: Response): Promise<unknown> {
+  const buffer = await readBoundedResponse(response)
+  try {
+    return JSON.parse(buffer.toString('utf8')) as unknown
+  } catch {
+    throw new Error('invalid JSON in github response')
+  }
+}
+
+/**
+ * Hard bound on **every** outbound GitHub request. Without it a hung socket
+ * leaves `/repo/import` waiting before it can return a jobId, or strands a
+ * background job in `running` forever (gcImportJobs never evicts running jobs).
+ */
+export const REQUEST_TIMEOUT_MS = 30_000
+
+/** Combine an optional caller signal with the per-request timeout. */
+export function githubRequestSignal(external?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+  return external !== undefined ? AbortSignal.any([external, timeout]) : timeout
 }
 
 /**
@@ -109,8 +166,8 @@ export function isAbortError(error: unknown): boolean {
  * 让用户点「更新」看到红条，代价远大于多等 150ms。
  *
  * 只对**抛出的网络异常**重试，不重试任何 HTTP 状态码：4xx/5xx 是上游的确定
- * 答复（限流、404、仓库不存在），重试只会浪费配额；AbortError 是调用方主动
- * 取消，更不能重试。
+ * 答复（限流、404、仓库不存在），重试只会浪费配额；AbortError/TimeoutError
+ * 是调用方主动取消或硬超时，更不能重试。
  */
 const TRANSIENT_ATTEMPTS = 3
 const TRANSIENT_BACKOFF_MS = [150, 400] as const
@@ -132,11 +189,11 @@ async function sleepBeforeRetry(attempt: number): Promise<boolean> {
   return true
 }
 
-async function fetchWithRetry(fetchImpl: typeof fetch, url: string, headers: Record<string, string>, context: string): Promise<Response> {
+async function fetchWithRetry(fetchImpl: typeof fetch, url: string, headers: Record<string, string>, context: string, signal?: AbortSignal): Promise<Response> {
   let last: unknown
   for (let attempt = 0; attempt < TRANSIENT_ATTEMPTS; attempt += 1) {
     try {
-      return await fetchImpl(url, { headers })
+      return await fetchImpl(url, { headers, signal: githubRequestSignal(signal) })
     } catch (error) {
       if (isAbortError(error)) throw error
       if (isPermanentNetworkError(error)) throw new RepoFetchError(context + ': ' + (errorText(error)))
@@ -151,17 +208,19 @@ async function fetchWithRetry(fetchImpl: typeof fetch, url: string, headers: Rec
  * 不带缓存的统一 GET+JSON：网络异常、非 2xx、坏 JSON 全部映射为
  * RepoFetchError，调用方无需重复写 try/catch。
  */
-export async function fetchJson(url: string, fetchImpl: typeof fetch, context: string, headers: Record<string, string> = apiHeaders()): Promise<{ json: unknown; response: Response }> {
+export async function fetchJson(url: string, fetchImpl: typeof fetch, context: string, headers: Record<string, string> = apiHeaders(), signal?: AbortSignal): Promise<{ json: unknown; response: Response }> {
   // A proxy can reset the connection after the headers arrived but while the
   // body is being read. That throws in response.json(), outside the fetch
   // retry above; retry the whole request so a truncated body is not reported
   // as a malformed GitHub response.
   for (let attempt = 0; attempt < TRANSIENT_ATTEMPTS; attempt += 1) {
-    const response = await fetchWithRetry(fetchImpl, url, headers, context)
+    const response = await fetchWithRetry(fetchImpl, url, headers, context, signal)
     if (!response.ok) throw fetchError(context, response)
     try {
-      return { json: await response.json(), response }
+      return { json: await readBoundedJson(response), response }
     } catch (error) {
+      // An over-limit body is a definitive rejection, not a transient parse blip.
+      if (isAbortError(error) || error instanceof RepoFetchError) throw error
       if (!(await sleepBeforeRetry(attempt))) break
       // body parse failed; loop and re-fetch the same URL
     }
@@ -174,12 +233,12 @@ export async function fetchJson(url: string, fetchImpl: typeof fetch, context: s
  * fetched before. `fetchImpl`/`context` exist so callers can stub the transport
  * and shape the error text; the payload is whatever the endpoint returned.
  */
-export async function fetchJsonCached(url: string, fetchImpl: typeof fetch, context: string): Promise<{ json: unknown; response: Response }> {
+export async function fetchJsonCached(url: string, fetchImpl: typeof fetch, context: string, signal?: AbortSignal): Promise<{ json: unknown; response: Response }> {
   const cached = etagCache.get(url)
   const headers: Record<string, string> = { ...apiHeaders() }
   if (cached !== undefined) headers['if-none-match'] = cached.etag
   for (let attempt = 0; attempt < TRANSIENT_ATTEMPTS; attempt += 1) {
-    const response = await fetchWithRetry(fetchImpl, url, headers, context)
+    const response = await fetchWithRetry(fetchImpl, url, headers, context, signal)
     if (response.status === 304 && cached !== undefined) {
       // Return cached JSON with a synthetic 200-like response for error mapping.
       return { json: cached.json, response }
@@ -187,8 +246,10 @@ export async function fetchJsonCached(url: string, fetchImpl: typeof fetch, cont
     if (!response.ok) throw fetchError(context, response)
     let json: unknown
     try {
-      json = await response.json()
+      json = await readBoundedJson(response)
     } catch (error) {
+      // An over-limit body is a definitive rejection, not a transient parse blip.
+      if (isAbortError(error) || error instanceof RepoFetchError) throw error
       if (!(await sleepBeforeRetry(attempt))) break
       // 响应体读取阶段断流：重发请求，而不是把截断的 body 当坏 JSON。
       continue

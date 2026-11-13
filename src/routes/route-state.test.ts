@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { IMPORT_JOB_MAX, gcImportJobs, importJobs, replaceInPlace, type ImportJob } from './route-state.ts'
+import { IMPORT_JOB_MAX, IMPORT_JOB_RUNNING_TIMEOUT_MS, gcImportJobs, importJobs, replaceInPlace, type ImportJob } from './route-state.ts'
 
 /** One import job with sane defaults; override what the test cares about. */
 function job(jobId: string, createdAt: number, status: ImportJob['status'] = 'done'): ImportJob {
@@ -28,7 +28,9 @@ describe('gcImportJobs', () => {
 
   it('keeps running jobs when trimming the map down to the cap', () => {
     // 运行中的任务被淘汰会让 /progress、/cancel 变成 404，而下载还在后台跑。
-    const running = job('running-1', 1, 'running')
+    // A live job has a recent createdAt; with an epoch-era timestamp the new
+    // watchdog would correctly treat it as hung instead.
+    const running = job('running-1', Date.now(), 'running')
     importJobs.set(running.jobId, running)
     const now = Date.now()
     for (let i = 0; i < IMPORT_JOB_MAX + 5; i++) {
@@ -40,6 +42,20 @@ describe('gcImportJobs', () => {
     expect(importJobs.size).toBeLessThanOrEqual(IMPORT_JOB_MAX + 1)
     // 淘汰按 createdAt 从旧到新，最新的已完成任务留下。
     expect(importJobs.has('done-' + (IMPORT_JOB_MAX + 4))).toBe(true)
+  })
+
+  it('aborts and settles a running job that exceeded its watchdog', () => {
+    // A hung GitHub request used to leave a `running` job in the Map forever:
+    // the old gc skipped running jobs and nothing else ever settled them.
+    const hung = job('hung', Date.now() - IMPORT_JOB_RUNNING_TIMEOUT_MS - 1000, 'running')
+    importJobs.set(hung.jobId, hung)
+    gcImportJobs()
+    expect(hung.status).toBe('error')
+    expect(hung.controller.signal.aborted).toBe(true)
+    expect(hung.error).toContain('time limit')
+    // It stays queryable until the normal TTL, so /progress can show the failure
+    // instead of answering 404.
+    expect(importJobs.has('hung')).toBe(true)
   })
 
   it('drops finished jobs older than the TTL', () => {

@@ -176,6 +176,25 @@ describe('skill-hub routes', () => {
     return route
   }
 
+  /**
+   * 等一个 repo 导入 job 落地。
+   *
+   * 原来每处都写死「20 × 50ms = 1 秒」的窗口：判定逻辑没错，是等待窗口太窄，
+   * 慢机器 / 冷缓存下会误报 `running`（换 dsh 依赖树后实测复现）。改成条件
+   * 驱动：成了立即返回，超时才失败并带出最后一次进度。
+   */
+  async function waitForImportJob(jobId: string): Promise<import('./protocol.ts').RepoImportProgressResponse> {
+    let last: import('./protocol.ts').RepoImportProgressResponse | undefined
+    await vi.waitFor(async () => {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.repoImportProgress).handler(fakeReq('GET', `${SKILL_HUB_API.repoImportProgress}?jobId=${jobId}`), res as never)
+      expect(res.status).toBe(200)
+      last = res.json() as import('./protocol.ts').RepoImportProgressResponse
+      if (last.status === 'running') throw new Error('import job still running')
+    }, { timeout: 10_000, interval: 25 })
+    return last!
+  }
+
   it('rejects non-loopback requests with the literal fallback when no host fence is wired', async () => {
     // deps 里没有 fence（非 web 宿主、单测）⇒ 退回历史的字面回环判定。
     const res = new FakeResponse()
@@ -582,6 +601,8 @@ describe('skill-hub routes', () => {
     expect(body.skills[1].writable).toBe(false)
     expect(body.diagnostics).toHaveLength(1)
     expect(body.diagnostics[0].reason).toBe('missing YAML frontmatter (--- block)')
+    // provider 跳过的文件必须带「异常」级，面板才会打红色标记。
+    expect(body.diagnostics[0].level).toBe('error')
     // 面板标题旁的插件版本徽标数据源：随 catalog 附带当前安装版本。
     expect(body.pluginVersion).toMatch(/^\d+\.\d+\.\d+$/)
     // 公告预算：一层渐进加载注入的 name+description 总量必须能看见。
@@ -1485,14 +1506,14 @@ describe('skill-hub routes', () => {
     const skillMd = '---\nname: code-review\ndescription: Reviews code\n---\n\nbody'
     stubFetch([
       // 更具体的 URL 在前（stubFetch 按顺序匹配）。
-      ['repos/example/repo/git/trees/main', jsonResponse({ tree: [
+      ['repos/example/repo/git/trees/tree1', jsonResponse({ tree: [
         { path: 'skills/code-review/SKILL.md', type: 'blob', size: 60 },
         { path: 'skills/code-review/helper.py', type: 'blob', size: 20 },
       ] })],
       ['repos/example/repo/commits', jsonResponse({ sha: 'abc123', commit: { tree: { sha: 'tree1' } } })],
       ['repos/example/repo', jsonResponse({ default_branch: 'main' })],
-      ['raw.githubusercontent.com/example/repo/main/skills/code-review/SKILL.md', new Response(skillMd, { status: 200 })],
-      ['raw.githubusercontent.com/example/repo/main/skills/code-review/helper.py', new Response('x = 1', { status: 200 })],
+      ['raw.githubusercontent.com/example/repo/abc123/skills/code-review/SKILL.md', new Response(skillMd, { status: 200 })],
+      ['raw.githubusercontent.com/example/repo/abc123/skills/code-review/helper.py', new Response('x = 1', { status: 200 })],
     ])
     try {
       const res = new FakeResponse()
@@ -1502,17 +1523,8 @@ describe('skill-hub routes', () => {
       expect(created.jobId).toMatch(/^imp_/)
       expect(created.total).toBe(1)
       // 轮询直到完成（后台任务选项2：关面板也继续跑，轮询查进度）
-      let prog: import('./protocol.ts').RepoImportProgressResponse | undefined
-      for (let i = 0; i < 20; i++) {
-        await new Promise((r) => setTimeout(r, 50))
-        const progRes = new FakeResponse()
-        await routeFor(SKILL_HUB_API.repoImportProgress).handler(fakeReq('GET', `${SKILL_HUB_API.repoImportProgress}?jobId=${created.jobId}`), progRes as never)
-        expect(progRes.status).toBe(200)
-        prog = progRes.json() as import('./protocol.ts').RepoImportProgressResponse
-        if (prog.status !== 'running') break
-      }
-      expect(prog).toBeDefined()
-      expect(prog!.status).toBe('done')
+      const prog = await waitForImportJob(created.jobId)
+      expect(prog.status).toBe('done')
       expect(prog!.imported).toHaveLength(1)
       expect(prog!.imported[0]).toMatchObject({ name: 'code-review', origin: 'example/repo' })
       await expect(access(join(home, 'skills', 'code-review', 'SKILL.md'))).resolves.toBeUndefined()
@@ -1573,31 +1585,24 @@ describe('skill-hub routes', () => {
     const dir = await seedDisabledPlaceholder('code-review')
     const skillMd = '---\nname: code-review\ndescription: Reviews code\n---\n\nbody'
     stubFetch([
-      ['repos/example/repo/git/trees/main', jsonResponse({ tree: [
+      ['repos/example/repo/git/trees/tree1', jsonResponse({ tree: [
         { path: 'skills/code-review/SKILL.md', type: 'blob', size: 60 },
       ] })],
       ['repos/example/repo/commits', jsonResponse({ sha: 'abc123', commit: { tree: { sha: 'tree1' } } })],
       ['repos/example/repo', jsonResponse({ default_branch: 'main' })],
-      ['raw.githubusercontent.com/example/repo/main/skills/code-review/SKILL.md', new Response(skillMd, { status: 200 })],
+      ['raw.githubusercontent.com/example/repo/abc123/skills/code-review/SKILL.md', new Response(skillMd, { status: 200 })],
     ])
     try {
       const res = new FakeResponse()
       await routeFor(SKILL_HUB_API.repoImport).handler(fakeReq('POST', SKILL_HUB_API.repoImport, { repo: 'example/repo', paths: ['skills/code-review/SKILL.md'] }), res as never)
       expect(res.status).toBe(200)
       const created = res.json() as import('./protocol.ts').RepoImportResponse
-      let prog: import('./protocol.ts').RepoImportProgressResponse | undefined
-      for (let i = 0; i < 20; i++) {
-        await new Promise((r) => setTimeout(r, 50))
-        const progRes = new FakeResponse()
-        await routeFor(SKILL_HUB_API.repoImportProgress).handler(fakeReq('GET', `${SKILL_HUB_API.repoImportProgress}?jobId=${created.jobId}`), progRes as never)
-        prog = progRes.json() as import('./protocol.ts').RepoImportProgressResponse
-        if (prog.status !== 'running') break
-      }
-      expect(prog!.status).toBe('done')
+      const prog = await waitForImportJob(created.jobId)
+      expect(prog.status).toBe('done')
       // 关键：不再被「已存在」跳掉，真技能落地。
-      expect(prog!.skipped).toEqual([])
-      expect(prog!.imported.map((r) => r.name)).toEqual(['code-review'])
-      expect(prog!.replaced).toEqual(['code-review'])
+      expect(prog.skipped).toEqual([])
+      expect(prog.imported.map((r) => r.name)).toEqual(['code-review'])
+      expect(prog.replaced).toEqual(['code-review'])
       await expect(readFile(join(dir, 'SKILL.md'), 'utf8')).resolves.toContain('name: code-review')
       // 旧占位进回收站（可恢复），禁用记录被清掉，不然目录会留个幽灵禁用项。
       await expect(access(join(dir, 'SKILL.md.disabled'))).rejects.toThrow()
@@ -1613,13 +1618,45 @@ describe('skill-hub routes', () => {
     }
   })
 
+  it('clears the placeholder invocation override so the fresh import lands enabled', async () => {
+    // 迁移失败或手工恢复 sidecar 时会留下「.disabled 占位 + 指向 SKILL.md 的覆盖」
+    // 这种组合。占位被搬走后若不同时清覆盖，新导入的技能会继承一条幽灵停用：
+    // 台账已经删了，面板却显示停用，用户找不到任何可以「启用」的记录。
+    const dir = await seedDisabledPlaceholder('code-review')
+    await store.addInvocationOverride(join(dir, 'SKILL.md'))
+    const skillMd = '---\nname: code-review\ndescription: Reviews code\n---\n\nbody'
+    stubFetch([
+      ['repos/example/repo/git/trees/tree1', jsonResponse({ tree: [
+        { path: 'skills/code-review/SKILL.md', type: 'blob', size: 60 },
+      ] })],
+      ['repos/example/repo/commits', jsonResponse({ sha: 'abc123', commit: { tree: { sha: 'tree1' } } })],
+      ['repos/example/repo', jsonResponse({ default_branch: 'main' })],
+      ['raw.githubusercontent.com/example/repo/abc123/skills/code-review/SKILL.md', new Response(skillMd, { status: 200 })],
+    ])
+    try {
+      const res = new FakeResponse()
+      await routeFor(SKILL_HUB_API.repoImport).handler(fakeReq('POST', SKILL_HUB_API.repoImport, { repo: 'example/repo', paths: ['skills/code-review/SKILL.md'] }), res as never)
+      expect(res.status).toBe(200)
+      const created = res.json() as import('./protocol.ts').RepoImportResponse
+      const prog = await waitForImportJob(created.jobId)
+      expect(prog.status).toBe('done')
+      expect(prog.imported.map((r) => r.name)).toEqual(['code-review'])
+      // 新技能是启用态：没有覆盖指向它，台账也已清空。
+      expect(await store.listInvocationOverrides()).toEqual([])
+      expect(await store.listDisabled()).toEqual([])
+      await expect(readFile(join(dir, 'SKILL.md'), 'utf8')).resolves.toContain('name: code-review')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('still skips a same-name directory that is not a disabled placeholder', async () => {
     // 同名目录里还有真实 SKILL.md、且没有对应的禁用记录：不是占位，不许动。
     const dir = join(home, 'skills', 'code-review')
     await mkdir(dir, { recursive: true })
     await writeFile(join(dir, 'SKILL.md'), '---\nname: code-review\ndescription: real\n---\n', 'utf8')
     stubFetch([
-      ['repos/example/repo/git/trees/main', jsonResponse({ tree: [
+      ['repos/example/repo/git/trees/tree1', jsonResponse({ tree: [
         { path: 'skills/code-review/SKILL.md', type: 'blob', size: 60 },
       ] })],
       ['repos/example/repo/commits', jsonResponse({ sha: 'abc123', commit: { tree: { sha: 'tree1' } } })],
@@ -1629,18 +1666,11 @@ describe('skill-hub routes', () => {
       const res = new FakeResponse()
       await routeFor(SKILL_HUB_API.repoImport).handler(fakeReq('POST', SKILL_HUB_API.repoImport, { repo: 'example/repo', paths: ['skills/code-review/SKILL.md'] }), res as never)
       const created = res.json() as import('./protocol.ts').RepoImportResponse
-      let prog: import('./protocol.ts').RepoImportProgressResponse | undefined
-      for (let i = 0; i < 20; i++) {
-        await new Promise((r) => setTimeout(r, 50))
-        const progRes = new FakeResponse()
-        await routeFor(SKILL_HUB_API.repoImportProgress).handler(fakeReq('GET', `${SKILL_HUB_API.repoImportProgress}?jobId=${created.jobId}`), progRes as never)
-        prog = progRes.json() as import('./protocol.ts').RepoImportProgressResponse
-        if (prog.status !== 'running') break
-      }
-      expect(prog!.status).toBe('done')
-      expect(prog!.skipped).toEqual([{ name: 'code-review', reason: 'exists' }])
-      expect(prog!.imported).toEqual([])
-      expect(prog!.replaced ?? []).toEqual([])
+      const prog = await waitForImportJob(created.jobId)
+      expect(prog.status).toBe('done')
+      expect(prog.skipped).toEqual([{ name: 'code-review', reason: 'exists' }])
+      expect(prog.imported).toEqual([])
+      expect(prog.replaced ?? []).toEqual([])
       // 原目录原封不动，也没进回收站。
       await expect(readFile(join(dir, 'SKILL.md'), 'utf8')).resolves.toContain('description: real')
       expect(await store.listTrash()).toEqual([])
@@ -2181,30 +2211,23 @@ describe('skill-hub routes', () => {
     const flat = await seedFlatDisabledPlaceholder('code-review')
     const skillMd = '---\nname: code-review\ndescription: Reviews code\n---\n\nbody'
     stubFetch([
-      ['repos/example/repo/git/trees/main', jsonResponse({ tree: [
+      ['repos/example/repo/git/trees/tree1', jsonResponse({ tree: [
         { path: 'skills/code-review/SKILL.md', type: 'blob', size: 60 },
       ] })],
       ['repos/example/repo/commits', jsonResponse({ sha: 'abc123', commit: { tree: { sha: 'tree1' } } })],
       ['repos/example/repo', jsonResponse({ default_branch: 'main' })],
-      ['raw.githubusercontent.com/example/repo/main/skills/code-review/SKILL.md', new Response(skillMd, { status: 200 })],
+      ['raw.githubusercontent.com/example/repo/abc123/skills/code-review/SKILL.md', new Response(skillMd, { status: 200 })],
     ])
     try {
       const res = new FakeResponse()
       await routeFor(SKILL_HUB_API.repoImport).handler(fakeReq('POST', SKILL_HUB_API.repoImport, { repo: 'example/repo', paths: ['skills/code-review/SKILL.md'] }), res as never)
       const created = res.json() as import('./protocol.ts').RepoImportResponse
-      let prog: import('./protocol.ts').RepoImportProgressResponse | undefined
-      for (let i = 0; i < 30; i++) {
-        await new Promise((r) => setTimeout(r, 40))
-        const p = new FakeResponse()
-        await routeFor(SKILL_HUB_API.repoImportProgress).handler(fakeReq('GET', `${SKILL_HUB_API.repoImportProgress}?jobId=${created.jobId}`), p as never)
-        prog = p.json() as import('./protocol.ts').RepoImportProgressResponse
-        if (prog.status !== 'running') break
-      }
-      expect(prog!.status).toBe('done')
-      expect(prog!.skipped).toEqual([])
-      expect(prog!.imported.map((r) => r.name)).toEqual(['code-review'])
+      const prog = await waitForImportJob(created.jobId)
+      expect(prog.status).toBe('done')
+      expect(prog.skipped).toEqual([])
+      expect(prog.imported.map((r) => r.name)).toEqual(['code-review'])
       // 关键差异：扁平占位不再「看不见」——它被移入回收站、如实上报，真技能落地。
-      expect(prog!.replaced).toEqual(['code-review'])
+      expect(prog.replaced).toEqual(['code-review'])
       await expect(access(flat)).rejects.toThrow()
       await expect(readFile(join(home, 'skills', 'code-review', 'SKILL.md'), 'utf8')).resolves.toContain('name: code-review')
       expect(await store.listDisabled()).toEqual([])

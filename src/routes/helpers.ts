@@ -108,6 +108,11 @@ export interface RouteSpec {
  * 或网络重试的两次写在 sidecar 上「读 → 改 → 写」交错。前一个失败不阻断后一个。
  * 出网较久的 POST（check / scan / import）不标 serialize，否则一个慢请求会把
  * 开关这类即时操作一起堵住。参照 dsh-skills-manager 的 enqueueMutation。
+ *
+ * 为什么只标 toggle / toggle-batch：sidecar 本身已有 SkillHubStore.writeChain
+ * 串行化所有 persist，且 payload 在 queued step 内构建（并发变更不会互相覆盖），
+ * 所有 handler 共享同一个 store 单例、读到的内存态总是最新。其余写路由即使并发，
+ * 也由这层保证最终一致；把它们塞进队列只会让慢导入堵住即时开关。
  */
 let mutationQueue: Promise<unknown> = Promise.resolve()
 function enqueueMutation<T>(task: () => Promise<T>): Promise<T> {

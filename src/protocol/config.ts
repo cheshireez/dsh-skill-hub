@@ -41,6 +41,42 @@ export interface HubConfig {
 export type RedactedHubConfig = Omit<HubConfig, 'githubToken'>
 
 /**
+ * The complete config field list, in the order the settings page renders them.
+ * The host walks it for volatile refs and the sidecar migration walks it to
+ * hydrate untrusted JSON. A second hand-written list in store/migrate.ts used
+ * to know only 7 of these, silently dropping statsWindowDays /
+ * statsScanMinutes / githubToken on every migration.
+ */
+export const CONFIG_FIELDS = [
+  'enabled',
+  'announceToAgent',
+  'dotModelColor',
+  'dotUserColor',
+  'showUseCount',
+  'showUseTime',
+  'showGroupSummary',
+  'statsWindowDays',
+  'statsScanMinutes',
+  'githubToken',
+] as const
+
+export type ConfigField = typeof CONFIG_FIELDS[number]
+
+/** Expected primitive for each field; used to validate untrusted sidecar JSON. */
+export const CONFIG_FIELD_TYPES: Record<ConfigField, 'boolean' | 'string' | 'number'> = {
+  enabled: 'boolean',
+  announceToAgent: 'boolean',
+  dotModelColor: 'string',
+  dotUserColor: 'string',
+  showUseCount: 'boolean',
+  showUseTime: 'boolean',
+  showGroupSummary: 'boolean',
+  statsWindowDays: 'number',
+  statsScanMinutes: 'number',
+  githubToken: 'string',
+}
+
+/**
  * The resolved shape of the hub's settings namespace (schema defaults, then
  * the composition base, then the user layer). Kept as a type alias so the
  * browser-side settings scope snapshot is index-compatible with the card

@@ -19,7 +19,10 @@ src/routes/             one file per domain + shared layers:
                         resolution), catalog-data.ts (catalog/detail assembly), collection.ts
                         (origin collections), route-state.ts (throttles + import-job table),
                         helpers.ts (barrel)
-src/store.ts            sidecar store barrel (paths / migrate / store)
+src/store.ts            sidecar store barrel (re-exports paths / migrate / store)
+src/store/              sidecar state: core.ts owns the state container, cold-read single-flight,
+                        atomic write and the write guard; one slice file per domain (ledger / tags /
+                        sources / market / trash / stats / order / config) wired onto the facade
 src/skillfs.ts          writable-root file ops + barrel (skillfs/paths.ts, frontmatter.ts, scan.ts)
 src/repo.ts             GitHub repo helpers barrel (repo/types.ts, discovery.ts, api.ts, install.ts,
                         github-client.ts = shared request layer)
@@ -39,7 +42,8 @@ src/client/locales/     dictionaries by view (common/skills/market/sources/detai
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (478 tests across 24 suites)
+npm test            # vitest (541 tests across 26 suites)
+npm run coverage    # v8 coverage report (text / html / lcov)
 npm run build       # tsc declarations + tsdown bundles (lib/index.js + lib/client.js)
 ```
 
@@ -48,13 +52,19 @@ npm run build       # tsc declarations + tsdown bundles (lib/index.js + lib/clie
 1. **Typecheck** — `npm run typecheck` must pass.
 2. **Tests** — `npm test` must pass; add/adjust tests for any behavior change. Suites sit next to the
    code they cover (`src/*.test.ts`, `src/routes/*.test.ts`) and mirror the real
-   route/store/filesystem/provider behavior. The browser half has no component-test harness
-   (vitest runs in the node environment); keep browser changes mechanical and verify them in the
-   live GUI.
+   route/store/filesystem/provider behavior. The browser half runs in node by default; add a
+   `// @vitest-environment jsdom` docblock for pure components/hooks (`src/client/icons.test.tsx` is
+   the reference), and still verify page-level flows in the live GUI.
 3. **Build** — `npm run build` must produce `lib/index.js` and `lib/client.js`.
 4. **Keep the diff focused** — one logical change per PR, with a clear title and description.
 5. **Documentation** — update `README.md` **and** `README.zh.md` (both ship with the package and are
    kept in sync) when behavior or the API surface changes.
+6. **Dependency layout** — `lib/index.js` has two server-side bare imports
+   (`@deepseek-ai/schemastery`, `@deepseek-ai/dsh-skill`). Keep both in `dependencies`, not only
+   as optional peers: a clean `npm install` of the published tarball must resolve them from
+   inside `node_modules/dsh-skill-hub/lib/` without the host's `bareModuleBaseUrl` injection
+   (dsh.so's win32 L5 sandbox needs this). Never move the other peers back to non-optional —
+   wide ranges once auto-installed the whole 0.1.7-rc.2 line and disabled required host plugins.
 
 ## Code style
 

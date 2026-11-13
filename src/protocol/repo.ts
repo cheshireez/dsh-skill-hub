@@ -112,7 +112,8 @@ export interface RepoImportCancelRequest {
 export interface RepoImportCancelResponse {
   ok: true
   jobId: string
-  status: 'cancelled' | 'done'
+  /** A job can already be done, cancelled, or failed when cancel arrives. */
+  status: 'running' | 'done' | 'cancelled' | 'error'
 }
 
 /** GET /api/skill-hub/update — check the plugin's own latest GitHub release. */

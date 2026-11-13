@@ -4,7 +4,7 @@
  * 从 repo.ts 抽出。
  */
 
-import { RepoFetchError, apiHeaders, fetchJson, fetchJsonCached } from './github-client.ts'
+import { RepoFetchError, apiHeaders, fetchJson, fetchJsonCached, githubRequestSignal } from './github-client.ts'
 import type { RepoTreeItem } from './types.ts'
 
 export async function loadRepoTree(repo: string, ref?: string, fetchImpl: typeof fetch = fetch): Promise<{ ref: string; tree: RepoTreeItem[]; truncated: boolean }> {
@@ -54,7 +54,7 @@ export async function getRepoStats(repo: string, fetchImpl: typeof fetch = fetch
     : 0
   let downloads = 0
   try {
-    const relResponse = await fetchImpl(`https://api.github.com/repos/${repo}/releases?per_page=20`, { headers })
+    const relResponse = await fetchImpl(`https://api.github.com/repos/${repo}/releases?per_page=20`, { headers, signal: githubRequestSignal(), redirect: 'error' })
     if (relResponse.ok) {
       const releases: unknown = await relResponse.json()
       if (Array.isArray(releases)) {

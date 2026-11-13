@@ -8,7 +8,8 @@ import { homedir } from 'node:os'
 import type { SkillDefinition, SkillSummary } from '@deepseek-ai/dsh-skill'
 import { resolveHubConfig, type HubConfig, type WritableRoot } from '../protocol.ts'
 import { rootOfPath } from '../skillfs.ts'
-import { dshHome, type SkillHubStore } from '../store.ts'
+import { dshHome } from '../store/paths.ts'
+import { type SkillHubStore } from '../store.ts'
 import { writeError, type RouteFence } from './http.ts'
 
 /** Sources the hub may toggle (the user-level filesystem roots). */

@@ -19,7 +19,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { SkillCandidate, SkillDefinition, SkillProvider, SkillProviderControl } from '@deepseek-ai/dsh-skill'
 import { errorText } from './error-text.ts'
-import { dshHome } from './store.ts'
+import { dshHome } from './store/paths.ts'
 import { findProjectRoot, parseFrontmatter, rootPath, scanRoot } from './skillfs.ts'
 
 /** Official root ranks (mirrors dsh-skill-filesystem). */

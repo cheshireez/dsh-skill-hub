@@ -1,16 +1,18 @@
 /**
  * 技能内容审计：安装前拦截与常驻体检共用的一套纯函数规则。
  *
- * 两条设计约束：
+ * 三条设计约束：
  * 1. 零依赖、纯字符串处理。宿主每 5 秒轮询一次 /catalog，扫描必须廉价，
  *    否则面板响应时间会随技能数量线性变慢（与 scanDiagnostics 同一理由）。
  * 2. 规则只认结构特征（不可见字符、命令管道、凭据路径），不做语义判断。
  *    语义/LLM 判断误报率高且要模型调用，不属于一个管理器的职责边界；
  *    这里的目标是「让藏起来的东西显形」，不是「判定作者意图」。
+ * 3. 编码伪装不算二进制豁免。文本文件里的 NUL / UTF-16 / 非法 UTF-8
+ *    本身就是阻断级发现 —— 否则往 SKILL.md 插一个 NUL 就能整体绕过审计。
  *
  * 两级严重度：
  * - `block`：安装阶段拒绝落盘。只用于「没有任何正当用途」的特征 ——
- *   裸 ESC 控制字符、Unicode 标签字符、双向控制符、以及体积越界。
+ *   裸 ESC 控制字符、Unicode 标签字符、双向控制符、编码伪装、体积越界。
  * - `warn`：落盘但标记。零宽字符、危险命令、凭据路径、超长描述都可能
  *   出现在正常技能里（比如一个教人用 curl 的技能），交给人判断。
  */
@@ -27,6 +29,7 @@ export type AuditRuleId =
   | 'bundle-too-large'
   | 'too-many-files'
   | 'description-too-long'
+  | 'suspicious-encoding'
 
 export type AuditSeverity = 'block' | 'warn'
 
@@ -35,7 +38,7 @@ export interface AuditFinding {
   rule: AuditRuleId
   severity: AuditSeverity
   file: string
-  /** 1 起行号；整文件级规则（体积、文件数）省略。 */
+  /** 1 起行号；整文件级规则（体积、文件数、编码伪装）省略。 */
   line?: number
   message: string
 }
@@ -53,20 +56,22 @@ export const MAX_DESCRIPTION_CHARS = 1024
 const ANSI_RE = /\u001B/
 /** Unicode 标签字符区，唯一用途是承载不可见文本。 */
 const UNICODE_TAG_RE = /[\u{E0000}-\u{E007F}]/u
-/** 双向控制符：Trojan Source 式视觉重排。 */
-const BIDI_RE = /[\u202A-\u202E\u2066-\u2069]/
+/** 双向控制符：Trojan Source 式视觉重排（含 ALM / LRM / RLM）。 */
+const BIDI_RE = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/
 /** 零宽字符：可能来自从网页复制的正文，也可能用于隐藏内容。 */
-const ZERO_WIDTH_RE = /[\u200B-\u200D\u2060\uFEFF]/
+const ZERO_WIDTH_RE = /[\u00AD\u180E\u200B-\u200D\u2060\u2061-\u2064\uFEFF]/
 
 /**
- * 危险命令：只匹配「下载后直接执行」这一族，也就是审计报告里出现频率最高、
- * 且人类肉眼最容易滑过去的那几种形态。普通的 `curl URL` 取数据不在此列。
+ * 危险命令：只匹配「下载后直接执行」这一族。普通的 `curl URL` 取数据不在此列。
+ * 反斜杠续行由 auditSkillText 预先折成空格，所以 `curl URL \⏎ | sh` 也命中。
  */
 const DANGEROUS_COMMANDS: ReadonlyArray<{ re: RegExp; label: string }> = [
   { re: /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z|k)?sh\b/, label: 'remote script piped straight into a shell' },
   { re: /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?python[0-9.]*\b/, label: 'remote script piped straight into python' },
   { re: /\bbase64\s+(?:-d|--decode)\b[^\n|]*\|\s*(?:ba|z|k)?sh\b/, label: 'base64 payload decoded into a shell' },
   { re: /\beval\s+["']?\$\(\s*(?:curl|wget)\b/, label: 'eval of a downloaded command' },
+  { re: /\b(?:curl|wget)\b[^\n]*?(?:>|>>|-o\s+)\s*[\w./-]+[^\n]*?(?:&&|;)\s*(?:sudo\s+)?(?:ba|z|k)?sh\b/, label: 'downloaded script saved to a file and then executed' },
+  { re: /\b(?:ba|z|k)?sh\s*<\(\s*(?:curl|wget)\b/, label: 'process substitution executing a downloaded script' },
   { re: /\bnc\b[^\n]*\s-e\s/, label: 'netcat with command execution' },
   { re: /\/dev\/tcp\//, label: 'raw TCP socket via /dev/tcp' },
 ]
@@ -81,12 +86,74 @@ const CREDENTIAL_PATHS: ReadonlyArray<{ re: RegExp; label: string }> = [
   { re: /(?:^|\s)\/etc\/shadow\b/, label: 'system password database' },
 ]
 
-/** 1 起行号（按 `\n` 计）。 */
-function lineOf(text: string, index: number): number {
-  let line = 1
-  const end = Math.min(index, text.length)
-  for (let i = 0; i < end; i += 1) if (text.charCodeAt(i) === 10) line += 1
-  return line
+/** 明确二进制的资源只查体积：把 PNG 字节喂给文本规则只会产生噪声。 */
+const BINARY_FILE_RE = /\.(?:png|jpe?g|gif|webp|ico|bmp|avif|svgz|woff2?|ttf|otf|eot|zip|gz|tgz|bz2|xz|7z|rar|pdf|mp3|mp4|wav|ogg|webm|mov|bin|dat|db|sqlite|wasm|so|dll|dylib|exe|pyc|class|jar)$/i
+
+/** 归一化后的可审计文本。`disguised` 表示检测到编码伪装，调用方须阻断。 */
+export interface AuditText {
+  text: string
+  disguised: boolean
+}
+
+/**
+ * 剥掉 NUL / C0 控制字符 / 替换字符，保留 \t \n \r 与 ESC（ESC 自身是一条
+ * block 规则，不能在这里被抹掉），让剩余可见文本仍能命中规则。
+ */
+function stripHiddenBytes(text: string): string {
+  return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001A\u001C-\u001F\uFFFD]/g, '')
+}
+
+/**
+ * 把待落盘文件归一化成可审计文本。**所有导入入口必须共用这一个函数**。
+ *
+ * 旧判据「含 NUL 或解出 U+FFFD 就整体跳过文本规则」是可绕过的：往
+ * `SKILL.md` 或 `scripts/*.sh` 插一个 NUL、或把文件存成 UTF-16，就能让
+ * 隐藏字符 / 危险命令 / 凭据路径全部失效。现在按「这是什么文件」决定，
+ * 而不是按「字节长什么样」：文本类文件一律扫描，编码伪装本身即阻断级
+ * 发现；真正的二进制资源仍只查体积。
+ */
+export function asAuditText(relativePath: string, buffer: Buffer): AuditText | undefined {
+  const name = relativePath.split('/').pop() ?? relativePath
+  if (BINARY_FILE_RE.test(name)) return undefined
+
+  // UTF-16 LE/BE BOM：解码后仍要扫描，并标记为伪装（技能规范是 UTF-8）。
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return { text: stripHiddenBytes(buffer.subarray(2).toString('utf16le')), disguised: true }
+  }
+  if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+    const swapped = Buffer.from(buffer.subarray(2))
+    for (let i = 0; i + 1 < swapped.length; i += 2) {
+      const tmp = swapped[i]
+      swapped[i] = swapped[i + 1]
+      swapped[i + 1] = tmp
+    }
+    return { text: stripHiddenBytes(swapped.toString('utf16le')), disguised: true }
+  }
+
+  // UTF-8 BOM 是合法编码标记，剥掉后不算异常。
+  const body = buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf
+    ? buffer.subarray(3) : buffer
+  const decoded = body.toString('utf8')
+  const disguised = body.includes(0) || decoded.includes('\uFFFD')
+  return { text: disguised ? stripHiddenBytes(decoded) : decoded, disguised }
+}
+
+/** 预计算每行起点；每个 finding 查行号用二分，避免 O(文件长度 × finding 数)。 */
+function lineStartsOf(text: string): number[] {
+  const starts = [0]
+  for (let i = 0; i < text.length; i += 1) if (text.charCodeAt(i) === 10) starts.push(i + 1)
+  return starts
+}
+
+function lineOf(starts: readonly number[], index: number): number {
+  let lo = 0
+  let hi = starts.length - 1
+  let found = 0
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (starts[mid] <= index) { found = mid; lo = mid + 1 } else hi = mid - 1
+  }
+  return found + 1
 }
 
 /** 首个匹配位置与总数。每次新建带 `g` 的正则，避免 lastIndex 跨调用残留。 */
@@ -109,33 +176,36 @@ function collect(text: string, re: RegExp): { first: number; count: number } {
  */
 export function auditSkillText(relativePath: string, text: string): AuditFinding[] {
   const findings: AuditFinding[] = []
-  // 文件开头的 BOM 是合法编码标记，不算零宽隐藏；先剥掉再检测。
   const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+  // 反斜杠续行折成**等长**空格，index 与原文本逐字节对齐（行号不偏），
+  // 同时让 `curl URL \⏎ | sh` 这类 shell 单行写法能被规则命中。
+  const scanned = body.replace(/\\\r\n/g, '   ').replace(/\\\n/g, '  ')
+  const starts = lineStartsOf(body)
   const push = (rule: AuditRuleId, severity: AuditSeverity, message: string, index: number): void => {
-    findings.push({ rule, severity, file: relativePath, line: lineOf(body, index), message })
+    findings.push({ rule, severity, file: relativePath, line: lineOf(starts, index), message })
   }
 
-  if (ANSI_RE.test(body)) {
-    push('ansi-escape', 'block', 'contains a raw ESC control character — it can rewrite what a terminal displays (escape-sequence injection, CWE-150)', body.search(ANSI_RE))
+  if (ANSI_RE.test(scanned)) {
+    push('ansi-escape', 'block', 'contains a raw ESC control character — it can rewrite what a terminal displays (escape-sequence injection, CWE-150)', scanned.search(ANSI_RE))
   }
 
-  const tags = collect(body, UNICODE_TAG_RE)
+  const tags = collect(scanned, UNICODE_TAG_RE)
   if (tags.count > 0) {
     push('unicode-tag', 'block', `contains ${tags.count} invisible Unicode tag character(s); text hidden there is not rendered by any editor, so a reviewer cannot see what the agent reads`, tags.first)
   }
 
-  const bidi = collect(body, BIDI_RE)
+  const bidi = collect(scanned, BIDI_RE)
   if (bidi.count > 0) {
     push('bidi-control', 'block', `contains ${bidi.count} bidirectional control character(s); they can make the file read differently than it executes`, bidi.first)
   }
 
-  const zeroWidth = collect(body, ZERO_WIDTH_RE)
+  const zeroWidth = collect(scanned, ZERO_WIDTH_RE)
   if (zeroWidth.count > 0) {
     push('zero-width', 'warn', `contains ${zeroWidth.count} zero-width character(s); usually a copy-paste artifact, but they can also split a keyword so a reviewer's search misses it`, zeroWidth.first)
   }
 
   for (const { re, label } of DANGEROUS_COMMANDS) {
-    const hit = re.exec(body)
+    const hit = re.exec(scanned)
     if (hit !== null && hit.index !== undefined) {
       push('dangerous-command', 'warn', `contains ${label}: \`${hit[0].trim().slice(0, 120)}\``, hit.index)
       break
@@ -143,7 +213,7 @@ export function auditSkillText(relativePath: string, text: string): AuditFinding
   }
 
   for (const { re, label } of CREDENTIAL_PATHS) {
-    const hit = re.exec(body)
+    const hit = re.exec(scanned)
     if (hit !== null && hit.index !== undefined) {
       push('credential-path', 'warn', `references ${label}; check the surrounding instructions actually need it`, hit.index)
       break
@@ -153,14 +223,15 @@ export function auditSkillText(relativePath: string, text: string): AuditFinding
   return findings
 }
 
-/** description 超出规范上限：部分客户端会截断，技能因此静默失去自动激活能力。 */
+/** description 超出规范上限（按 Unicode 码点计，emoji 不再算 2 个字符）。 */
 export function auditDescription(file: string, description: string): AuditFinding[] {
-  if (description.length <= MAX_DESCRIPTION_CHARS) return []
+  const length = [...description].length
+  if (length <= MAX_DESCRIPTION_CHARS) return []
   return [{
     rule: 'description-too-long',
     severity: 'warn',
     file,
-    message: `description is ${description.length} chars; the Agent Skills spec caps it at ${MAX_DESCRIPTION_CHARS} and longer ones get truncated by clients, which silently stops the skill from auto-activating`,
+    message: `description is ${length} characters; the Agent Skills spec caps it at ${MAX_DESCRIPTION_CHARS} and longer ones get truncated by clients, which silently stops the skill from auto-activating`,
   }]
 }
 
@@ -169,13 +240,15 @@ export interface AuditBundleFile {
   /** 相对技能目录的路径。 */
   path: string
   size: number
-  /** 文本内容；二进制或未下载时省略。 */
+  /** 文本内容；二进制资源省略。 */
   text?: string
+  /** 编码伪装（NUL / UTF-16 / 非法 UTF-8）：文本类文件不该长这样。 */
+  disguised?: boolean
 }
 
 /**
  * 审计一个完整技能目录：体积/数量上限 + 每个文本文件的规则扫描。
- * `block` 级发现（体积越界）意味着不该落盘；文本级 `block` 由调用方决定。
+ * `block` 级发现（体积越界、编码伪装、隐藏字符）意味着不该落盘。
  */
 export function auditSkillBundle(files: readonly AuditBundleFile[], description?: string): AuditFinding[] {
   const findings: AuditFinding[] = []
@@ -205,6 +278,14 @@ export function auditSkillBundle(files: readonly AuditBundleFile[], description?
         message: `${formatBytes(file.size)} is over the ${formatBytes(MAX_SKILL_FILE_BYTES)} per-file limit`,
       })
       continue
+    }
+    if (file.disguised === true) {
+      findings.push({
+        rule: 'suspicious-encoding',
+        severity: 'block',
+        file: file.path,
+        message: 'text file uses an encoding disguise (NUL bytes, UTF-16, or invalid UTF-8); a normal SKILL.md/script is UTF-8, and hiding bytes here is how an install-time audit gets bypassed',
+      })
     }
     if (file.text !== undefined) findings.push(...auditSkillText(file.path, file.text))
   }

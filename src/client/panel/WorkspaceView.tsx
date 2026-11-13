@@ -4,7 +4,7 @@
  * stays a pure project tree.
  */
 
-import type { JSX } from 'react'
+import { useMemo, type JSX } from 'react'
 import { tt } from '../helpers.ts'
 import { isProjectSource } from '../grouping.ts'
 import { ProjectTree } from './ProjectTree.tsx'
@@ -13,7 +13,9 @@ import css from './panel.module.css'
 
 export function WorkspaceView(props: { hub: SkillHubState }): JSX.Element {
   const { hub } = props
-  const projectSkills = hub.sorted.filter((skill) => isProjectSource(skill.source))
+  const projectSkills = useMemo(() => hub.sorted.filter((skill) => isProjectSource(skill.source)), [hub.sorted])
+  // 必须 memo：`new Set()` 每次渲染都是新引用，行级 memo 会全部失效。
+  const duplicateNames = useMemo(() => new Set(hub.catalog?.duplicateNames ?? []), [hub.catalog])
   if (projectSkills.length === 0) {
     return <div className={css.empty}>{tt('panel.workspaceEmpty')}</div>
   }
@@ -23,7 +25,7 @@ export function WorkspaceView(props: { hub: SkillHubState }): JSX.Element {
     busyNames: hub.busyNames,
     editMode: hub.editMode,
     tagBusy: hub.tagBusy,
-    duplicateNames: new Set(hub.catalog?.duplicateNames ?? []),
+    duplicateNames,
     // Project skills are toggled through invocation overrides, never through
     // the disabled sidecar. Keep rows visible so the switch always represents
     // the current model-invocation state.

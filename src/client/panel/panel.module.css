@@ -144,9 +144,14 @@
 
 .empty { min-height: 150px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; font-size: var(--hub-fs-13); color: var(--hub-text-3); padding: 36px 16px; text-align: center; border: 1px dashed var(--hub-border-2); border-radius: var(--hub-radius-md); background: var(--hub-card-bg); }
 .diagRow { font-size: var(--hub-fs-12); padding: 9px 14px; border-left: 3px solid var(--hub-warn); background: rgba(210,153,34,.06); }
-/* 审计条目与发现诊断共用一块 UI：block 级换成红色边框，一眼分得出「文件没加载」
-   和「文件能加载但正文有问题」。 */
+/* 审计条目与发现诊断共用一块 UI：error 级换成红色边框，一眼分得出「技能不可用」
+   和「能加载但有问题」。级别由服务端 scanDiagnostics 给出，UI 只按 level 着色。 */
 .diagRowBlock { border-left-color: var(--hub-danger); background: rgba(209,36,47,.06); }
+.diagSectionTitle { display: flex; align-items: baseline; gap: 8px; }
+.diagSummary { font-size: var(--hub-fs-11); font-weight: 400; color: var(--hub-text-3); }
+.diagBadge { display: inline-block; margin-right: 6px; padding: 0 5px; border-radius: var(--hub-radius-xs); font-size: var(--hub-fs-11); font-weight: 700; vertical-align: 1px; }
+.diagBadgeError { color: var(--hub-danger); background: rgba(209,36,47,.12); }
+.diagBadgeWarn { color: var(--hub-warn-text); background: rgba(210,153,34,.14); }
 .auditBadge { display: inline-block; margin-right: 6px; padding: 0 5px; border-radius: var(--hub-radius-xs); font-size: var(--hub-fs-11); font-weight: 700; color: var(--hub-danger); background: rgba(209,36,47,.12); vertical-align: 1px; }
 .diagPath { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--hub-fs-11); color: var(--hub-text-2); word-break: break-all; }
 .diagReason { color: var(--hub-text-3); margin-top: 1px; }

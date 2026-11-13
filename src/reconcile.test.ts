@@ -2,7 +2,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { migrateRenamedDisabledSkills, pruneStaleDisabledSkills, reconcileDisabledSkills } from './reconcile.ts'
+import { migrateRenamedDisabledSkills, pruneStaleDisabledSkills, pruneStaleTrash, reconcileDisabledSkills } from './reconcile.ts'
 import { SkillHubStore, statePath } from './store.ts'
 
 describe('reconcileDisabledSkills', () => {
@@ -200,5 +200,62 @@ describe('migrateRenamedDisabledSkills', () => {
     const enabledPath = join(skillDir, 'SKILL.md')
     expect((await store.getDisabled('orphan'))?.path).toBe(enabledPath)
     expect(await store.listInvocationOverrides()).toContain(enabledPath)
+  })
+})
+
+describe('pruneStaleTrash', () => {
+  let dir: string
+  let home: string
+  let store: SkillHubStore
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dsh-skill-hub-trash-'))
+    home = join(dir, 'home')
+    await mkdir(join(home, 'skills', '.trash'), { recursive: true })
+    store = new SkillHubStore(statePath(home))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('removes records whose entry is gone and keeps the ones still on disk', async () => {
+    const liveDir = join(home, 'skills', '.trash', 'live-1')
+    await mkdir(liveDir, { recursive: true })
+    await writeFile(join(liveDir, 'SKILL.md'), '---\nname: live\ndescription: x\n---', 'utf8')
+    // 扁平文件形态的回收站条目也算存在。
+    const flat = join(home, 'skills', '.trash', 'flat-1.md')
+    await writeFile(flat, '---\nname: flat\ndescription: x\n---', 'utf8')
+
+    await store.addTrash({ name: 'live', path: liveDir, movedAt: 3 })
+    await store.addTrash({ name: 'flat', path: flat, movedAt: 2 })
+    await store.addTrash({ name: 'gone', path: join(home, 'skills', '.trash', 'gone-1'), movedAt: 1 })
+
+    const removed = await pruneStaleTrash(store)
+    expect(removed.map((entry) => entry.name)).toEqual(['gone'])
+    expect((await store.listTrash()).map((entry) => entry.name).sort()).toEqual(['flat', 'live'])
+    // 落盘：重开 store 也不会再出现那条死记录。
+    expect((await new SkillHubStore(statePath(home)).listTrash()).map((entry) => entry.name).sort()).toEqual(['flat', 'live'])
+  })
+
+  it('leaves records whose path is not inside a .trash directory alone', async () => {
+    const foreign = join(home, 'skills', 'not-trash', 'weird-1')
+    await store.addTrash({ name: 'weird', path: foreign, movedAt: 1 })
+
+    const removed = await pruneStaleTrash(store)
+    // 路径形态不认识就不动 —— 判据错就是删用户的记录。
+    expect(removed).toEqual([])
+    expect(await store.listTrash()).toHaveLength(1)
+  })
+
+  it('keeps a record when the parent exists but the entry is unreadable for reasons other than absence', async () => {
+    // 用一个内容不是目录的路径模拟「存在但 stat 失败之外的场景」：这里只断言
+    // 存在的文件不会被删（EACCES 之类的保护靠代码里只认 ENOENT/ENOTDIR）。
+    const file = join(home, 'skills', '.trash', 'file-1')
+    await writeFile(file, 'x', 'utf8')
+    await store.addTrash({ name: 'file', path: file, movedAt: 1 })
+
+    expect(await pruneStaleTrash(store)).toEqual([])
+    expect(await store.listTrash()).toHaveLength(1)
   })
 })
