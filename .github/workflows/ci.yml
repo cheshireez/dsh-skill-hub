@@ -34,11 +34,22 @@ jobs:
       - run: npm ci
       - run: npm run coverage
 
-  # The failures that were hardest to reproduce were never in typecheck/tests:
-  # a published tarball that only resolved its server-side bare imports on a
-  # developer machine (link: + the host's bareModuleBaseUrl), and optional peers
-  # being auto-installed into a clean profile. Install the exact artifact we
-  # would publish into an empty directory and check the imports resolve there.
+  # The failures that were hardest to reproduce were never in typecheck/tests.
+  # Two opposite failure modes are at play, and both were hit for real:
+  #
+  #   a) vendoring the dsh runtime into `dependencies` pins a version that
+  #      drifts from the host. `@deepseek-ai/dsh-skill`'s `latest` tag is stuck
+  #      at 0.0.1-rc.1, so a floor of `0.1.7-alpha.1` resolves to 0.1.7-rc.2
+  #      while the host runs 0.2.2 — a second, older copy of the runtime.
+  #   b) declaring them as optional peers only means the server entry's
+  #      `import '@deepseek-ai/schemastery'` resolves through the host's shared
+  #      profile tree (`~/.dsh/profiles/node_modules`). That is what every other
+  #      third-party plugin does, and it is why the host ships a complete
+  #      runtime next to the profile.
+  #
+  # So the published artifact must NOT carry the dsh runtime. These checks pin
+  # that down on the exact artifact we would publish; actual loadability can
+  # only be verified against a real host profile, not an empty directory.
   clean-install:
     name: clean-profile install smoke
     runs-on: ubuntu-latest
@@ -60,7 +71,35 @@ jobs:
           cd /tmp/dsh-clean
           npm init -y >/dev/null
           npm install /tmp/dsh-pack/dsh-skill-hub-*.tgz --omit=dev --no-audit --no-fund
-      - name: Server entry's bare imports must resolve from the clean tree
+      - name: Artifact must not vendor the dsh runtime
         run: |
           cd /tmp/dsh-clean
-          node --input-type=module -e "await import('@deepseek-ai/schemastery'); await import('@deepseek-ai/dsh-skill'); console.log('clean-profile bare imports resolved')"
+          node -e "
+          const assert = require('node:assert')
+          const fs = require('node:fs')
+          const pkg = require('./node_modules/dsh-skill-hub/package.json')
+
+          // Only the genuinely private runtime dependency may be bundled.
+          assert.deepEqual(Object.keys(pkg.dependencies ?? {}), ['js-yaml'], 'dependencies must not contain dsh packages')
+
+          // The two packages the server entry imports at top level stay peers,
+          // and every peer stays optional (a required peer gets auto-installed
+          // into the profile and drags the whole host tree with it).
+          for (const name of ['@deepseek-ai/schemastery', '@deepseek-ai/dsh-skill']) {
+            assert.ok(pkg.peerDependencies?.[name], name + ' must stay a peerDependency')
+            assert.equal(pkg.peerDependenciesMeta?.[name]?.optional, true, name + ' must stay an optional peer')
+          }
+          for (const [name, meta] of Object.entries(pkg.peerDependenciesMeta ?? {})) {
+            assert.equal(meta.optional, true, name + ' must be an optional peer')
+          }
+
+          // Nothing from the dsh runtime may land in the clean tree.
+          assert.ok(!fs.existsSync('node_modules/@deepseek-ai'), '@deepseek-ai must not be installed into a clean tree')
+
+          // Ship the surfaces the host loads.
+          for (const f of ['lib/index.js', 'lib/client.js']) {
+            assert.ok(fs.existsSync('node_modules/dsh-skill-hub/' + f), f + ' must be in the tarball')
+          }
+
+          console.log('clean tree carries no dsh runtime; peers stay optional; entrypoints present')
+          "
