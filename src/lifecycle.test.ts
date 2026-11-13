@@ -17,11 +17,18 @@ function fakeHost() {
   const routes: string[] = []
   const injected: Array<(context: unknown) => void> = []
   const fiber: { uid: number | null } = { uid: 1 }
+  /** The HTTP surface is read through `ctx.get('webServer')` now, not injected. */
+  const webServer = {
+    register: (route: { path: string }) => {
+      routes.push(route.path)
+      return () => {}
+    },
+  }
   const context = {
     fiber,
     logger: { info: () => {}, warn: () => {} },
-    /** No optional services (settings) and no Connection: every optional path degrades. */
-    get: () => undefined,
+    /** Only `webServer` resolves; settings and Connection stay absent so every optional path degrades. */
+    get: (name: string) => (name === 'webServer' ? webServer : undefined),
     skills: {
       registerProvider: () => () => {},
       snapshot: async () => ({ skills: [], complete: true }),
@@ -33,12 +40,7 @@ function fakeHost() {
         return () => {}
       },
     },
-    webServer: {
-      register: (route: { path: string }) => {
-        routes.push(route.path)
-        return () => {}
-      },
-    },
+    webServer,
     effect: (body: () => unknown) => {
       const produced = body()
       return () => {

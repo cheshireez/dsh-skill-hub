@@ -35,8 +35,17 @@ import { homedir } from 'node:os'
 /** Stable cordis plugin name (matches cordis.patch.yml insert id). */
 export const name = 'skill-hub'
 
-/** Services required before the skill-hub surfaces can mount. `settings` is deliberately NOT here: the plugin reads its own volatile config refs and only reaches for the settings service when it is present (issue #11). */
-export const inject = ['webServer', 'skills', 'systemPrompt']
+/**
+ * Services required before the skill-hub surfaces can mount. `settings` is deliberately NOT here: the plugin reads its own volatile config refs and only reaches for the settings service when it is present (issue #11).
+ *
+ * `webServer` is deliberately NOT here either. It only exists in the web
+ * profile (`dsh-base` + `dsh-web-app`); declaring it required makes the plugin
+ * sit in `pending (waiting for service: webServer)` forever in the headless /
+ * acp / sdk profiles, and the host reports `1 entry did not activate` — on a
+ * bare `dsh-base` profile that escalates to `plugin tree failed to load`.
+ * HTTP routes are registered conditionally instead (see the routes effect).
+ */
+export const inject = ['skills', 'systemPrompt']
 
 /**
  * Plugin config, validated by the same-named schemastery schema.
@@ -378,6 +387,14 @@ export function apply(ctx: Context, config?: Config): void {
     }
     disposeRoutes = ctx.effect(
       () => {
+        // A non-web profile has no HTTP surface at all. Skipping here keeps the
+        // plugin activated (skills provider + dots still work) instead of
+        // blocking the whole boot on a service that can never arrive.
+        const webServer = ctx.get('webServer')
+        if (webServer === undefined) {
+          logInfo('[dsh-skill-hub] webServer absent — HTTP routes skipped (non-web profile)')
+          return () => {}
+        }
         const disposers = makeRoutes({
           skills: ctx.skills,
           store,
@@ -398,7 +415,7 @@ export function apply(ctx: Context, config?: Config): void {
           config: current,
           saved,
           updateConfig,
-        }).map((route) => ctx.webServer.register(route))
+        }).map((route) => webServer.register(route))
         return () => {
           for (const dispose of disposers) dispose()
         }
