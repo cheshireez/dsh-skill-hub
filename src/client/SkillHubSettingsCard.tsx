@@ -11,10 +11,14 @@
 import { useEffect, useState, type ReactElement } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { UpdateCheckResponse } from '../protocol.ts'
 import { SkillHubApi } from './api.ts'
+import { tt } from './helpers.ts'
 import type { HubKey } from './locales.ts'
 import { ColorField, NumberField, PluginSettingsCard, SecretField, SwitchField } from './settings-card.tsx'
 import { booleanField, CardForm, colorField, numberField, secretField, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
+// 复用卡片自己的样式表：更新提示 pill 与版本徽标必须同一套 token 与尺寸。
+import css from './settings-card.module.css'
 // Single source for the TS-side dot defaults (the panel CSS mirrors these).
 import { DEFAULT_DOT_MODEL_COLOR, DEFAULT_DOT_USER_COLOR } from './panel/format.ts'
 
@@ -121,11 +125,18 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
   const state = props.useSkillHubSettingsCard((snapshot) => snapshot)
   // 插件自身版本：挂载时从 config 路由取一次（与面板标题徽标同源），失败静默不显示。
   const [version, setVersion] = useState<string | undefined>(undefined)
+  // 更新状态：服务端缓存 10 分钟，所以「打开设置页」最多一次本地请求，
+  // 不会因为反复进设置页把 registry / GitHub 打满。
+  const [update, setUpdate] = useState<UpdateCheckResponse | null>(null)
   useEffect(() => {
     let cancelled = false
-    void new SkillHubApi().config()
+    const api = new SkillHubApi()
+    void api.config()
       .then((res) => { if (!cancelled && res.ok) setVersion(res.pluginVersion) })
       .catch(() => { /* 版本徽标是装饰性的，失败不提示 */ })
+    void api.updateCheck()
+      .then((res) => { if (!cancelled) setUpdate(res) })
+      .catch(() => { /* 检查失败不打扰：面板「⋯ → 检查更新」仍可手动重试 */ })
     return () => { cancelled = true }
   }, [])
   const disabled = !state.writable
@@ -140,6 +151,9 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
       titleKey='settings.title'
       descriptionKey='settings.description'
       version={version}
+      versionExtra={update !== null && update.updateAvailable && update.url !== null
+        ? <a className={css.updateTag} href={update.url} target='_blank' rel='noreferrer'>{tt('update.newVersion', { version: update.latestVersion ?? '' })}</a>
+        : undefined}
       state={state}
       onSave={props.save}
       onDiscard={props.discard}

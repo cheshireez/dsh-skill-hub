@@ -9,6 +9,10 @@
 .name { color: var(--dsw-alias-label-primary); font-size: 15px; font-weight: 600; line-height: 1.4; }
 .description { color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 1.5; }
 .versionTag { font-size: 12px; font-weight: 500; opacity: .45; margin-left: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; vertical-align: 1px; }
+/* 版本徽标旁的更新提示：pill 尺寸，靠品牌色区分，不抢标题。颜色 all 走 token，
+   深色主题下自动跟随，不写死具体色值。 */
+.updateTag { margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 17px; white-space: nowrap; vertical-align: 1px; color: var(--dsw-alias-brand-primary, #3b82f6); background: color-mix(in srgb, currentColor 12%, transparent); text-decoration: none; }
+.updateTag:hover { text-decoration: underline; }
 .pending { white-space: nowrap; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); border-radius: 999px; flex: none; padding: 1px 8px; font-size: 11px; font-weight: 500; line-height: 17px; }
 .chevron, .chevronOpen { color: var(--dsw-alias-label-tertiary); flex: none; transition: transform .16s; }
 .chevronOpen { transform: rotate(180deg); }

@@ -34,7 +34,8 @@ export function useMetaFlow(api: SkillHubApi) {
   const checkUpdate = useCallback(async (): Promise<void> => {
     setUpdateState({ status: 'checking' })
     try {
-      setUpdateState({ status: 'ready', data: await api.updateCheck() })
+      // 用户主动点的，绕开服务端缓存（force）——点了就该看到真实结果。
+      setUpdateState({ status: 'ready', data: await api.updateCheck(true) })
     } catch (error) {
       setUpdateState({ status: 'error', message: errorMessage(error) })
     }

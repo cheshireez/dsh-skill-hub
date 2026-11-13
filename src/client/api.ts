@@ -285,9 +285,12 @@ export class SkillHubApi {
     return this.post<MarketSourceResponse>(SKILL_HUB_API.marketSourceRef, { repo, ref } satisfies MarketSourceRefRequest)
   }
 
-  /** Release notes / latest version of the hub's own GitHub release. */
-  updateCheck(): Promise<UpdateCheckResponse> {
-    return this.get<UpdateCheckResponse>(SKILL_HUB_API.update, '', NETWORK_TIMEOUT_MS)
+  /**
+   * Latest published version of the hub itself.
+   * @param refresh - 绕过服务端 10 分钟缓存，强制重查（用户主动点「检查更新」）。
+   */
+  updateCheck(refresh = false): Promise<UpdateCheckResponse> {
+    return this.get<UpdateCheckResponse>(SKILL_HUB_API.update, refresh ? '?refresh=1' : '', NETWORK_TIMEOUT_MS)
   }
 
   /**

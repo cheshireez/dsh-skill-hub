@@ -23,6 +23,12 @@ export interface PluginSettingsCardProps {
   descriptionKey: HubKey
   /** 插件自身版本（可选）：显示在标题旁的小徽标；缺省不渲染。 */
   version?: string
+  /**
+   * 版本徽标右侧的附加节点（可选）：调用方决定渲染什么，通常是「有新版本」
+   * 这类提示。放在标题行是因为折叠状态下也看得见 —— 更新提示藏在展开区里
+   * 等于没有。
+   */
+  versionExtra?: ReactElement
   /** The form shell state. */
   state: CardShell
   onSave: () => void
@@ -51,7 +57,7 @@ export function PluginSettingsCard(props: PluginSettingsCardProps): ReactElement
       onClick={() => { setOpen(!open) }}
     >
       <span className={css.headText}>
-        <span className={css.name}>{title}{props.version !== undefined ? <span className={css.versionTag}>v{props.version}</span> : null}</span>
+        <span className={css.name}>{title}{props.version !== undefined ? <span className={css.versionTag}>v{props.version}</span> : null}{props.versionExtra}</span>
         <span className={css.description}>{props.t(props.descriptionKey)}</span>
       </span>
       {state.dirty ? <span className={css.pending}>{props.t('settings.unsaved')}</span> : null}

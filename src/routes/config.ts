@@ -14,7 +14,7 @@ import {
   type HubConfig,
 } from '../protocol.ts'
 import { fixDiagnosticFile } from '../skillfs.ts'
-import { checkLatestRelease, CURRENT_VERSION } from '../update.ts'
+import { checkLatestRelease, CURRENT_VERSION, UPDATE_REPO } from '../update.ts'
 import {
   configOf,
   homeOf,
@@ -106,12 +106,13 @@ export function configRoutes(deps: SkillHubRouteDeps): RouteSpec[] {
       },
     },
     // -------------------------------------------------------------- update
-    // 自身更新检查：查询 GitHub latest release。
+    // 自身更新检查：npm registry 的 latest tag 为准（用户实际能装到的版本），
+    // GitHub release 兜底。结果缓存 10 分钟，`?refresh=1` 强制重查。
     {
       path: SKILL_HUB_API.update,
       methods: ['GET'],
-      handler: async ({ res }) => {
-        writeJson(res, 200, await checkLatestRelease())
+      handler: async ({ res, url }) => {
+        writeJson(res, 200, await checkLatestRelease(UPDATE_REPO, fetch, { refresh: url.searchParams.get('refresh') === '1' }))
       },
     },
     // -------------------------------------------------------- diagnostic fix
