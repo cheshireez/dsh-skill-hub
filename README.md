@@ -116,7 +116,7 @@ Host uses only `ctx.skills.snapshot/get`, `ctx.webServer.register`, `ctx.systemP
 
 ```bash
 npm run typecheck  # tsc --noEmit
-npm test           # 541 tests, 26 suites
+npm test           # 543 tests, 26 suites
 npm run build      # tsc + tsdown → lib/index.js + lib/client.js
 ```
 
