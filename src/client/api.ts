@@ -68,6 +68,7 @@ import {
   type UpdateCheckResponse,
   type ZipImportResponse,
 } from '../protocol.ts'
+import { tt } from './helpers.ts'
 
 /** Error carrying the route's JSON error message. */
 export class SkillHubApiError extends Error {
@@ -130,25 +131,42 @@ export function resolveApiUrl(path: string): string {
  * host wedged) must never leave the panel stuck on "loading" forever — it
  * fails fast and surfaces the error banner instead.
  *
- * Read calls keep the 10s budget; writes that pull tens of files over the
- * network get `WRITE_TIMEOUT_MS` instead. Measured on a machine behind a TUN
- * proxy: a full 11-skill source sync takes 12.3s cold, so the old 10s default
- * aborted a sync that had already landed every file server-side — the panel
- * reported an error while the skills on disk were fresh.
+ * 两档预算：纯本地读写 10s；服务端要出网（GitHub / skills.sh）的接口 60s。
+ * 实测一个 11 技能的来源同步冷启动 12.3s，旧的 10s 默认值会在文件已经落盘
+ * 之后还报错；/repo 扫描更要串行三次 GitHub 往返。
  */
-const WRITE_TIMEOUT_MS = 60_000
-/** 市场检查会并发访问每个源；读接口默认 10s 在多源/慢代理下会误报超时。 */
-const MARKET_CHECK_TIMEOUT_MS = 60_000
+/** 纯本地读接口的预算：读 sidecar / 枚举目录不该让用户久等。 */
+const DEFAULT_TIMEOUT_MS = 10_000
+/**
+ * 会触发服务端出网（GitHub / skills.sh）的接口预算。
+ * 服务端每个 GitHub 请求有 30s 硬上限，而 /repo 扫描要串行 3 次往返
+ * （release → commit → tree），慢代理下 10s 必然误报超时；实测一个
+ * 11 技能的来源同步冷启动 12.3s 也会撞上旧默认值。市场检查与写接口
+ * 此前各自放宽到 60s，这里统一收口，避免下一个出网接口再踩一次。
+ */
+const NETWORK_TIMEOUT_MS = 60_000
 
-async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ms = 10_000): Promise<Response> {
+async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ms = DEFAULT_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), ms)
+  // `abort()` 不传 reason 时，Chromium 抛
+  // DOMException('signal is aborted without reason', 'AbortError')，
+  // errorMessage() 会把这句英文原样摆到面板上 —— 用户分不清是「超时」
+  // 还是「上游坏了」。带上 reason，并在下面把 AbortError 翻成可读文案。
+  const seconds = Math.round(ms / 1000)
+  const timer = setTimeout(
+    () => controller.abort(new DOMException('request timed out after ' + seconds + 's', 'TimeoutError')),
+    ms,
+  )
   const caller = init?.signal
   // Never overwrite a caller-supplied signal: the old `{ ...init, signal }`
   // made every in-flight request impossible to cancel from the caller side.
   const signal = caller != null ? AbortSignal.any([caller, controller.signal]) : controller.signal
   try {
     return await fetch(typeof input === 'string' ? resolveApiUrl(input) : input, { ...init, signal })
+  } catch (error) {
+    if (controller.signal.aborted) throw new SkillHubApiError(tt('err.timeout', { seconds }))
+    if (error instanceof Error && error.name === 'AbortError') throw new SkillHubApiError(tt('err.cancelled'))
+    throw error
   } finally {
     clearTimeout(timer)
   }
@@ -239,12 +257,12 @@ export class SkillHubApi {
   /** Stars + downloads per market source (hourly server-side cache; refresh=1 refetches stale entries). */
   marketStats(refresh = false): Promise<MarketStatsResponse> {
     const query = refresh ? '?refresh=1' : ''
-    return this.get<MarketStatsResponse>(SKILL_HUB_API.marketStats, query, refresh ? 60_000 : undefined)
+    return this.get<MarketStatsResponse>(SKILL_HUB_API.marketStats, query, refresh ? NETWORK_TIMEOUT_MS : undefined)
   }
 
   /** Check every market source for updates (throttled server-side). */
   marketCheck(): Promise<MarketCheckResponse> {
-    return this.get<MarketCheckResponse>(SKILL_HUB_API.marketCheck, '', MARKET_CHECK_TIMEOUT_MS)
+    return this.get<MarketCheckResponse>(SKILL_HUB_API.marketCheck, '', NETWORK_TIMEOUT_MS)
   }
 
   /**
@@ -254,12 +272,12 @@ export class SkillHubApi {
    */
   marketSync(repo: string, ref?: string): Promise<MarketSyncResponse> {
     const payload: MarketSyncRequest = ref !== undefined && ref !== '' ? { repo, ref } : { repo }
-    return this.post<MarketSyncResponse>(SKILL_HUB_API.marketSync, payload, WRITE_TIMEOUT_MS)
+    return this.post<MarketSyncResponse>(SKILL_HUB_API.marketSync, payload, NETWORK_TIMEOUT_MS)
   }
 
   /** Releases + branches of a market source for the version picker. */
   marketSourceVersions(repo: string): Promise<MarketSourceVersionsResponse> {
-    return this.get<MarketSourceVersionsResponse>(SKILL_HUB_API.marketSourceVersions, '?repo=' + encodeURIComponent(repo))
+    return this.get<MarketSourceVersionsResponse>(SKILL_HUB_API.marketSourceVersions, '?repo=' + encodeURIComponent(repo), NETWORK_TIMEOUT_MS)
   }
 
   /** Pin a market source to an explicit ref (branch picker). */
@@ -269,7 +287,7 @@ export class SkillHubApi {
 
   /** Release notes / latest version of the hub's own GitHub release. */
   updateCheck(): Promise<UpdateCheckResponse> {
-    return this.get<UpdateCheckResponse>(SKILL_HUB_API.update)
+    return this.get<UpdateCheckResponse>(SKILL_HUB_API.update, '', NETWORK_TIMEOUT_MS)
   }
 
   /**
@@ -280,7 +298,7 @@ export class SkillHubApi {
    * 可以直接当市场源入参。
    */
   searchSkillsSh(query: string): Promise<MarketSkillsShResponse> {
-    return this.get<MarketSkillsShResponse>(SKILL_HUB_API.marketSkillsSh, '?q=' + encodeURIComponent(query))
+    return this.get<MarketSkillsShResponse>(SKILL_HUB_API.marketSkillsSh, '?q=' + encodeURIComponent(query), NETWORK_TIMEOUT_MS)
   }
 
   /**
@@ -292,18 +310,18 @@ export class SkillHubApi {
    */
   installSkillsShSkill(source: string, skillId: string): Promise<MarketSkillsShInstallResponse> {
     const payload: MarketSkillsShInstallRequest = { source, skillId }
-    return this.post<MarketSkillsShInstallResponse>(SKILL_HUB_API.marketSkillsShInstall, payload)
+    return this.post<MarketSkillsShInstallResponse>(SKILL_HUB_API.marketSkillsShInstall, payload, NETWORK_TIMEOUT_MS)
   }
 
   /** Discover importable skills in a GitHub repo. */
   repoDiscover(repo: string): Promise<RepoDiscoverResponse> {
-    return this.get<RepoDiscoverResponse>(SKILL_HUB_API.repo, '?repo=' + encodeURIComponent(repo))
+    return this.get<RepoDiscoverResponse>(SKILL_HUB_API.repo, '?repo=' + encodeURIComponent(repo), NETWORK_TIMEOUT_MS)
   }
 
   /** Install selected repo skills into the user-dsh root (records the source). Returns jobId for polling. */
   repoImport(repo: string, paths: string[], ref?: string): Promise<RepoImportResponse> {
     const payload: RepoImportRequest = { repo, paths, ...(ref !== undefined && ref !== '' ? { ref } : {}) }
-    return this.post<RepoImportResponse>(SKILL_HUB_API.repoImport, payload)
+    return this.post<RepoImportResponse>(SKILL_HUB_API.repoImport, payload, NETWORK_TIMEOUT_MS)
   }
 
   /** Poll import job progress (B方案轮询) */
@@ -383,20 +401,20 @@ export class SkillHubApi {
       method: 'POST',
       headers: writeHeaders({ 'content-type': 'application/zip' }),
       body: await file.arrayBuffer(),
-    }, 60_000)
+    }, NETWORK_TIMEOUT_MS)
     return readJson<ZipImportResponse>(response)
   }
 
   /** 检查指定（或全部）来源的上游更新。 */
   checkSources(repo?: string): Promise<SourceCheckResponse> {
     const payload: SourceCheckRequest = repo !== undefined ? { repo } : {}
-    return this.post<SourceCheckResponse>(SKILL_HUB_API.sourceCheck, payload)
+    return this.post<SourceCheckResponse>(SKILL_HUB_API.sourceCheck, payload, NETWORK_TIMEOUT_MS)
   }
 
   /** 同步一个来源的所选（或全部）技能到上游最新版本。 */
   syncSource(repo: string, skills?: string[]): Promise<SourceSyncResponse> {
     const payload: SourceSyncRequest = skills !== undefined ? { repo, skills } : { repo }
-    return this.post<SourceSyncResponse>(SKILL_HUB_API.sourceSync, payload, WRITE_TIMEOUT_MS)
+    return this.post<SourceSyncResponse>(SKILL_HUB_API.sourceSync, payload, NETWORK_TIMEOUT_MS)
   }
 
   /** 跟进上游删除：把所选技能移入回收站。 */

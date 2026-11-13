@@ -68,6 +68,8 @@ export const zhCommon = {
   'form.success': '已创建：',
   'form.error': '创建失败：',
   'err.dismiss': '知道了',
+  'err.timeout': '请求超时（{seconds} 秒）。上游 GitHub / skills.sh 响应慢，请检查网络或代理后重试。',
+  'err.cancelled': '请求已取消。',
 } as const
 
 export const enCommon: Record<keyof typeof zhCommon, string> = {
@@ -139,4 +141,6 @@ export const enCommon: Record<keyof typeof zhCommon, string> = {
   'form.success': 'Created: ',
   'form.error': 'Create failed: ',
   'err.dismiss': 'Dismiss',
+  'err.timeout': 'Request timed out after {seconds}s. GitHub / skills.sh is slow — check your network or proxy and retry.',
+  'err.cancelled': 'Request cancelled.',
 }
