@@ -65,6 +65,8 @@ import {
   type ToggleBatchResponse,
   type ToggleRequest,
   type ToggleResponse,
+  type UpdateApplyRequest,
+  type UpdateApplyResponse,
   type UpdateCheckResponse,
   type ZipImportResponse,
 } from '../protocol.ts'
@@ -145,6 +147,11 @@ const DEFAULT_TIMEOUT_MS = 10_000
  * 此前各自放宽到 60s，这里统一收口，避免下一个出网接口再踩一次。
  */
 const NETWORK_TIMEOUT_MS = 60_000
+/**
+ * 一键更新的预算：服务端会同步跑包管理器（上限 5 分钟），这里给 4 分钟 ——
+ * 比服务端早一点放弃，宁可报超时也不要让面板无限挂着。
+ */
+const UPDATE_APPLY_TIMEOUT_MS = 240_000
 
 async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ms = DEFAULT_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController()
@@ -291,6 +298,15 @@ export class SkillHubApi {
    */
   updateCheck(refresh = false): Promise<UpdateCheckResponse> {
     return this.get<UpdateCheckResponse>(SKILL_HUB_API.update, refresh ? '?refresh=1' : '', NETWORK_TIMEOUT_MS)
+  }
+
+  /**
+   * Install one exact version into the profile that owns this copy.
+   * 服务端会拒绝 link 到开发目录的安装（那份换了会断开开发流程），
+   * 拒绝原因放在响应的 `error` 里，不是 HTTP 错误。
+   */
+  applyUpdate(version: string): Promise<UpdateApplyResponse> {
+    return this.post<UpdateApplyResponse>(SKILL_HUB_API.updateApply, { version } satisfies UpdateApplyRequest, UPDATE_APPLY_TIMEOUT_MS)
   }
 
   /**

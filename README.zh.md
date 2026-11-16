@@ -49,7 +49,7 @@ dsh plugin --profile web add dsh-skill-hub
 - **项目技能开关** — 项目技能可以停用，方式是**模型调用覆盖**（invocation override）：hub 在每个 agent 的技能层里再注册一次自己的 provider，用同名条目把宿主原生条目盖掉，把该技能的 `modelInvocable` 压成 false —— 模型不再自动调用，「/技能名」手动调用保留，**项目文件一个字节都不动**（git 仓库零污染）。停用状态存在 hub 的 sidecar 里，开关即写即生效；再点一次恢复。
 - **从 ZIP 导入** — 选一个 `.zip`：包内每个含 `SKILL.md` 的目录算一个技能，整包是一个技能还是技能集合都支持，逐个独立成败、逐个过内容审计。解压前先拦路径穿越、符号链接、加密包、ZIP64 与解压炸弹；落盘走临时目录 + 原子改名，失败不留半成品；同名已启用的跳过，只有禁用占位或空壳才移入回收站让位（可恢复）。
 - **统计** — 会话日志的调用次数+最近使用，分组头汇总；窗口与扫描间隔在设置卡片实时可调。
-- **设置卡片** — 注册在 **插件管理页** 的插件自有页面上（侧边栏「插件」→ dsh-skill-hub，默认折叠，点标题展开）：总开关、向 Agent 公告、调用圆点颜色、用量显示开关、统计窗口/间隔。标题行的版本徽标旁会提示新版本（**检查更新** 以 npm registry 的 `latest` 为准 —— 也就是 `dsh plugin add` 实际会装到的版本；GitHub release 仅作兜底，结果缓存 10 分钟），点击直达 Release。
+- **设置卡片** — 注册在 **插件管理页** 的插件自有页面上（侧边栏「插件」→ dsh-skill-hub，默认折叠，点标题展开）：总开关、向 Agent 公告、调用圆点颜色、用量显示开关、统计窗口/间隔。标题行的版本徽标旁会提示新版本（**检查更新** 以 npm registry 的 `latest` 为准 —— 也就是 `dsh plugin add` 实际会装到的版本；GitHub release 仅作兜底，结果缓存 10 分钟），旁边带一个**立即更新**按钮：装在 profile 里的拷贝可以直接点它升级，装好后提示重启生效；被 `link:` 到开发目录的拷贝会被明确拒绝（那份换了会断开开发流程），Electron 独占的 profile 则由宿主自己拒绝。
 
 ## 内容审计与公告预算
 
@@ -57,6 +57,7 @@ dsh plugin --profile web add dsh-skill-hub
 | --- | --- |
 | 内容审计 | 裸 ESC / Unicode 标签字符 / 双向控制符 / 零宽字符 / `curl … \| sh` / SSH 与云凭据路径 / 单文件 2 MiB、单技能 10 MiB、500 文件上限。阻断级（拒绝落盘，市场导入整包拒绝并清掉临时目录）：裸 ESC / Unicode 标签字符 / 双向控制符 / 编码伪装 / 体积上限。警告级（只标记、不阻断，这些有正当用途）：零宽字符、`curl … \| sh` / 凭据路径 / 超长 description。纯本地静态匹配，不出网、不跑模型。 |
 | 公告预算 | 一层渐进加载注入的 name + description 总量随目录一起返回，面板显示字符数与 token 估算，超 8000 字符变红 —— 客户端会截断尾部条目，表现为「装了却不触发」。 |
+| 插件公告 | 「向 Agent 公告」开启时，往系统提示注入一段 **340 字符**的中文路由说明（管理主页位置、能力概览、可写范围与 sidecar 开关规则、触发词）。**只发中文**：英文段曾是它的逐句翻译，属纯冗余 —— 双语合计 5023 字符、占整个 System Prompt 的 46.8%（issue #23）。 |
 
 `SKILL.md` 模板：
 
@@ -109,7 +110,8 @@ GitHub 仓库 ──扫描/导入──▶ ~/.dsh/skills
 | `/api/skill-hub/foreign` | GET | 其他 agent 技能目录的只读扫描（用户级 + 项目级；项目根从已登记工作区推） |
 | `/api/skill-hub/foreign/import` | POST | `{items:[{agent,name,scope?,projectRoot?}]}` 收编到 `~/.dsh/skills`（用户级）或该项目的 `.dsh/skills`（项目级） |
 | `/api/skill-hub/import/zip` | POST | 原始 `.zip` 字节（`content-type: application/zip`，≤32 MiB）；包内每个含 `SKILL.md` 的目录作为一个技能，逐个审计后落盘 |
-| `/api/skill-hub/update` | GET | 插件最新发布 |
+| `/api/skill-hub/update` | GET | 插件最新发布（`?refresh=1` 绕过 10 分钟缓存） |
+| `/api/skill-hub/update/apply` | POST | `{version}` 把该版本装进当前 profile；`link:` 安装与 Electron 独占的 profile 会被拒绝（原因在 `error`，HTTP 仍是 200） |
 | 未知的 `/api/skill-hub/*` | GET/POST | `404 {error}` 且写明路径 —— 拼错路径不该被读成鉴权失败（宿主 SPA fallback 对自己不拥有的 `/api/*` 一律回 401） |
 
 ## 开发

@@ -11,9 +11,9 @@
 import { useEffect, useState, type ReactElement } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { UpdateCheckResponse } from '../protocol.ts'
+import type { UpdateApplyResponse, UpdateCheckResponse } from '../protocol.ts'
 import { SkillHubApi } from './api.ts'
-import { tt } from './helpers.ts'
+import { errorMessage, tt } from './helpers.ts'
 import type { HubKey } from './locales.ts'
 import { ColorField, NumberField, PluginSettingsCard, SecretField, SwitchField } from './settings-card.tsx'
 import { booleanField, CardForm, colorField, numberField, secretField, type CardShell, type FieldState, type FormScope } from './settings-form.ts'
@@ -128,6 +128,9 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
   // 更新状态：服务端缓存 10 分钟，所以「打开设置页」最多一次本地请求，
   // 不会因为反复进设置页把 registry / GitHub 打满。
   const [update, setUpdate] = useState<UpdateCheckResponse | null>(null)
+  // 一键更新：进行中的状态与结果都留在本地 —— 它不进配置表单，不该被「保存/放弃」影响。
+  const [applying, setApplying] = useState(false)
+  const [applyOutcome, setApplyOutcome] = useState<UpdateApplyResponse | null>(null)
   useEffect(() => {
     let cancelled = false
     const api = new SkillHubApi()
@@ -139,6 +142,36 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
       .catch(() => { /* 检查失败不打扰：面板「⋯ → 检查更新」仍可手动重试 */ })
     return () => { cancelled = true }
   }, [])
+  const runUpdate = (target: string): void => {
+    if (applying) return
+    setApplying(true)
+    setApplyOutcome(null)
+    void new SkillHubApi().applyUpdate(target)
+      .then((result) => { setApplyOutcome(result) })
+      .catch((error: unknown) => {
+        // 网络/超时是拒绝（Promise reject），与「服务端说不行」分开处理，但都用同一种展示。
+        setApplyOutcome({ ok: true, appliedVersion: null, restartRequired: false, installKind: 'development', error: errorMessage(error) })
+      })
+      .finally(() => { setApplying(false) })
+  }
+  // 标题行的更新区：待重启 > 进行中 > 失败 > 有新版本。一次只显示一种，
+  // 标题行空间有限，堆两种状态会看不清当前到底发生了什么。
+  const versionExtra = ((): ReactElement | undefined => {
+    const pending = applyOutcome?.appliedVersion ?? update?.pendingRestartVersion
+    if (pending !== undefined) return <span className={css.updateTag}>{tt('update.pendingRestart', { version: pending })}</span>
+    if (applying) return <span className={css.updateTag}>{tt('update.applying')}</span>
+    if (applyOutcome?.error !== undefined) {
+      return <span className={css.updateTag + ' ' + css.updateTagFailed} title={tt('update.applyFailedHint', { error: applyOutcome.error })}>{tt('update.applyFailed')}</span>
+    }
+    const target = update?.updateAvailable === true ? update.latestVersion : null
+    if (target === null || target === undefined) return undefined
+    return (
+      <>
+        {update?.url != null ? <a className={css.updateTag} href={update.url} target='_blank' rel='noreferrer'>{tt('update.newVersion', { version: target })}</a> : null}
+        <button type='button' className={css.updateApply} onClick={() => { runUpdate(target) }}>{tt('update.apply')}</button>
+      </>
+    )
+  })()
   const disabled = !state.writable
   const fieldProps = {
     overriddenLabel: t('settings.overridden'),
@@ -151,9 +184,7 @@ export function SkillHubSettingsCard(props: SkillHubSettingsCardProps): ReactEle
       titleKey='settings.title'
       descriptionKey='settings.description'
       version={version}
-      versionExtra={update !== null && update.updateAvailable && update.url !== null
-        ? <a className={css.updateTag} href={update.url} target='_blank' rel='noreferrer'>{tt('update.newVersion', { version: update.latestVersion ?? '' })}</a>
-        : undefined}
+      versionExtra={versionExtra}
       state={state}
       onSave={props.save}
       onDiscard={props.discard}

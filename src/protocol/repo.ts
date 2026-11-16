@@ -132,6 +132,32 @@ export interface UpdateCheckResponse {
    * or `github`（release 兜底）。两种来源的判定口径不同，排查时要能分清。
    */
   source?: 'npm' | 'github'
+  /**
+   * 已经装到磁盘、但宿主还没重启加载的版本。
+   *
+   * 运行中的 `currentVersion` 来自模块加载时的常量，换掉磁盘上的包不会改它 ——
+   * 没有这个字段，界面会一直写着旧版本号、更新按钮一直挂着。
+   */
+  pendingRestartVersion?: string
   /** Best-effort message when the check failed or no release exists. */
+  error?: string
+}
+
+/** POST /api/skill-hub/update/apply — install one exact version into this profile. */
+export interface UpdateApplyRequest {
+  /** Exact `x.y.z`; the server refuses anything else. */
+  version: string
+}
+
+/** Result of one in-place update attempt. */
+export interface UpdateApplyResponse {
+  ok: true
+  /** Version now on disk; null when nothing was written. */
+  appliedVersion: string | null
+  /** 宿主必须重启才会加载新代码。 */
+  restartRequired: boolean
+  /** 运行中这份拷贝的安装形态：只有 `profile` 才允许自动更新。 */
+  installKind: 'profile' | 'development'
+  /** 失败或不允许时的可读原因。 */
   error?: string
 }

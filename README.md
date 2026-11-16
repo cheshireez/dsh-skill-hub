@@ -49,7 +49,7 @@ The same hub is available as a **960px sidebar panel** (left rail → Plugins ar
 - **Project skill toggles** — project skills can be switched off via an **invocation override**: the hub registers its provider once more into every live agent's skill layer (nearer than the preset layer) and publishes a same-name entry that outranks the host's native one, flipping that skill's `modelInvocable` to false. The model stops auto-invoking it, "/name" keeps working, and **not a single byte of the project changes** (zero git pollution). The state lives in the hub's sidecar; flipping the switch again restores it.
 - **Import from ZIP** — pick a `.zip`: every directory containing a `SKILL.md` becomes one skill, so a single-skill archive and a collection both work, each passing the content audit independently. Before anything is unpacked the reader rejects path traversal, symlinks, encrypted and ZIP64 archives, and decompression bombs; writes go through a temp directory plus an atomic rename, so a failure leaves nothing behind. A name that is already enabled is skipped — only a disabled placeholder or an empty shell steps aside into the restorable trash.
 - **Stats** — per-skill call counts + last-used times from session logs (incremental cache), group summaries; window and scan interval live-configurable from the settings card.
-- **Settings card** — registered on the plugin's own page in the **Plugins manager** (sidebar → 插件 → dsh-skill-hub; collapsed until you expand the title): master switch, announce-to-agent, invocation dot colors, usage display toggles, stats window/interval. The version badge in the title row flags a newer published version (**update check** reads the npm registry `latest` tag — the version `dsh plugin add` would actually install — with the GitHub release only as a fallback, cached for 10 minutes); clicking it opens the release page.
+- **Settings card** — registered on the plugin's own page in the **Plugins manager** (sidebar → 插件 → dsh-skill-hub; collapsed until you expand the title): master switch, announce-to-agent, invocation dot colors, usage display toggles, stats window/interval. The version badge in the title row flags a newer published version (**update check** reads the npm registry `latest` tag — the version `dsh plugin add` would actually install — with the GitHub release only as a fallback, cached for 10 minutes), next to an **Update now** button: a copy installed inside a profile upgrades in place and asks for a restart; a copy `link:`ed from a working directory is refused on purpose (replacing it would break the development loop), and an Electron-managed profile is refused by the host itself.
 
 ## Content audit and announcement budget
 
@@ -57,6 +57,7 @@ The same hub is available as a **960px sidebar panel** (left rail → Plugins ar
 | --- | --- |
 | Content audit | Raw ESC / Unicode tag characters / bidirectional controls / zero-width characters / `curl … \| sh` / SSH and cloud credential paths / 2 MiB per file, 10 MiB per skill, 500 files. Blocking (refuses the write; a market import is refused as a whole and its temp directory removed): raw ESC / Unicode tags / bidirectional controls / encoding disguises / size caps. Warnings (flagged, not blocked — these have legitimate uses): zero-width characters, `curl … \| sh`, credential paths, over-long description. Pure local static matching: no network, no model call. |
 | Announcement budget | The name + description total of the first progressive-disclosure layer comes back with the catalog, so the panel shows characters and an estimated token count; past 8000 it turns red — clients truncate the tail there, which shows up as "installed but never triggers". |
+| Plugin announcement | With "announce to agent" on, one **340-character** Chinese blurb goes into the system prompt (where the hub lives, a capability overview, the writable scope and the sidecar-toggle rule, trigger words). **Chinese only**: the English paragraph was a sentence-by-sentence translation of it, pure redundancy — the pair was 5023 characters, 46.8% of the whole system prompt (issue #23). |
 
 Scaffold format (`SKILL.md`):
 
@@ -109,7 +110,8 @@ Host uses only `ctx.skills.snapshot/get`, `ctx.webServer.register`, `ctx.systemP
 | `/api/skill-hub/foreign` | GET | read-only scan of other agents' skill folders (user-level + project-level; project roots derived from registered workspaces) |
 | `/api/skill-hub/foreign/import` | POST | `{items:[{agent,name,scope?,projectRoot?}]}` copied into `~/.dsh/skills` (user-level) or that project's `.dsh/skills` (project-level) |
 | `/api/skill-hub/import/zip` | POST | raw `.zip` bytes (`content-type: application/zip`, ≤32 MiB); every directory holding a `SKILL.md` becomes one skill, audited and installed independently |
-| `/api/skill-hub/update` | GET | plugin latest release |
+| `/api/skill-hub/update` | GET | plugin latest release (`?refresh=1` bypasses the 10-minute cache) |
+| `/api/skill-hub/update/apply` | POST | `{version}` installs that version into the current profile; `link:` copies and Electron-managed profiles are refused (reason in `error`, HTTP stays 200) |
 | unknown `/api/skill-hub/*` | GET/POST | `404 {error}` naming the path — a typo must not read as an auth failure (the SPA fallback answers 401 for `/api/*` it does not own) |
 
 ## Development

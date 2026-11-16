@@ -13,7 +13,11 @@
  * 依赖仍是零新增：Node 全局 fetch + 一个 semver 子集解析器（本项目只发 x.y.z）。
  */
 
+import { spawn, type ChildProcess } from 'node:child_process'
+import { realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { dirname, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { errorText } from './error-text.ts'
 import { apiHeaders, rateLimitResetAt } from './repo.ts'
 import type { UpdateCheckResponse } from './protocol.ts'
@@ -42,6 +46,29 @@ let cached: { at: number; value: UpdateCheckResponse } | undefined
 /** Drop the cached result: `?refresh=1` and the tests both need a clean slate. */
 export function resetUpdateCache(): void {
   cached = undefined
+}
+
+/**
+ * 已写入磁盘、但还没被宿主重启加载的版本。
+ *
+ * `CURRENT_VERSION` 是模块加载时读的常量 —— 点击更新换掉磁盘上的包之后，进程里
+ * 仍然是旧值。不记住这个，界面上会一直写着旧版本、按钮还挂着，用户会以为没成功。
+ */
+let pendingRestart: string | undefined
+
+/** The version installed on disk but not yet loaded; undefined when none. */
+export function pendingRestartVersion(): string | undefined {
+  return pendingRestart
+}
+
+/** Reset the pending marker (tests only). */
+export function resetPendingRestart(): void {
+  pendingRestart = undefined
+}
+
+/** Attach the pending-restart marker to a check result. */
+function withPending(value: UpdateCheckResponse): UpdateCheckResponse {
+  return pendingRestart === undefined ? value : { ...value, pendingRestartVersion: pendingRestart }
 }
 
 /** Installed plugin version, read from the package manifest. */
@@ -214,9 +241,217 @@ export async function checkLatestRelease(
   const now = options.now ?? Date.now()
   if (options.refresh !== true && cached !== undefined && now - cached.at < CACHE_TTL_MS) {
     // currentVersion 覆盖一次：缓存不该让「升级后重启」仍然报旧版本号。
-    return { ...cached.value, currentVersion }
+    return withPending({ ...cached.value, currentVersion })
   }
   const value = await probeLatest(repo, fetchImpl, currentVersion)
   cached = { at: now, value }
-  return value
+  return withPending(value)
+}
+
+// ---------------------------------------------------------------- 安装形态
+
+/**
+ * 插件自己是怎么落到磁盘上的。决定「点击更新」可不可做 —— 而不是让它试了才失败。
+ *
+ * `import.meta.url` 给的是 realpath（Node 默认解析软链），所以两种形态能分开：
+ * 装在 profile 的 `node_modules` 里 → 路径里带 `/profiles/<name>/node_modules/`；
+ * 被 `link:` 到开发目录 → 解析出来是项目路径，压根没有这段。
+ */
+export interface InstallContext {
+  /** `profile` 可直接替换；`development` 必须由开发者自己重建。 */
+  kind: 'profile' | 'development'
+  /** profile 名，仅 `kind === 'profile'` 时存在。 */
+  profileName?: string
+  /** 不能自动更新的原因（给用户看的原文）。 */
+  reason?: string
+}
+
+/** `…/profiles/<name>/node_modules/dsh-skill-hub/…` —— 只认这个形状。 */
+const PROFILE_INSTALL = /[\\/]profiles[\\/]([^\\/]+)[\\/]node_modules[\\/]dsh-skill-hub[\\/]/
+
+/**
+ * Classify the running copy.
+ * @param moduleUrl - entry module URL (`import.meta.url` in production).
+ * @returns the install shape; `development` carries the refusal text.
+ */
+export function detectInstallContext(moduleUrl: string = import.meta.url): InstallContext {
+  let filePath: string
+  try {
+    filePath = realpathSync(fileURLToPath(moduleUrl))
+  } catch (error) {
+    return { kind: 'development', reason: 'cannot resolve the installed package path: ' + errorText(error) }
+  }
+  const match = PROFILE_INSTALL.exec(filePath)
+  if (match !== null) return { kind: 'profile', profileName: match[1] }
+  return {
+    kind: 'development',
+    reason: 'this copy is linked from a working directory rather than installed into a profile — rebuild it there (npm run build), or install it with `dsh plugin add`',
+  }
+}
+
+/** Outcome of one in-place update attempt. */
+export interface ApplyUpdateResult {
+  ok: boolean
+  /** Version now on disk; null when nothing was written. */
+  appliedVersion: string | null
+  error?: string
+}
+
+/** How long the package manager may take before the update is abandoned. */
+const APPLY_TIMEOUT_MS = 5 * 60 * 1000
+
+/**
+ * 绕开 pnpm 的「最小发布年龄」策略。
+ *
+ * 用户点「立即更新」的时机，恰好是新版本刚发布、仍落在 pnpm 保护窗口里的时候 ——
+ * 不豁免就会以「版本太新」失败，而这正是按钮最该工作的那一刻。
+ * pnpm 12 会忽略命令行上的这个 flag，所以同时用环境变量兜一遍。
+ */
+const RELEASE_AGE_FLAG = '--config.minimum-release-age=0'
+const PNPM_ENV = { PNPM_CONFIG_MINIMUM_RELEASE_AGE: '0' } as const
+
+/** dsh CLI 的启动方式。 */
+export interface DshCommand {
+  file: string
+  args: string[]
+  /** 启动目录；Electron 的 asar 入口不可 chdir，此时省略。 */
+  cwd?: string
+}
+
+/** 认得出的 dsh CLI 载体：编译后的 `bin.js`、源码运行的 `bin.ts`，或 `dsh` 本体。 */
+const DSH_ENTRY = /[\\/](?:bin\.(?:js|ts)|dsh)$/
+
+/**
+ * Work out how to launch the dsh CLI from inside a running dsh process.
+ *
+ * 不能只靠 PATH：Electron 宿主的 PATH 里通常没有 `dsh`，而它的入口可能位于
+ * `app.asar`（Electron 读得到，操作系统进不去那个目录）。所以优先复用**当前进程
+ * 自己的入口**：同一个 node/Electron 可执行文件 + 同样的 execArgv + 入口绝对路径。
+ * 只有认不出来时才退回 PATH。
+ * @returns the command to spawn.
+ */
+export function dshCommand(
+  argv: readonly string[] = process.argv,
+  execPath: string = process.execPath,
+  execArgv: readonly string[] = process.execArgv,
+): DshCommand {
+  const entry = argv[1]
+  if (entry !== undefined && DSH_ENTRY.test(entry)) {
+    try {
+      const absolute = resolve(entry)
+      // asar 内部不可 chdir；正常安装时把 cwd 放在入口旁边，源码运行
+      // （tsx/esm 之类）才能把 execArgv 的 import 解析出来。
+      const cwd = absolute.includes('.asar' + sep) ? undefined : dirname(absolute)
+      return { file: execPath, args: [...execArgv, absolute], ...(cwd !== undefined ? { cwd } : {}) }
+    } catch {
+      // 解析不出绝对路径就退回 PATH 分支。
+    }
+  }
+  return { file: 'dsh', args: [] }
+}
+
+/** 结束整棵进程树：只杀直接子进程会留下仍在写 profile 的 pnpm。 */
+function killTree(child: ChildProcess): void {
+  const pid = child.pid
+  if (pid === undefined) return
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(-pid, 'SIGKILL')
+      return
+    } catch {
+      // 进程组已经没了，落到单进程 kill。
+    }
+  }
+  try { child.kill('SIGKILL') } catch { /* already gone */ }
+}
+
+interface RunResult {
+  code: number | null
+  stdout: string
+  stderr: string
+  timedOut: boolean
+}
+
+/**
+ * Run one command with a deadline, capturing both streams.
+ * stdout/stderr 一定要读完再判定结果：pnpm 的错误只出现在输出里，退出码常常是 1
+ * 但看不出原因。
+ */
+function run(command: string, args: readonly string[], timeoutMs: number, cwd?: string): Promise<RunResult> {
+  return new Promise((resolvePromise) => {
+    const child = spawn(command, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...PNPM_ENV },
+      // 独立进程组（POSIX）：超时时一个组信号带走 dsh 包装进程和它的 pnpm 孙子，
+      // 否则 pnpm 会在后台继续写 profile，和随后的重试互相踩。
+      detached: process.platform !== 'win32',
+      ...(cwd !== undefined ? { cwd } : {}),
+    })
+    let stdout = ''
+    let stderr = ''
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      killTree(child)
+    }, timeoutMs)
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8') })
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8') })
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      resolvePromise({ code: null, stdout, stderr: stderr + errorText(error), timedOut })
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      resolvePromise({ code, stdout, stderr, timedOut })
+    })
+  })
+}
+
+/** Last few lines of a command's output, for an error message a human can act on. */
+function tail(text: string, lines = 6): string {
+  const kept = text.trim().split('\n').filter((line) => line.trim() !== '').slice(-lines)
+  return kept.join('\n')
+}
+
+/**
+ * Install one exact version into the profile the running copy belongs to.
+ *
+ * 走 `dsh plugin` 而不是直接 `pnpm add`：那层会先做宿主自己的检查（例如 Electron
+ * 独占的 profile 会直接拒绝），复用它的判断比在这里重新实现一份可靠。
+ * @param version - exact `x.y.z` to install; anything else is refused.
+ * @param profileName - profile that owns this copy.
+ * @param runImpl - command runner (tests inject a stub).
+ * @param dsh - how to launch the CLI; defaults to the current process entry.
+ * @returns whether the package landed, plus the output tail on failure.
+ */
+export async function applyUpdate(
+  version: string,
+  profileName: string,
+  runImpl: typeof run = run,
+  dsh: DshCommand = dshCommand(),
+): Promise<ApplyUpdateResult> {
+  // 版本号必须是纯 x.y.z：它会被拼进参数，绝不能让调用方塞进别的开关或包名。
+  if (parseVersion(version) === null) return { ok: false, appliedVersion: null, error: 'invalid version: ' + version }
+  if (!/^[A-Za-z0-9._-]+$/.test(profileName)) return { ok: false, appliedVersion: null, error: 'invalid profile name: ' + profileName }
+  const result = await runImpl(
+    dsh.file,
+    [...dsh.args, 'plugin', '--profile', profileName, 'add', RELEASE_AGE_FLAG, UPDATE_PACKAGE + '@' + version],
+    APPLY_TIMEOUT_MS,
+    dsh.cwd,
+  )
+  if (result.timedOut) {
+    return { ok: false, appliedVersion: null, error: 'package manager timed out after ' + Math.round(APPLY_TIMEOUT_MS / 1000) + 's' }
+  }
+  if (result.code !== 0) {
+    const detail = tail(result.stderr) || tail(result.stdout)
+    return {
+      ok: false,
+      appliedVersion: null,
+      error: (detail === '' ? 'dsh plugin add failed with exit code ' + String(result.code) : detail),
+    }
+  }
+  pendingRestart = version
+  // 版本可能变了（比如装上了更新的补丁版），下一轮检查要从磁盘重新读。
+  cached = undefined
+  return { ok: true, appliedVersion: version }
 }

@@ -13,6 +13,13 @@
    深色主题下自动跟随，不写死具体色值。 */
 .updateTag { margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 17px; white-space: nowrap; vertical-align: 1px; color: var(--dsw-alias-brand-primary, #3b82f6); background: color-mix(in srgb, currentColor 12%, transparent); text-decoration: none; }
 .updateTag:hover { text-decoration: underline; }
+/* 失败态：换成错误色，但保持 pill 尺寸，避免标题行抖动。 */
+.updateTagFailed { color: var(--dsw-alias-state-error-primary, #d1242f); cursor: help; }
+.updateTagFailed:hover { text-decoration: none; }
+/* 「立即更新」按钮：与 pill 同高，实心，权重高于旁边的版本链接。 */
+.updateApply { appearance: none; font: inherit; margin-left: 6px; padding: 1px 10px; border: 0; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 17px; white-space: nowrap; vertical-align: 1px; cursor: pointer; color: var(--dsw-alias-bg-layer-3); background: var(--dsw-alias-brand-primary, #3b82f6); }
+.updateApply:hover { filter: brightness(1.08); }
+.updateApply:disabled { cursor: default; opacity: .5; filter: none; }
 .pending { white-space: nowrap; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); border-radius: 999px; flex: none; padding: 1px 8px; font-size: 11px; font-weight: 500; line-height: 17px; }
 .chevron, .chevronOpen { color: var(--dsw-alias-label-tertiary); flex: none; transition: transform .16s; }
 .chevronOpen { transform: rotate(180deg); }
