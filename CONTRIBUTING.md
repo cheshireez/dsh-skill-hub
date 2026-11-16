@@ -60,11 +60,19 @@ npm run build       # tsc declarations + tsdown bundles (lib/index.js + lib/clie
 5. **Documentation** — update `README.md` **and** `README.zh.md` (both ship with the package and are
    kept in sync) when behavior or the API surface changes.
 6. **Dependency layout** — `lib/index.js` has two server-side bare imports
-   (`@deepseek-ai/schemastery`, `@deepseek-ai/dsh-skill`). Keep both in `dependencies`, not only
-   as optional peers: a clean `npm install` of the published tarball must resolve them from
-   inside `node_modules/dsh-skill-hub/lib/` without the host's `bareModuleBaseUrl` injection
-   (dsh.so's win32 L5 sandbox needs this). Never move the other peers back to non-optional —
-   wide ranges once auto-installed the whole 0.1.7-rc.2 line and disabled required host plugins.
+   (`@deepseek-ai/schemastery`, `@deepseek-ai/dsh-skill`). Keep both as **optional peers only —
+   never in `dependencies`**. The host resolves them through Node's own upward lookup
+   (`~/.dsh/profiles/node_modules/@deepseek-ai/*`, symlinked to the global install), so the plugin
+   and the host share one module instance. Shipping them as dependencies put a *lower* copy inside
+   the profile that outranked the host's built-in package, and dsh then denied its own `skill` row —
+   that is issue #22, and the `clean-install` CI job now asserts the opposite direction:
+   `dependencies` holds nothing but `js-yaml`, and a fresh tree has no `@deepseek-ai` directory.
+   Never move the other peers back to non-optional either — wide ranges once auto-installed the
+   whole 0.1.7-rc.2 line and disabled required host plugins.
+7. **Announcement size** — `SKILL_HUB_GUIDANCE` lands in every session's system prompt, so it is one
+   short Chinese paragraph: where the hub lives, a capability overview, the write/override limits and
+   the trigger words. Do not reintroduce a translated duplicate — the bilingual pair was 5023
+   characters, 46.8% of the whole system prompt (issue #23).
 
 ## Code style
 
