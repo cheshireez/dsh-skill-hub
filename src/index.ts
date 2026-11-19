@@ -144,6 +144,13 @@ const SECTION_ORDER = 152
  * an agent may carry no skills service, and the event names may change —
  * in every case this degrades to "no agent-layer override" (the global
  * catalog still applies it) instead of breaking the plugin load.
+ *
+ * The returned disposer MUST be bound to the plugin fibre by the caller
+ * (`ctx.effect`). Unlike the global layer, an agent layer outlives a plugin
+ * reload — the host replays the profile in-process while agents stay alive —
+ * so a registration released only on `agent/disposed` or the next `sync()`
+ * survives its fibre and makes the replaying fibre throw "already registered
+ * in this scope" (issue #24).
  */
 function registerAgentSkillPolicy(
   ctx: Context,
@@ -175,17 +182,26 @@ function registerAgentSkillPolicy(
       ctx.logger.warn('[dsh-skill-hub] agent layer has no skills service; skipping agent-layer registration for ' + String(agent.id))
       return
     }
+    const id = agent.id
     const dispose = skills.registerProvider((control) => ensureProvider(control))
     if (dispose !== undefined) {
-      disposers.set(agent.id, dispose)
-      ctx.logger.info('[dsh-skill-hub] invocation-override provider registered into agent layer ' + agent.id)
+      // Idempotent: releasing drops the bookkeeping entry FIRST, so a later
+      // teardown pass cannot dispose the same registration twice, and a
+      // re-install for the same agent is never blocked by a stale entry
+      // (issue #24).
+      const release = (): void => {
+        if (disposers.get(id) !== release) return
+        disposers.delete(id)
+        dispose()
+      }
+      disposers.set(id, release)
+      ctx.logger.info('[dsh-skill-hub] invocation-override provider registered into agent layer ' + id)
     }
   }
   const uninstall = (agent: AgentLike | undefined): void => {
     if (agent === undefined || typeof agent.id !== 'string') return
-    const dispose = disposers.get(agent.id)
-    disposers.delete(agent.id)
-    if (dispose !== undefined) dispose()
+    // `release` removes itself from the map, so no manual delete here.
+    disposers.get(agent.id)?.()
   }
 
   const stopCreated = host.on('agent/created', (payload) => install(payload.agent))
@@ -198,7 +214,8 @@ function registerAgentSkillPolicy(
   return () => {
     if (stopCreated !== undefined) stopCreated()
     if (stopDisposed !== undefined) stopDisposed()
-    for (const dispose of disposers.values()) dispose()
+    // Snapshot: each `release` deletes itself from the map while iterating.
+    for (const release of [...disposers.values()]) release()
     disposers.clear()
   }
 }
@@ -376,7 +393,18 @@ export function apply(ctx: Context, config?: Config): void {
         () => ctx.skills.registerProvider((control) => ensureProvider(control)),
         'dsh-skill-hub: provider',
       )
-      disposeAgentProviders = registerAgentSkillPolicy(ctx, ensureProvider)
+      // Must be fibre-bound like the global provider above: a market
+      // self-update replays the profile in-process, the old fibre is torn
+      // down while agents stay alive, and an agent-layer registration that
+      // outlived its fibre would make the new fibre's registerProvider throw
+      // "already registered in this scope" — the update then rolls back
+      // (issue #24).
+      disposeAgentProviders = ctx.effect(() => {
+        const dispose = registerAgentSkillPolicy(ctx, ensureProvider)
+        return () => {
+          dispose()
+        }
+      }, 'dsh-skill-hub: agent providers')
     }
     ctx.logger.info(`[dsh-skill-hub] surfaces synced: enabled=${value.enabled} announceToAgent=${value.announceToAgent}`)
     if (disposeRoutes !== undefined) {
