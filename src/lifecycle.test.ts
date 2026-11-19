@@ -45,6 +45,7 @@ function fakeAgent(id: string) {
 function fakeHost(options: { agents?: ReturnType<typeof fakeAgent>[] } = {}) {
   const sections: string[] = []
   const routes: string[] = []
+  const warns: string[] = []
   const injected: Array<(context: unknown) => void> = []
   const listeners = new Map<string, Array<(payload: unknown) => void>>()
   const fiber: { uid: number | null } = { uid: 1 }
@@ -59,7 +60,7 @@ function fakeHost(options: { agents?: ReturnType<typeof fakeAgent>[] } = {}) {
   }
   const context = {
     fiber,
-    logger: { info: () => {}, warn: () => {} },
+    logger: { info: () => {}, warn: (message: string) => { warns.push(message) } },
     /** Only `webServer` and `agents` resolve; settings and Connection stay absent so every optional path degrades. */
     get: (name: string) =>
       name === 'webServer' ? webServer : name === 'agents' ? { list: () => options.agents ?? [] } : undefined,
@@ -98,7 +99,7 @@ function fakeHost(options: { agents?: ReturnType<typeof fakeAgent>[] } = {}) {
     // Ask each disposer in turn — it removes itself from `effects`.
     while (effects.length > 0) effects[effects.length - 1]!()
   }
-  return { context, sections, routes, fiber, injected, unload }
+  return { context, sections, routes, fiber, injected, unload, warns }
 }
 
 /** The session-query seam the stats wiring accepts. */
@@ -168,5 +169,27 @@ describe('plugin lifecycle (issues #19, #24)', () => {
     host.fiber.uid = 2
     expect(() => apply(host.context as never, undefined)).not.toThrow()
     expect(agent.live).toBe(1)
+  })
+
+  it('loads over a registration leaked by the previous version instead of failing the entry (issue #24)', () => {
+    const agent = fakeAgent('agent-1')
+    // A 0.3.36 fibre registered into this layer and died without releasing it.
+    const skills = agent.ctx.get('skills') as { registerProvider: (factory?: unknown) => (() => void) | undefined }
+    skills.registerProvider(() => {})
+    expect(agent.live).toBe(1)
+
+    const host = fakeHost({ agents: [agent] })
+    // Throwing here fails the Loader entry, which aborts reloadProfile and
+    // rolls the self-update back — leaving users unable to install the fix.
+    expect(() => apply(host.context as never, undefined)).not.toThrow()
+    // The leaked registration is not ours to release; the layer keeps serving
+    // overrides through it until the process restarts.
+    expect(agent.live).toBe(1)
+    expect(host.warns.some((line) => line.includes('already holds a skill-hub provider'))).toBe(true)
+
+    // A fresh process has no leaked registration, so the layer registers anew.
+    const restarted = fakeAgent('agent-1')
+    apply(fakeHost({ agents: [restarted] }).context as never, undefined)
+    expect(restarted.live).toBe(1)
   })
 })

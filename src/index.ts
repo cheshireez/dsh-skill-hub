@@ -128,6 +128,16 @@ export const ENTRY_ID = HUB_ENTRY_ID as SettingsNamespace
 const SECTION_ORDER = 152
 
 /**
+ * The host's scoped duplicate-name rejection, thrown by dsh-skill's
+ * `SkillLayer` / `NamedEntries` when a layer already holds a provider under
+ * the same name. Only the scoped variant is matched — the unscoped one comes
+ * from the global layer and means something genuinely different.
+ */
+function isDuplicateProviderError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('already registered in this scope')
+}
+
+/**
  * Register the hub's provider once more into every live agent's own skill
  * layer, and keep following agents as they come and go.
  *
@@ -151,6 +161,12 @@ const SECTION_ORDER = 152
  * so a registration released only on `agent/disposed` or the next `sync()`
  * survives its fibre and makes the replaying fibre throw "already registered
  * in this scope" (issue #24).
+ *
+ * That leak is also why a duplicate rejection is swallowed rather than thrown
+ * (see `install`): the fibre being unloaded during a self-update is the *old*
+ * one, so on the upgrade out of 0.3.36 or earlier the conflict is guaranteed
+ * no matter what this version does on teardown. Failing here would roll the
+ * update back and make the fix impossible to install.
  */
 function registerAgentSkillPolicy(
   ctx: Context,
@@ -183,7 +199,30 @@ function registerAgentSkillPolicy(
       return
     }
     const id = agent.id
-    const dispose = skills.registerProvider((control) => ensureProvider(control))
+    let dispose: (() => void) | undefined
+    try {
+      dispose = skills.registerProvider((control) => ensureProvider(control))
+    } catch (error) {
+      // Versions up to 0.3.36 kept the agent-layer registration in a plain map
+      // that a fibre teardown never released (issue #24). A market
+      // self-update replays the profile in-process, so the OLD — unfixed —
+      // fibre is the one that just died and its "skill-hub" registration is
+      // still there; the host rejects ours as a scoped duplicate.
+      //
+      // This must never bubble: a failed entry activation makes reloadProfile
+      // roll the whole update back, which would leave users permanently unable
+      // to install the version that fixes it. Skipping this one agent layer is
+      // harmless — the leaked provider instance serves the same store, so
+      // invocation overrides still resolve; the next process start has no
+      // leaked registration at all.
+      if (isDuplicateProviderError(error)) {
+        ctx.logger.warn(
+          '[dsh-skill-hub] agent layer ' + id + ' already holds a skill-hub provider left by the previous version; skipping agent-layer override until the next restart',
+        )
+        return
+      }
+      throw error
+    }
     if (dispose !== undefined) {
       // Idempotent: releasing drops the bookkeeping entry FIRST, so a later
       // teardown pass cannot dispose the same registration twice, and a
