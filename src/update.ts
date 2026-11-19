@@ -266,8 +266,14 @@ export interface InstallContext {
   reason?: string
 }
 
-/** `…/profiles/<name>/node_modules/dsh-skill-hub/…` —— 只认这个形状。 */
-const PROFILE_INSTALL = /[\\/]profiles[\\/]([^\\/]+)[\\/]node_modules[\\/]dsh-skill-hub[\\/]/
+/**
+ * `…/profiles/<name>/node_modules/dsh-skill-hub/…` —— 只认这个形状。
+ *
+ * 中间那段 `.pnpm/<id>/node_modules/` 是可有可无的：profile 用 hoisted 布局时
+ * 包就摆在 `node_modules` 下，换成 isolated 布局后 realpath 会穿过 `.pnpm`
+ * 虚拟目录。两者都是「装在 profile 里」，不该因为链接布局不同就判成开发目录。
+ */
+const PROFILE_INSTALL = /[\\/]profiles[\\/]([^\\/]+)[\\/]node_modules[\\/](?:\.pnpm[\\/][^\\/]+[\\/]node_modules[\\/])?dsh-skill-hub[\\/]/
 
 /**
  * Classify the running copy.
@@ -316,10 +322,26 @@ export interface DshCommand {
   args: string[]
   /** 启动目录；Electron 的 asar 入口不可 chdir，此时省略。 */
   cwd?: string
+  /**
+   * 子进程额外环境。Electron 宿主必须显式声明 `ELECTRON_RUN_AS_NODE=1`：
+   * 不给它，同一个二进制会去起一个 GUI，CLI 子命令根本不会执行。
+   */
+  env?: Record<string, string>
 }
 
 /** 认得出的 dsh CLI 载体：编译后的 `bin.js`、源码运行的 `bin.ts`，或 `dsh` 本体。 */
 const DSH_ENTRY = /[\\/](?:bin\.(?:js|ts)|dsh)$/
+
+/**
+ * Desktop 宿主入口：`…/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/index.js`。
+ *
+ * 它自己不是 CLI，但**同目录的 `cli.js`** 是 —— 而且只有那个入口会带上
+ * `packageManager`（Electron 的内置 pnpm）和 `manageDesktopProfile: true`，
+ * 也就是唯一被允许管理 desktop profile 的通道。回退到 PATH 里的 `dsh` 在那里
+ * 必然失败：`dsh plugin --profile desktop` 会被 `bin.js` 以「profile "desktop"
+ * is managed exclusively by the Electron application」直接拒绝。
+ */
+const DESKTOP_ENTRY = /[\\/]@deepseek-ai[\\/]dsh-desktop-host[\\/]lib[\\/](?:index|cli)\.js$/
 
 /**
  * Work out how to launch the dsh CLI from inside a running dsh process.
@@ -327,6 +349,8 @@ const DSH_ENTRY = /[\\/](?:bin\.(?:js|ts)|dsh)$/
  * 不能只靠 PATH：Electron 宿主的 PATH 里通常没有 `dsh`，而它的入口可能位于
  * `app.asar`（Electron 读得到，操作系统进不去那个目录）。所以优先复用**当前进程
  * 自己的入口**：同一个 node/Electron 可执行文件 + 同样的 execArgv + 入口绝对路径。
+ * Desktop 宿主有自己专属的入口（见 `DESKTOP_ENTRY`）—— 回退到 PATH 里的 `dsh`
+ * 在那里一定是失败的，因为 desktop profile 只认 Electron 那条通道。
  * 只有认不出来时才退回 PATH。
  * @returns the command to spawn.
  */
@@ -336,13 +360,25 @@ export function dshCommand(
   execArgv: readonly string[] = process.execArgv,
 ): DshCommand {
   const entry = argv[1]
-  if (entry !== undefined && DSH_ENTRY.test(entry)) {
+  const desktop = entry !== undefined && DESKTOP_ENTRY.test(entry)
+  if (entry !== undefined && (desktop || DSH_ENTRY.test(entry))) {
     try {
       const absolute = resolve(entry)
       // asar 内部不可 chdir；正常安装时把 cwd 放在入口旁边，源码运行
       // （tsx/esm 之类）才能把 execArgv 的 import 解析出来。
       const cwd = absolute.includes('.asar' + sep) ? undefined : dirname(absolute)
-      return { file: execPath, args: [...execArgv, absolute], ...(cwd !== undefined ? { cwd } : {}) }
+      // Desktop 宿主跑的是 index.js，真正能执行 `plugin` 的是同目录的 cli.js；
+      // 拉起 index.js 等于再起一个宿主，命令永远不会被处理。
+      const cli = desktop ? absolute.replace(/index\.js$/, 'cli.js') : absolute
+      // Desktop 入口只能交给 Electron 自己跑：`ELECTRON_RUN_AS_NODE=1` 让它按
+      // Node 语义执行，否则同一个二进制会去起 GUI，`plugin` 子命令不会被执行。
+      const env = desktop ? { ELECTRON_RUN_AS_NODE: '1' } : undefined
+      return {
+        file: execPath,
+        args: [...execArgv, cli],
+        ...(cwd !== undefined ? { cwd } : {}),
+        ...(env !== undefined ? { env } : {}),
+      }
     } catch {
       // 解析不出绝对路径就退回 PATH 分支。
     }
@@ -377,11 +413,17 @@ interface RunResult {
  * stdout/stderr 一定要读完再判定结果：pnpm 的错误只出现在输出里，退出码常常是 1
  * 但看不出原因。
  */
-function run(command: string, args: readonly string[], timeoutMs: number, cwd?: string): Promise<RunResult> {
+function run(
+  command: string,
+  args: readonly string[],
+  timeoutMs: number,
+  cwd?: string,
+  env?: Record<string, string>,
+): Promise<RunResult> {
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ...PNPM_ENV },
+      env: { ...process.env, ...PNPM_ENV, ...env },
       // 独立进程组（POSIX）：超时时一个组信号带走 dsh 包装进程和它的 pnpm 孙子，
       // 否则 pnpm 会在后台继续写 profile，和随后的重试互相踩。
       detached: process.platform !== 'win32',
@@ -416,8 +458,9 @@ function tail(text: string, lines = 6): string {
 /**
  * Install one exact version into the profile the running copy belongs to.
  *
- * 走 `dsh plugin` 而不是直接 `pnpm add`：那层会先做宿主自己的检查（例如 Electron
- * 独占的 profile 会直接拒绝），复用它的判断比在这里重新实现一份可靠。
+ * 走 `dsh plugin` 而不是直接 `pnpm add`：那层会先做宿主自己的检查（版本兼容、
+ * profile 锁、Electron 独占的 desktop profile），复用它的判断比在这里重新实现
+ * 一份可靠。
  * @param version - exact `x.y.z` to install; anything else is refused.
  * @param profileName - profile that owns this copy.
  * @param runImpl - command runner (tests inject a stub).
@@ -438,6 +481,7 @@ export async function applyUpdate(
     [...dsh.args, 'plugin', '--profile', profileName, 'add', RELEASE_AGE_FLAG, UPDATE_PACKAGE + '@' + version],
     APPLY_TIMEOUT_MS,
     dsh.cwd,
+    dsh.env,
   )
   if (result.timedOut) {
     return { ok: false, appliedVersion: null, error: 'package manager timed out after ' + Math.round(APPLY_TIMEOUT_MS / 1000) + 's' }

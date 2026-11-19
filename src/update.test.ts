@@ -209,6 +209,14 @@ describe('detectInstallContext', () => {
     expect(context.kind).toBe('development')
     expect(context.reason).toContain('linked from a working directory')
   })
+
+  it('recognises a profile whose packages resolve through the .pnpm store', () => {
+    // isolated linker 下 realpath 会穿过 .pnpm/<id>/node_modules/ —— 仍然是装在 profile 里。
+    const url = makeTree('profiles/desktop/node_modules/.pnpm/dsh-skill-hub@0.3.36/node_modules/dsh-skill-hub/lib/index.js')
+    const context = detectInstallContext(url)
+    expect(context.kind).toBe('profile')
+    expect(context.profileName).toBe('desktop')
+  })
 })
 
 describe('applyUpdate', () => {
@@ -250,6 +258,22 @@ describe('applyUpdate', () => {
     // 恰好是新版本还没过 pnpm 的保护窗口。
     expect(calls[0]).toEqual(['dsh', 'plugin', '--profile', 'web', 'add', '--config.minimum-release-age=0', 'dsh-skill-hub@0.3.35'])
     expect(pendingRestartVersion()).toBe('0.3.35')
+  })
+
+  it('passes the launch environment through to the child', async () => {
+    const seen: Array<Record<string, string> | undefined> = []
+    const runImpl = (async (_command: string, _args: readonly string[], _timeoutMs: number, _cwd?: string, env?: Record<string, string>) => {
+      seen.push(env)
+      return { code: 0, stdout: '', stderr: '', timedOut: false }
+    }) as never
+    const result = await applyUpdate('0.3.36', 'desktop', runImpl, {
+      file: '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness',
+      args: ['--expose-internals', '/x/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js'],
+      env: { ELECTRON_RUN_AS_NODE: '1' },
+    })
+    expect(result).toEqual({ ok: true, appliedVersion: '0.3.36' })
+    // 没有 ELECTRON_RUN_AS_NODE，desktop 的 CLI 会被当成 GUI 启动，什么都不会发生。
+    expect(seen).toEqual([{ ELECTRON_RUN_AS_NODE: '1' }])
   })
 
   it('surfaces the tail of the failure output', async () => {
@@ -301,5 +325,23 @@ describe('dshCommand', () => {
     const cmd = dshCommand(['node', entry], 'node', [])
     expect(cmd.cwd).toBeUndefined()
     expect(cmd.args).toEqual([entry])
+  })
+
+  it('launches the Desktop host CLI instead of PATH for the reserved profile', () => {
+    // Desktop 宿主：走它自带的 cli.js，那是唯一允许管理 desktop profile 的通道。
+    // PATH 里的 dsh 会以「managed exclusively by the Electron application」拒绝。
+    const entry = '/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js'
+    const exec = '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness'
+    const cmd = dshCommand([exec, entry, 'plugin'], exec, ['--expose-internals'])
+    expect(cmd.file).toBe('/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness')
+    expect(cmd.args).toEqual(['--expose-internals', entry])
+    // 没有它，同一个二进制会去起 GUI，`plugin` 子命令根本不执行。
+    expect(cmd.env).toEqual({ ELECTRON_RUN_AS_NODE: '1' })
+    expect(cmd.cwd).toBeUndefined()
+  })
+
+  it('leaves the environment alone for an ordinary node CLI', () => {
+    const cmd = dshCommand(['node', '/opt/dsh/lib/bin.js'], 'node', [])
+    expect(cmd.env).toBeUndefined()
   })
 })
