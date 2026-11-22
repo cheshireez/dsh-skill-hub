@@ -25,6 +25,7 @@ export type AuditRuleId =
   | 'zero-width'
   | 'dangerous-command'
   | 'credential-path'
+  | 'local-data-upload'
   | 'file-too-large'
   | 'bundle-too-large'
   | 'too-many-files'
@@ -84,6 +85,35 @@ const CREDENTIAL_PATHS: ReadonlyArray<{ re: RegExp; label: string }> = [
   { re: /Library\/Keychains\b/, label: 'macOS keychain' },
   { re: /(?:^|[\s"'`])\.docker\/config\.json\b/, label: 'Docker registry credentials' },
   { re: /(?:^|\s)\/etc\/shadow\b/, label: 'system password database' },
+]
+
+/**
+ * 外传本地数据：请求体/上传载荷来自本地文件、管道或环境变量的结构形态。
+ * 只认「数据离机」的形状（`-d @file`、`-F x=@file`、`-T`、`wget --post-file`、
+ * 本地输出 | curl 吃 stdin、环境变量进请求体），不做域名信任判断 ——
+ * 规则找结构特征，而不是「这个域名可信吗」。
+ *
+ * 每个 flag 用 `(?:^|\s)` 锁到 token 边界：`-T` 藏在 URL 里
+ * （`curl "https://x.dev/api?q=-T"`）不该命中，独立成 flag 才算外传。
+ * `@-` 表示 stdin，单独出现不算；只有经管道喂给 curl 才算（形式 e）。
+ * 形式 e 不枚举「可信来源命令」——任何 `… | curl -d @-` 都是同一个形状，
+ * 枚举命令就是变相的 allowlist（#21 正是栽在 allowlist 上）。
+ */
+const OUTBOUND_UPLOADS: ReadonlyArray<{ re: RegExp; label: string }> = [
+  // a) curl 请求体读自本地文件（`-d`/`--data*`/`--json` 的 `@file`，`@-` 除外）
+  { re: /\bcurl\b[^\n]*?(?:^|\s)(?:--data(?:-binary|-urlencode|-ascii)?|-d|--json)\s*@[^-][^\s]*/, label: 'curl `-d`/`--data`/`--json` reads the request body from a local file' },
+  // b) curl multipart 上传本地文件
+  { re: /\bcurl\b[^\n]*?(?:^|\s)(?:--form|-F)\s*[^\s=]+=@[^\s]*/, label: 'curl `-F`/`--form` uploads a local file' },
+  // c) curl 上传文件（`-T -` 吃 stdin 交给 e）
+  { re: /\bcurl\b[^\n]*?(?:^|\s)(?:--upload-file|-T)\s*[^\s-][^\s]*/, label: 'curl `-T`/`--upload-file` uploads a local file' },
+  // d) wget 请求体/正文读自本地文件
+  { re: /\bwget\b[^\n]*?(?:^|\s)(?:--post-file|--body-file)/, label: 'wget `--post-file`/`--body-file` sends a local file' },
+  // e) 本地输出经管道喂给 curl 的请求体/上传（`-d @-` / `-T -`），不枚举来源命令
+  { re: /\|\s*[^\n]*?\bcurl\b[^\n]*?(?:^|\s)(?:-d|--data(?:-binary|-urlencode|-ascii)?)\s*@-/, label: 'local data piped into a curl request body (`-d @-`)' },
+  { re: /\|\s*[^\n]*?\bcurl\b[^\n]*?(?:^|\s)(?:-T\s*-|--upload-file\s*-)/, label: 'local data piped into a curl upload (`-T -`)' },
+  // f) 环境变量进请求体（双引号内任意位置、或裸 `$VAR`/`${VAR}`；单引号里的 `$` 是字面量，不算）
+  { re: /\bcurl\b[^\n]*?(?:^|\s)(?:--data(?:-binary|-urlencode|-ascii|-raw)?|-d)\s*(?:"[^"\n]*\$[A-Za-z_{]|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})/, label: 'environment variable interpolated into a curl request body' },
+  { re: /\bwget\b[^\n]*?(?:^|\s)(?:--post-data|--body-data)\s*(?:"[^"\n]*\$[A-Za-z_{]|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})/, label: 'environment variable interpolated into a wget request body' },
 ]
 
 /** 明确二进制的资源只查体积：把 PNG 字节喂给文本规则只会产生噪声。 */
@@ -171,6 +201,30 @@ function collect(text: string, re: RegExp): { first: number; count: number } {
 }
 
 /**
+ * 本地数据外传：请求体/上传载荷来自本地文件、管道或环境变量的结构形态。
+ * 每个文件至多一条 finding（避免一个技能刷屏），但把所有命中的形状标签
+ * 都拼进 message，让人一次看清全部离机方式；行号取最早命中的那一条。
+ */
+export function auditOutboundUploads(relativePath: string, text: string): AuditFinding[] {
+  const starts = lineStartsOf(text)
+  const hits: Array<{ index: number; label: string }> = []
+  for (const { re, label } of OUTBOUND_UPLOADS) {
+    const hit = re.exec(text)
+    if (hit !== null && hit.index !== undefined) hits.push({ index: hit.index, label })
+  }
+  if (hits.length === 0) return []
+  hits.sort((a, b) => a.index - b.index)
+  const labels = hits.map((hit) => hit.label).join('; ')
+  return [{
+    rule: 'local-data-upload',
+    severity: 'warn',
+    file: relativePath,
+    line: lineOf(starts, hits[0].index),
+    message: `sends local data to a remote endpoint: ${labels}; a skill may upload a file for a legitimate reason, but this is the shape where content leaves the machine`,
+  }]
+}
+
+/**
  * 审计一段技能文本（SKILL.md 正文、脚本、参考文档都适用）。
  * 纯函数：同样的输入永远给同样的结果，便于单测与「改动前后对比」。
  */
@@ -219,6 +273,8 @@ export function auditSkillText(relativePath: string, text: string): AuditFinding
       break
     }
   }
+
+  findings.push(...auditOutboundUploads(relativePath, body))
 
   return findings
 }
