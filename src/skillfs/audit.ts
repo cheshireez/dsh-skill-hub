@@ -205,8 +205,7 @@ function collect(text: string, re: RegExp): { first: number; count: number } {
  * 每个文件至多一条 finding（避免一个技能刷屏），但把所有命中的形状标签
  * 都拼进 message，让人一次看清全部离机方式；行号取最早命中的那一条。
  */
-export function auditOutboundUploads(relativePath: string, text: string): AuditFinding[] {
-  const starts = lineStartsOf(text)
+export function auditOutboundUploads(relativePath: string, text: string, starts: readonly number[]): AuditFinding[] {
   const hits: Array<{ index: number; label: string }> = []
   for (const { re, label } of OUTBOUND_UPLOADS) {
     const hit = re.exec(text)
@@ -274,7 +273,7 @@ export function auditSkillText(relativePath: string, text: string): AuditFinding
     }
   }
 
-  findings.push(...auditOutboundUploads(relativePath, body))
+  findings.push(...auditOutboundUploads(relativePath, scanned, starts))
 
   return findings
 }
