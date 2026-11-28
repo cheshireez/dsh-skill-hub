@@ -101,6 +101,8 @@
 /* Inset grouped list: one rounded card per group. */
 .section { display: flex; flex-direction: column; background: var(--hub-card-bg); border: 1px solid var(--hub-border); border-radius: var(--hub-radius-md); overflow: hidden; margin-top: 4px; box-shadow: var(--hub-shadow-1); transition: box-shadow .16s ease, border-color .16s ease; }
 .section:focus-within { border-color: color-mix(in srgb, var(--hub-accent) 40%, var(--hub-border)); box-shadow: var(--hub-shadow-2); }
+.section:has(.menu) { position: relative; z-index: 1; overflow: visible; }
+.section:has(.menu) > .row:last-child { border-radius: 0 0 var(--hub-radius-md) var(--hub-radius-md); }
 .sectionTitle { font-size: var(--hub-fs-13); font-weight: 700; margin: 14px 16px 2px; }
 .groupHead { display: flex; align-items: center; gap: 8px; padding: 10px 14px; min-height: 44px; box-sizing: border-box; }
 .groupTitle { font-size: var(--hub-fs-13); font-weight: 600; color: var(--hub-text); flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; line-height: 1; }
